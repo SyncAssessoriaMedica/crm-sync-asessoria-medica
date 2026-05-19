@@ -16,12 +16,12 @@ export default async function AppLayout({
   if (user) {
     const { data: profile } = await supabase
       .from("profiles")
-      .select("name, email")
+      .select("full_name, email")
       .eq("id", user.id)
       .maybeSingle();
 
     topbarUser = {
-      name: profile?.name ?? user.email ?? "Usuário",
+      name: profile?.full_name ?? user.email ?? "Usuario",
       email: profile?.email ?? user.email ?? "",
     };
   }
@@ -36,3 +36,4 @@ export default async function AppLayout({
     </div>
   );
 }
+
