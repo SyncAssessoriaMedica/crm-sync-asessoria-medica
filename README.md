@@ -302,17 +302,89 @@ curl -X POST https://api.seudominio.com/webhook/set/clinica-sp-principal \
 
 ---
 
-## Deploy no Vercel
+## Deploy na Vercel via GitHub
 
-```bash
-# Instalar Vercel CLI
-npm i -g vercel
+O deploy é feito pela integração nativa Vercel ↔ GitHub. Cada push na branch `main` dispara um deploy automático. Nenhum login na Vercel é necessário para deploys futuros — basta fazer push no GitHub.
 
-# Deploy
-vercel --prod
+### 1. Importar o repositório
+
+1. Acesse [vercel.com/new](https://vercel.com/new)
+2. Selecione **"Import Git Repository"**
+3. Conecte sua conta GitHub se necessário
+4. Encontre e selecione o repositório `crm-sync-asessoria-medica`
+5. Clique em **Import**
+
+### 2. Configurar o projeto
+
+Na tela de configuração:
+
+| Campo | Valor |
+|---|---|
+| Framework Preset | **Next.js** (detectado automaticamente) |
+| Root Directory | `.` (raiz do repositório) |
+| Build Command | `npm run build` (padrão) |
+| Output Directory | `.next` (padrão) |
+| Branch de produção | `main` |
+
+### 3. Cadastrar variáveis de ambiente
+
+Antes de clicar em **Deploy**, clique em **"Environment Variables"** e adicione:
+
+| Variável | Ambiente | Descrição |
+|---|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | Production, Preview | URL base do projeto Supabase |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Production, Preview | Chave anon pública do Supabase |
+| `SUPABASE_SERVICE_ROLE_KEY` | Production | Service role key — nunca expor no frontend |
+| `EVOLUTION_API_URL` | Production | URL da Evolution API auto-hospedada |
+| `EVOLUTION_API_KEY` | Production | API key da Evolution API |
+| `WEBHOOK_SECRET` | Production | Secret para autenticar webhooks externos |
+| `NEXT_PUBLIC_APP_URL` | Production | URL final do app na Vercel (preencher após primeiro deploy) |
+
+> `SUPABASE_SERVICE_ROLE_KEY` deve ser adicionada apenas em **Production** — nunca em Preview/Development.
+
+### 4. Fazer o primeiro deploy
+
+Clique em **Deploy**. A Vercel irá:
+1. Clonar o repositório
+2. Instalar dependências (`npm install`)
+3. Rodar o build (`npm run build`)
+4. Publicar na URL gerada (ex: `crm-sync-asessoria-medica.vercel.app`)
+
+### 5. Deploys automáticos
+
+Após a integração, o fluxo é:
+
+```
+commit local → git push origin main → Vercel detecta → build → deploy automático
 ```
 
-Configure as variáveis de ambiente no painel do Vercel antes do deploy.
+- **Branch `main`** → deploy em produção
+- **Outras branches / Pull Requests** → deploy de preview com URL própria
+
+Nenhum login na Vercel é necessário para este fluxo. Qualquer push autorizado no GitHub dispara o deploy automaticamente.
+
+### 6. Após o primeiro deploy — configurar Supabase
+
+Com a URL da Vercel em mãos (ex: `https://crm-sync-asessoria-medica.vercel.app`):
+
+**a) Atualizar `NEXT_PUBLIC_APP_URL` na Vercel:**
+
+Vercel Dashboard → Projeto → Settings → Environment Variables → edite `NEXT_PUBLIC_APP_URL` → Redeploy.
+
+**b) Adicionar Redirect URL no Supabase:**
+
+Supabase Dashboard → Authentication → URL Configuration → Redirect URLs → adicione:
+
+```
+https://SUA-URL.vercel.app/auth/callback
+```
+
+**c) Retomar Supabase/Auth:**
+
+Com o app no ar e Redirect URL configurado:
+- Rodar `npm run bootstrap:admin` para criar o primeiro admin
+- Testar login em produção
+- Substituir mock-data por queries reais ao Supabase gradualmente
 
 ---
 
