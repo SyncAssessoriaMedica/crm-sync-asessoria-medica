@@ -4,7 +4,6 @@ import { useState, useTransition } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
-  CalendarClock,
   CheckSquare,
   Clock,
   Copy,
@@ -30,13 +29,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -47,7 +39,6 @@ import {
   formatPhone,
   getInitials,
 } from "@/lib/utils";
-import type { LeadStatus } from "@/lib/types";
 import type {
   LeadEventItem,
   LeadListItem,
@@ -64,17 +55,6 @@ import {
   updateLeadStageAction,
 } from "../actions";
 import { LeadForm } from "../lead-form";
-
-const STATUS_CONFIG: Record<LeadStatus, { label: string; color: string; variant: "default" | "secondary" | "destructive" | "warning" | "green" }> = {
-  new: { label: "Novo", color: "text-text-muted", variant: "secondary" },
-  contacted: { label: "Contactado", color: "text-brand-green", variant: "default" },
-  qualified: { label: "Qualificado", color: "text-brand-green-dark", variant: "green" },
-  scheduled: { label: "Agendado", color: "text-brand-green-deep", variant: "default" },
-  attended: { label: "Compareceu", color: "text-brand-green-deep", variant: "default" },
-  closed_won: { label: "Fechado", color: "text-brand-green", variant: "green" },
-  closed_lost: { label: "Perdido", color: "text-danger-red", variant: "destructive" },
-  no_show: { label: "Nao compareceu", color: "text-warning-amber", variant: "warning" },
-};
 
 const EVENT_ICONS: Record<string, { icon: React.ElementType; color: string }> = {
   status_changed: { icon: Tag, color: "bg-brand-green-soft text-brand-green-dark" },
@@ -99,19 +79,16 @@ export function LeadDetailClient({ lead, options, notes, events, tasks }: LeadDe
   const [taskDueAt, setTaskDueAt] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
-  const status = STATUS_CONFIG[lead.status];
 
   function exportLead() {
     const row = [
-      "Nome,Telefone,Email,Origem,Campanha,Procedimento,Status,Etapa,Valor potencial,Valor fechado,Criado em",
+      "Nome,Telefone,Email,Origem,Procedimento,Etapa,Valor potencial,Valor fechado,Criado em",
       [
         lead.name,
         lead.phone,
         lead.email ?? "",
         lead.source?.name ?? "",
-        lead.campaign?.name ?? "",
         lead.procedure ?? "",
-        status.label,
         lead.stage?.name ?? "",
         lead.potential_value ?? "",
         lead.closed_value ?? "",
@@ -175,7 +152,9 @@ export function LeadDetailClient({ lead, options, notes, events, tasks }: LeadDe
         <div className="flex-1">
           <div className="flex items-center gap-2">
             <p className="label-eyebrow text-text-muted">Lead</p>
-            <span className={cn("text-[11px] font-semibold", status.color)}>· {status.label}</span>
+            <span className="text-[11px] font-semibold text-brand-green-dark">
+              {lead.stage?.name ? `· ${lead.stage.name}` : "· Sem etapa"}
+            </span>
           </div>
           <h1 className="text-xl font-black text-text-primary">{lead.name}</h1>
         </div>
@@ -245,32 +224,37 @@ export function LeadDetailClient({ lead, options, notes, events, tasks }: LeadDe
               <Separator />
               <div>
                 <p className="label-eyebrow mb-1.5">Etapa do Funil</p>
-                <Select
-                  value={lead.stage_id ?? "none"}
-                  onValueChange={(value) => {
-                    startTransition(async () => {
-                      const result = await updateLeadStageAction(lead.id, value === "none" ? "" : value);
-                      setMessage(result.message);
-                    });
-                  }}
-                >
-                  <SelectTrigger className="h-8 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">Sem etapa</SelectItem>
-                    {options.stages.map((stage) => (
-                      <SelectItem key={stage.id} value={stage.id}>
+                <div className="grid grid-cols-2 gap-2">
+                  {options.stages.map((stage) => {
+                    const active = lead.stage_id === stage.id;
+                    return (
+                      <button
+                        key={stage.id}
+                        type="button"
+                        disabled={isPending || active}
+                        onClick={() => {
+                          startTransition(async () => {
+                            const result = await updateLeadStageAction(lead.id, stage.id);
+                            setMessage(result.message);
+                          });
+                        }}
+                        className={cn(
+                          "rounded-lg border px-3 py-2 text-left text-xs font-semibold transition-colors",
+                          active
+                            ? "border-brand-green bg-brand-green-soft text-brand-green-deep"
+                            : "border-border bg-white text-text-secondary hover:border-brand-green hover:text-brand-green-dark",
+                          isPending && "cursor-wait opacity-70"
+                        )}
+                      >
                         {stage.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
               <Separator />
               <div className="grid grid-cols-2 gap-3">
                 <Meta label="Origem" value={lead.source?.name} />
-                <Meta label="Campanha" value={lead.campaign?.name} />
                 <Meta label="Valor Pot." value={lead.potential_value ? formatCurrency(lead.potential_value) : undefined} strong />
                 <Meta label="Valor Fechado" value={lead.closed_value ? formatCurrency(lead.closed_value) : undefined} strong />
               </div>
@@ -279,19 +263,6 @@ export function LeadDetailClient({ lead, options, notes, events, tasks }: LeadDe
               {lead.last_interaction_at && <Meta label="Ultima Interacao" value={formatDate(lead.last_interaction_at)} />}
             </CardContent>
           </Card>
-
-          {lead.next_action_at && (
-            <Card className="border-l-2 border-l-warning-amber">
-              <CardContent className="space-y-2 pt-4">
-                <div className="flex items-center gap-2">
-                  <CalendarClock className="h-4 w-4 text-warning-amber" />
-                  <p className="text-xs font-semibold text-text-primary">Proxima Acao</p>
-                </div>
-                <p className="text-[11px] text-text-muted">{formatDate(lead.next_action_at)}</p>
-                {lead.next_action_note && <p className="text-xs text-text-secondary">{lead.next_action_note}</p>}
-              </CardContent>
-            </Card>
-          )}
 
           {lead.potential_value && (
             <Card className="border-l-2 border-l-brand-green">

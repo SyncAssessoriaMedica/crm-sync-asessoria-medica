@@ -12,19 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { LeadStatus } from "@/lib/types";
 import type { LeadListItem, LeadOptionData } from "./types";
-
-const STATUS_OPTIONS: { value: LeadStatus; label: string }[] = [
-  { value: "new", label: "Novo" },
-  { value: "contacted", label: "Contactado" },
-  { value: "qualified", label: "Qualificado" },
-  { value: "scheduled", label: "Agendado" },
-  { value: "attended", label: "Compareceu" },
-  { value: "closed_won", label: "Fechado" },
-  { value: "closed_lost", label: "Perdido" },
-  { value: "no_show", label: "Nao compareceu" },
-];
 
 type LeadFormProps = {
   mode: "create" | "edit";
@@ -34,15 +22,6 @@ type LeadFormProps = {
   onClose: () => void;
   onSubmit: (formData: FormData) => Promise<{ ok: boolean; message: string }>;
 };
-
-function dateTimeLocal(value?: string | null) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return new Date(date.getTime() - date.getTimezoneOffset() * 60000)
-    .toISOString()
-    .slice(0, 16);
-}
 
 export function LeadForm({ mode, open, options, lead, onClose, onSubmit }: LeadFormProps) {
   const [message, setMessage] = useState<string | null>(null);
@@ -54,15 +33,11 @@ export function LeadForm({ mode, open, options, lead, onClose, onSubmit }: LeadF
       phone: lead?.phone ?? "",
       email: lead?.email ?? "",
       source_id: lead?.source_id ?? "none",
-      campaign_id: lead?.campaign_id ?? "none",
       procedure: lead?.procedure ?? "",
       stage_id: lead?.stage_id ?? "none",
-      status: lead?.status ?? "new",
       potential_value: lead?.potential_value ?? "",
       closed_value: lead?.closed_value ?? "",
       observations: lead?.observations ?? "",
-      next_action_at: dateTimeLocal(lead?.next_action_at),
-      next_action_note: lead?.next_action_note ?? "",
     }),
     [lead]
   );
@@ -92,7 +67,7 @@ export function LeadForm({ mode, open, options, lead, onClose, onSubmit }: LeadF
             event.preventDefault();
             setMessage(null);
             const formData = new FormData(event.currentTarget);
-            for (const key of ["source_id", "campaign_id", "stage_id"]) {
+            for (const key of ["source_id", "stage_id"]) {
               if (formData.get(key) === "none") formData.set(key, "");
             }
             startTransition(async () => {
@@ -117,15 +92,6 @@ export function LeadForm({ mode, open, options, lead, onClose, onSubmit }: LeadF
               ))}
             </SelectField>
 
-            <SelectField label="Campanha" name="campaign_id" defaultValue={defaults.campaign_id}>
-              <SelectItem value="none">Sem campanha</SelectItem>
-              {options.campaigns.map((campaign) => (
-                <SelectItem key={campaign.id} value={campaign.id}>
-                  {campaign.name}
-                </SelectItem>
-              ))}
-            </SelectField>
-
             <SelectField label="Etapa do funil" name="stage_id" defaultValue={defaults.stage_id}>
               <SelectItem value="none">Sem etapa</SelectItem>
               {options.stages.map((stage) => (
@@ -135,18 +101,8 @@ export function LeadForm({ mode, open, options, lead, onClose, onSubmit }: LeadF
               ))}
             </SelectField>
 
-            <SelectField label="Status" name="status" defaultValue={defaults.status}>
-              {STATUS_OPTIONS.map((status) => (
-                <SelectItem key={status.value} value={status.value}>
-                  {status.label}
-                </SelectItem>
-              ))}
-            </SelectField>
-
             <Field label="Valor potencial" name="potential_value" type="number" step="0.01" defaultValue={defaults.potential_value} />
             <Field label="Valor fechado" name="closed_value" type="number" step="0.01" defaultValue={defaults.closed_value} />
-            <Field label="Proxima acao" name="next_action_at" type="datetime-local" defaultValue={defaults.next_action_at} />
-            <Field label="Nota da proxima acao" name="next_action_note" defaultValue={defaults.next_action_note} />
           </div>
 
           <div className="space-y-1.5">
@@ -212,4 +168,3 @@ function SelectField({
     </div>
   );
 }
-

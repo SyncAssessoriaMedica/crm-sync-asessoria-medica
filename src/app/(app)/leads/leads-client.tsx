@@ -34,24 +34,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn, formatCurrency, formatDate, formatPhone, getInitials } from "@/lib/utils";
-import type { LeadStatus } from "@/lib/types";
 import type { LeadListItem, LeadOptionData } from "./types";
 import { createLeadAction, deleteLeadAction, updateLeadAction } from "./actions";
 import { LeadForm } from "./lead-form";
-
-const STATUS_CONFIG: Record<
-  LeadStatus,
-  { label: string; variant: "default" | "secondary" | "destructive" | "warning" | "green" }
-> = {
-  new: { label: "Novo", variant: "secondary" },
-  contacted: { label: "Contactado", variant: "default" },
-  qualified: { label: "Qualificado", variant: "green" },
-  scheduled: { label: "Agendado", variant: "default" },
-  attended: { label: "Compareceu", variant: "default" },
-  closed_won: { label: "Fechado", variant: "green" },
-  closed_lost: { label: "Perdido", variant: "destructive" },
-  no_show: { label: "Nao compareceu", variant: "warning" },
-};
 
 type LeadsClientProps = {
   leads: LeadListItem[];
@@ -61,10 +46,8 @@ type LeadsClientProps = {
 
 export function LeadsClient({ leads, options, organizationName }: LeadsClientProps) {
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
   const [stageFilter, setStageFilter] = useState("all");
   const [sourceFilter, setSourceFilter] = useState("all");
-  const [campaignFilter, setCampaignFilter] = useState("all");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [sortField, setSortField] = useState<keyof LeadListItem>("created_at");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
@@ -82,13 +65,11 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
         lead.phone.includes(normalizedSearch.replace(/\D/g, "")) ||
         (lead.email?.toLowerCase().includes(normalizedSearch) ?? false) ||
         (lead.procedure?.toLowerCase().includes(normalizedSearch) ?? false);
-      const matchesStatus = statusFilter === "all" || lead.status === statusFilter;
       const matchesStage = stageFilter === "all" || lead.stage_id === stageFilter;
       const matchesSource = sourceFilter === "all" || lead.source_id === sourceFilter;
-      const matchesCampaign = campaignFilter === "all" || lead.campaign_id === campaignFilter;
-      return matchesSearch && matchesStatus && matchesStage && matchesSource && matchesCampaign;
+      return matchesSearch && matchesStage && matchesSource;
     });
-  }, [campaignFilter, leads, search, sourceFilter, stageFilter, statusFilter]);
+  }, [leads, search, sourceFilter, stageFilter]);
 
   const sorted = useMemo(() => {
     return [...filtered].sort((a, b) => {
@@ -100,7 +81,7 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
     });
   }, [filtered, sortDir, sortField]);
 
-  const activeFilterCount = [statusFilter, stageFilter, sourceFilter, campaignFilter].filter(
+  const activeFilterCount = [stageFilter, sourceFilter].filter(
     (value) => value !== "all"
   ).length;
 
@@ -137,15 +118,12 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
       "Telefone",
       "Email",
       "Origem",
-      "Campanha",
       "Procedimento",
-      "Status",
       "Etapa",
       "Valor potencial",
       "Valor fechado",
       "Criado em",
       "Ultima interacao",
-      "Proxima acao",
     ];
     const csvRows = rows.map((lead) =>
       [
@@ -153,15 +131,12 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
         lead.phone,
         lead.email ?? "",
         lead.source?.name ?? "",
-        lead.campaign?.name ?? "",
         lead.procedure ?? "",
-        STATUS_CONFIG[lead.status].label,
         lead.stage?.name ?? "",
         lead.potential_value ?? "",
         lead.closed_value ?? "",
         lead.created_at,
         lead.last_interaction_at ?? "",
-        lead.next_action_at ?? "",
       ]
         .map((value) => `"${String(value).replace(/"/g, '""')}"`)
         .join(",")
@@ -220,15 +195,15 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
               onChange={(event) => setSearch(event.target.value)}
             />
           </div>
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <Select value={stageFilter} onValueChange={setStageFilter}>
             <SelectTrigger className="h-8 w-44 text-xs">
-              <SelectValue placeholder="Todos os status" />
+              <SelectValue placeholder="Todas as etapas" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">Todos os status</SelectItem>
-              {Object.entries(STATUS_CONFIG).map(([key, cfg]) => (
-                <SelectItem key={key} value={key}>
-                  {cfg.label}
+              <SelectItem value="all">Todas as etapas</SelectItem>
+              {options.stages.map((stage) => (
+                <SelectItem key={stage.id} value={stage.id}>
+                  {stage.name}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -246,15 +221,7 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
         </div>
 
         {showAdvanced && (
-          <div className="mt-4 grid gap-3 border-t border-border pt-4 md:grid-cols-3">
-            <FilterSelect label="Etapa" value={stageFilter} onValueChange={setStageFilter}>
-              <SelectItem value="all">Todas as etapas</SelectItem>
-              {options.stages.map((stage) => (
-                <SelectItem key={stage.id} value={stage.id}>
-                  {stage.name}
-                </SelectItem>
-              ))}
-            </FilterSelect>
+          <div className="mt-4 grid gap-3 border-t border-border pt-4 md:grid-cols-2">
             <FilterSelect label="Origem" value={sourceFilter} onValueChange={setSourceFilter}>
               <SelectItem value="all">Todas as origens</SelectItem>
               {options.sources.map((source) => (
@@ -263,24 +230,14 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
                 </SelectItem>
               ))}
             </FilterSelect>
-            <FilterSelect label="Campanha" value={campaignFilter} onValueChange={setCampaignFilter}>
-              <SelectItem value="all">Todas as campanhas</SelectItem>
-              {options.campaigns.map((campaign) => (
-                <SelectItem key={campaign.id} value={campaign.id}>
-                  {campaign.name}
-                </SelectItem>
-              ))}
-            </FilterSelect>
-            <div className="md:col-span-3">
+            <div className="flex items-end">
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => {
                   setSearch("");
-                  setStatusFilter("all");
                   setStageFilter("all");
                   setSourceFilter("all");
-                  setCampaignFilter("all");
                 }}
               >
                 Limpar filtros
@@ -306,7 +263,6 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
                   { label: "Telefone", field: null },
                   { label: "Procedimento", field: "procedure" as keyof LeadListItem },
                   { label: "Etapa", field: null },
-                  { label: "Status", field: "status" as keyof LeadListItem },
                   { label: "Origem", field: null },
                   { label: "Valor Pot.", field: "potential_value" as keyof LeadListItem },
                   { label: "Entrada", field: "created_at" as keyof LeadListItem },
@@ -329,9 +285,7 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {sorted.map((lead) => {
-                const status = STATUS_CONFIG[lead.status];
-                return (
+              {sorted.map((lead) => (
                   <tr key={lead.id} className="group transition-colors hover:bg-background-subtle/50">
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2.5">
@@ -348,9 +302,10 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
                     </td>
                     <td className="px-4 py-3 text-xs text-text-secondary">{formatPhone(lead.phone)}</td>
                     <td className="px-4 py-3 text-xs text-text-secondary">{lead.procedure ?? "-"}</td>
-                    <td className="px-4 py-3 text-xs text-text-secondary">{lead.stage?.name ?? "-"}</td>
                     <td className="px-4 py-3">
-                      <Badge variant={status.variant}>{status.label}</Badge>
+                      <Badge variant={lead.stage ? "green" : "secondary"}>
+                        {lead.stage?.name ?? "Sem etapa"}
+                      </Badge>
                     </td>
                     <td className="px-4 py-3 text-[11px] text-text-muted">{lead.source?.name ?? "-"}</td>
                     <td className="px-4 py-3 text-xs font-medium text-text-primary">
@@ -392,8 +347,7 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
                       </div>
                     </td>
                   </tr>
-                );
-              })}
+              ))}
             </tbody>
           </table>
         </div>

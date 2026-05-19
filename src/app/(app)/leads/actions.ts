@@ -8,31 +8,16 @@ import type { LeadStatus } from "@/lib/types";
 
 type ActionResult = { ok: true; message: string; id?: string } | { ok: false; message: string };
 
-const leadStatuses: LeadStatus[] = [
-  "new",
-  "contacted",
-  "qualified",
-  "scheduled",
-  "attended",
-  "closed_won",
-  "closed_lost",
-  "no_show",
-];
-
 const LeadSchema = z.object({
   name: z.string().trim().min(2, "Informe o nome do lead."),
   phone: z.string().trim().min(8, "Informe um telefone valido."),
   email: z.string().trim().email("Email invalido.").optional().or(z.literal("")),
   source_id: z.string().uuid().optional().or(z.literal("")),
-  campaign_id: z.string().uuid().optional().or(z.literal("")),
   procedure: z.string().trim().optional(),
   stage_id: z.string().uuid().optional().or(z.literal("")),
-  status: z.enum(leadStatuses as [LeadStatus, ...LeadStatus[]]),
   potential_value: z.coerce.number().nonnegative().optional().or(z.literal("")),
   closed_value: z.coerce.number().nonnegative().optional().or(z.literal("")),
   observations: z.string().trim().optional(),
-  next_action_at: z.string().optional(),
-  next_action_note: z.string().trim().optional(),
 });
 
 const NoteSchema = z.object({
@@ -88,8 +73,26 @@ function optionalNumber(value: unknown) {
 }
 
 function optionalDate(value: unknown) {
-  const str = optionalString(value);
-  return str ? new Date(str).toISOString() : null;
+  const str = typeof value === "string" ? value.trim() : "";
+  return str.length > 0 ? new Date(str).toISOString() : null;
+}
+
+function statusFromStageName(stageName?: string | null): LeadStatus {
+  const normalized = (stageName ?? "").toLowerCase();
+  if (normalized.includes("contact")) return "contacted";
+  if (normalized.includes("qualific")) return "qualified";
+  if (normalized.includes("agend")) return "scheduled";
+  if (normalized.includes("nao compareceu") || normalized.includes("não compareceu")) return "no_show";
+  if (normalized.includes("compareceu")) return "attended";
+  if (normalized.includes("fechado")) return "closed_won";
+  if (normalized.includes("perdido")) return "closed_lost";
+  return "new";
+}
+
+async function getStatusForStage(admin: ReturnType<typeof createAdminClient>, stageId: string | null): Promise<LeadStatus> {
+  if (!stageId) return "new";
+  const { data } = await admin.from("pipeline_stages").select("name").eq("id", stageId).maybeSingle();
+  return statusFromStageName(data?.name);
 }
 
 function formToLeadPayload(formData: FormData) {
@@ -98,15 +101,11 @@ function formToLeadPayload(formData: FormData) {
     phone: formData.get("phone"),
     email: formData.get("email"),
     source_id: formData.get("source_id"),
-    campaign_id: formData.get("campaign_id"),
     procedure: formData.get("procedure"),
     stage_id: formData.get("stage_id"),
-    status: formData.get("status") || "new",
     potential_value: formData.get("potential_value") ?? "",
     closed_value: formData.get("closed_value") ?? "",
     observations: formData.get("observations"),
-    next_action_at: formData.get("next_action_at"),
-    next_action_note: formData.get("next_action_note"),
   });
 
   if (!parsed.success) {
@@ -120,15 +119,11 @@ function formToLeadPayload(formData: FormData) {
       phone: data.phone.replace(/\D/g, ""),
       email: optionalString(data.email),
       source_id: optionalString(data.source_id),
-      campaign_id: optionalString(data.campaign_id),
       procedure: optionalString(data.procedure),
       stage_id: optionalString(data.stage_id),
-      status: data.status,
       potential_value: optionalNumber(data.potential_value),
       closed_value: optionalNumber(data.closed_value),
       observations: optionalString(data.observations),
-      next_action_at: optionalDate(data.next_action_at),
-      next_action_note: optionalString(data.next_action_note),
     },
   };
 }
@@ -138,10 +133,11 @@ export async function createLeadAction(formData: FormData): Promise<ActionResult
     const { admin, organizationId } = await getCurrentContext();
     const result = formToLeadPayload(formData);
     if ("error" in result) return { ok: false, message: result.error ?? "Dados invalidos." };
+    const status = await getStatusForStage(admin, result.payload.stage_id);
 
     const { data, error } = await admin
       .from("leads")
-      .insert({ ...result.payload, organization_id: organizationId })
+      .insert({ ...result.payload, status, organization_id: organizationId })
       .select("id")
       .single();
 
@@ -159,10 +155,11 @@ export async function updateLeadAction(leadId: string, formData: FormData): Prom
     const { admin, organizationId } = await getCurrentContext();
     const result = formToLeadPayload(formData);
     if ("error" in result) return { ok: false, message: result.error ?? "Dados invalidos." };
+    const status = await getStatusForStage(admin, result.payload.stage_id);
 
     const { error } = await admin
       .from("leads")
-      .update(result.payload)
+      .update({ ...result.payload, status })
       .eq("id", leadId)
       .eq("organization_id", organizationId);
 
@@ -284,9 +281,11 @@ export async function toggleTaskAction(taskId: string, leadId: string, completed
 export async function updateLeadStageAction(leadId: string, stageId: string): Promise<ActionResult> {
   try {
     const { admin, organizationId } = await getCurrentContext();
+    const nextStageId = stageId || null;
+    const status = await getStatusForStage(admin, nextStageId);
     const { error } = await admin
       .from("leads")
-      .update({ stage_id: stageId || null })
+      .update({ stage_id: nextStageId, status })
       .eq("id", leadId)
       .eq("organization_id", organizationId);
 

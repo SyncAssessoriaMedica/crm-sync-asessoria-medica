@@ -1,4 +1,4 @@
-import type { Campaign, LeadStatus, PipelineStage, LeadSource } from "@/lib/types";
+import type { LeadStatus, PipelineStage, LeadSource } from "@/lib/types";
 
 export type LeadListItem = {
   id: string;
@@ -8,8 +8,6 @@ export type LeadListItem = {
   email: string | null;
   source_id: string | null;
   source: LeadSource | null;
-  campaign_id: string | null;
-  campaign: Campaign | null;
   procedure: string | null;
   stage_id: string | null;
   stage: PipelineStage | null;
@@ -17,8 +15,6 @@ export type LeadListItem = {
   potential_value: number | null;
   closed_value: number | null;
   observations: string | null;
-  next_action_at: string | null;
-  next_action_note: string | null;
   last_interaction_at: string | null;
   created_at: string;
   updated_at: string;
@@ -26,7 +22,6 @@ export type LeadListItem = {
 
 export type LeadOptionData = {
   sources: LeadSource[];
-  campaigns: Campaign[];
   stages: PipelineStage[];
 };
 
@@ -51,4 +46,3 @@ export type LeadTaskItem = {
   completed_at: string | null;
   created_at: string;
 };
-

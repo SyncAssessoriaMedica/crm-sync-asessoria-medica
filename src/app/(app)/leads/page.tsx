@@ -35,14 +35,13 @@ export default async function LeadsPage() {
   const organizationId = membership.organization_id as string;
   const organization = membership.organizations as { name?: string } | null;
 
-  const [leadsResult, sourcesResult, campaignsResult, pipelinesResult] = await Promise.all([
+  const [leadsResult, sourcesResult, pipelinesResult] = await Promise.all([
     admin
       .from("leads")
       .select(
         `
         *,
         source:lead_sources(*),
-        campaign:campaigns(*),
         stage:pipeline_stages(*)
       `
       )
@@ -50,11 +49,6 @@ export default async function LeadsPage() {
       .order("created_at", { ascending: false }),
     admin
       .from("lead_sources")
-      .select("*")
-      .eq("organization_id", organizationId)
-      .order("name", { ascending: true }),
-    admin
-      .from("campaigns")
       .select("*")
       .eq("organization_id", organizationId)
       .order("name", { ascending: true }),
@@ -68,7 +62,6 @@ export default async function LeadsPage() {
 
   const options: LeadOptionData = {
     sources: (sourcesResult.data ?? []) as LeadOptionData["sources"],
-    campaigns: (campaignsResult.data ?? []) as LeadOptionData["campaigns"],
     stages: ((pipelinesResult.data?.pipeline_stages ?? []) as LeadOptionData["stages"]).sort(
       (a, b) => a.order - b.order
     ),
@@ -92,4 +85,3 @@ export default async function LeadsPage() {
     />
   );
 }
-

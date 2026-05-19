@@ -44,7 +44,7 @@ export default async function LeadDetailPage({
 
   const organizationId = membership.organization_id as string;
 
-  const [leadResult, notesResult, eventsResult, tasksResult, sourcesResult, campaignsResult, pipelinesResult] =
+  const [leadResult, notesResult, eventsResult, tasksResult, sourcesResult, pipelinesResult] =
     await Promise.all([
       admin
         .from("leads")
@@ -52,7 +52,6 @@ export default async function LeadDetailPage({
           `
           *,
           source:lead_sources(*),
-          campaign:campaigns(*),
           stage:pipeline_stages(*)
         `
         )
@@ -80,11 +79,6 @@ export default async function LeadDetailPage({
         .eq("organization_id", organizationId)
         .order("name", { ascending: true }),
       admin
-        .from("campaigns")
-        .select("*")
-        .eq("organization_id", organizationId)
-        .order("name", { ascending: true }),
-      admin
         .from("pipelines")
         .select("id, pipeline_stages(*)")
         .eq("organization_id", organizationId)
@@ -106,7 +100,6 @@ export default async function LeadDetailPage({
 
   const options: LeadOptionData = {
     sources: (sourcesResult.data ?? []) as LeadOptionData["sources"],
-    campaigns: (campaignsResult.data ?? []) as LeadOptionData["campaigns"],
     stages: ((pipelinesResult.data?.pipeline_stages ?? []) as LeadOptionData["stages"]).sort(
       (a, b) => a.order - b.order
     ),
