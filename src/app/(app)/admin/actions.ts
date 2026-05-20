@@ -221,6 +221,40 @@ export async function updatePipelineStageAction(formData: FormData): Promise<Act
   }
 }
 
+export async function movePipelineStageAction(stageId: string, direction: "up" | "down"): Promise<ActionResult> {
+  try {
+    const { admin, organizationId } = await getContext();
+    const pipelineId = await getOrCreateDefaultPipeline(admin, organizationId);
+    const { data: stages, error } = await admin
+      .from("pipeline_stages")
+      .select("id, order")
+      .eq("pipeline_id", pipelineId)
+      .order("order", { ascending: true });
+
+    if (error) return { ok: false, message: error.message };
+    const index = (stages ?? []).findIndex((stage) => stage.id === stageId);
+    const swapIndex = direction === "up" ? index - 1 : index + 1;
+    if (index < 0 || swapIndex < 0 || swapIndex >= (stages ?? []).length) {
+      return { ok: false, message: "Nao ha etapa para trocar de posicao." };
+    }
+
+    const current = stages![index];
+    const target = stages![swapIndex];
+    const first = admin.from("pipeline_stages").update({ order: target.order }).eq("id", current.id);
+    const second = admin.from("pipeline_stages").update({ order: current.order }).eq("id", target.id);
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    const swapError = firstResult.error ?? secondResult.error;
+    if (swapError) return { ok: false, message: swapError.message };
+
+    revalidatePath("/admin");
+    revalidatePath("/leads");
+    revalidatePath("/dashboard");
+    return { ok: true, message: "Ordem atualizada." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao reordenar etapa." };
+  }
+}
+
 export async function deletePipelineStageAction(stageId: string): Promise<ActionResult> {
   try {
     const { admin, organizationId } = await getContext();
@@ -324,35 +358,106 @@ export async function connectWhatsappInstanceAction(instanceName: string): Promi
   }
 }
 
-export async function sendWebhookAction(formData: FormData): Promise<ActionResult> {
+export async function createInboundWebhookAction(formData: FormData): Promise<ActionResult> {
   try {
     const { admin, organizationId } = await getContext();
-    const url = asText(formData.get("url"));
-    const eventType = asText(formData.get("event_type")) || "manual";
-    const rawPayload = asText(formData.get("payload"));
-    if (!url.startsWith("https://")) return { ok: false, message: "Use uma URL HTTPS." };
-    let payload: unknown;
-    try {
-      payload = rawPayload ? JSON.parse(rawPayload) : {};
-    } catch {
-      return { ok: false, message: "Payload precisa ser JSON valido." };
-    }
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-sync-event": eventType },
-      body: JSON.stringify(payload),
-    });
+    const name = asText(formData.get("name")) || "Nova integracao";
+    const token = crypto.randomUUID().replace(/-/g, "");
     await admin.from("webhook_events").insert({
       organization_id: organizationId,
-      source: "outbound_admin",
-      event_type: eventType,
-      payload: { url, payload, status: response.status },
-      processed: response.ok,
-      error: response.ok ? null : await response.text().catch(() => "Erro ao enviar webhook"),
+      source: "inbound_webhook_config",
+      event_type: "config.created",
+      payload: {
+        token,
+        name,
+        active: true,
+        mappings: {
+          name: "",
+          phone: "",
+          email: "",
+          source: "",
+          procedure: "",
+          potential_value: "",
+          custom: {},
+        },
+      },
+      processed: true,
     });
     revalidatePath("/admin");
-    return { ok: response.ok, message: response.ok ? "Webhook enviado." : `Falha no webhook: ${response.status}` };
+    return { ok: true, message: "Webhook criado. Copie a URL e envie um teste pela ferramenta externa." };
   } catch (error) {
-    return { ok: false, message: error instanceof Error ? error.message : "Erro ao enviar webhook." };
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao criar webhook." };
+  }
+}
+
+export async function updateInboundWebhookAction(formData: FormData): Promise<ActionResult> {
+  try {
+    const { admin, organizationId } = await getContext();
+    const token = asText(formData.get("token"));
+    const name = asText(formData.get("name")) || "Webhook";
+    if (!token) return { ok: false, message: "Webhook nao encontrado." };
+
+    let custom: Record<string, string> = {};
+    const rawCustom = asText(formData.get("custom_mappings"));
+    if (rawCustom) {
+      try {
+        custom = JSON.parse(rawCustom) as Record<string, string>;
+      } catch {
+        return { ok: false, message: "Campos customizados precisam estar em JSON valido." };
+      }
+    }
+
+    await admin.from("webhook_events").insert({
+      organization_id: organizationId,
+      source: "inbound_webhook_config",
+      event_type: "config.updated",
+      payload: {
+        token,
+        name,
+        active: formData.get("active") !== "off",
+        mappings: {
+          name: asText(formData.get("name_path")),
+          phone: asText(formData.get("phone_path")),
+          email: asText(formData.get("email_path")),
+          source: asText(formData.get("source_path")),
+          procedure: asText(formData.get("procedure_path")),
+          potential_value: asText(formData.get("potential_value_path")),
+          custom,
+        },
+      },
+      processed: true,
+    });
+    revalidatePath("/admin");
+    return { ok: true, message: "Mapeamento salvo." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao salvar webhook." };
+  }
+}
+
+export async function deactivateInboundWebhookAction(token: string): Promise<ActionResult> {
+  try {
+    const { admin, organizationId } = await getContext();
+    const { data: config } = await admin
+      .from("webhook_events")
+      .select("payload")
+      .eq("organization_id", organizationId)
+      .eq("source", "inbound_webhook_config")
+      .filter("payload->>token", "eq", token)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const payload = (config?.payload ?? {}) as Record<string, unknown>;
+    await admin.from("webhook_events").insert({
+      organization_id: organizationId,
+      source: "inbound_webhook_config",
+      event_type: "config.disabled",
+      payload: { ...payload, token, active: false },
+      processed: true,
+    });
+    revalidatePath("/admin");
+    return { ok: true, message: "Webhook desativado." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao desativar webhook." };
   }
 }

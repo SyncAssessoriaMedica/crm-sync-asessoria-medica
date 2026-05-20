@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { headers } from "next/headers";
 import { createAdminClient, createClient } from "@/lib/supabase/server";
 import { AdminClient, type AdminData } from "./admin-client";
 
@@ -35,6 +36,9 @@ export default async function AdminPage() {
   }
 
   const organizationId = membership.organization_id as string;
+  const headersList = await headers();
+  const host = headersList.get("x-forwarded-host") ?? headersList.get("host") ?? "localhost:3000";
+  const protocol = host.includes("localhost") ? "http" : "https";
   const userRole = (profile?.role ?? membership.role) as string;
   const isSyncAdmin = userRole === "super_admin" || userRole === "gestor_sync";
   const canManage = isSyncAdmin || membership.role === "admin_clinica";
@@ -56,7 +60,8 @@ export default async function AdminPage() {
     organizationsResult,
     usersResult,
     whatsappResult,
-    webhookResult,
+    webhookConfigResult,
+    webhookDeliveryResult,
     customFieldsResult,
     stagesResult,
     tagsResult,
@@ -68,7 +73,8 @@ export default async function AdminPage() {
       .select("id, role, organization_id, organizations(id, name), profiles(id, email, full_name, role)")
       .order("created_at", { ascending: false }),
     admin.from("whatsapp_instances").select("id, instance_name, phone_number, status, created_at").eq("organization_id", organizationId).order("created_at", { ascending: false }),
-    admin.from("webhook_events").select("id, source, event_type, processed, error, created_at").eq("organization_id", organizationId).order("created_at", { ascending: false }).limit(8),
+    admin.from("webhook_events").select("id, source, event_type, payload, processed, error, created_at").eq("organization_id", organizationId).eq("source", "inbound_webhook_config").order("created_at", { ascending: false }).limit(50),
+    admin.from("webhook_events").select("id, source, event_type, payload, processed, error, created_at").eq("organization_id", organizationId).eq("source", "inbound_webhook_incoming").order("created_at", { ascending: false }).limit(10),
     admin.from("custom_fields").select("id, name, key, field_type, options, required, order, created_at").eq("organization_id", organizationId).order("order", { ascending: true }).order("created_at", { ascending: true }),
     admin
       .from("pipelines")
@@ -82,9 +88,28 @@ export default async function AdminPage() {
 
   const rawUsers = usersResult.data ?? [];
   const scopedUsers = orgFilter ? rawUsers.filter((item) => item.organization_id === orgFilter) : rawUsers;
+  const webhookConfigsByToken = new Map<string, AdminData["webhookConfigs"][number]>();
+  for (const event of webhookConfigResult.data ?? []) {
+    const payload = event.payload as {
+      token?: string;
+      name?: string;
+      active?: boolean;
+      mappings?: AdminData["webhookConfigs"][number]["mappings"];
+    };
+    if (!payload.token || webhookConfigsByToken.has(payload.token)) continue;
+    webhookConfigsByToken.set(payload.token, {
+      id: event.id,
+      token: payload.token,
+      name: payload.name ?? "Webhook",
+      active: payload.active !== false,
+      mappings: payload.mappings ?? {},
+      created_at: event.created_at,
+    });
+  }
 
   const data: AdminData = {
     isSyncAdmin,
+    baseUrl: `${protocol}://${host}`,
     organizationName: ((membership.organizations as { name?: string } | null)?.name ?? "Sync Marketing"),
     organizations: organizationsResult.data ?? [],
     users: scopedUsers.map((item) => ({
@@ -95,7 +120,8 @@ export default async function AdminPage() {
       profile: Array.isArray(item.profiles) ? item.profiles[0] ?? null : item.profiles,
     })),
     whatsappInstances: whatsappResult.data ?? [],
-    webhookEvents: webhookResult.data ?? [],
+    webhookConfigs: Array.from(webhookConfigsByToken.values()),
+    webhookDeliveries: webhookDeliveryResult.data ?? [],
     customFields: customFieldsResult.data ?? [],
     pipelineStages: ((stagesResult.data?.pipeline_stages ?? []) as AdminData["pipelineStages"]).sort((a, b) => a.order - b.order),
     tags: tagsResult.data ?? [],
