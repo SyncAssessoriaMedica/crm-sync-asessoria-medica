@@ -80,6 +80,14 @@ export function DailyLeadsChart({ data }: { data: DailyLeadsData[] }) {
 }
 
 export function LeadsBySourceChart({ data }: { data: LeadsBySource[] }) {
+  if (data.length === 0) {
+    return (
+      <div className="flex h-[170px] items-center justify-center rounded-lg border border-dashed border-border bg-background-subtle text-xs text-text-muted">
+        Sem dados de origem
+      </div>
+    );
+  }
+
   return (
     <ResponsiveContainer width="100%" height={170}>
       <PieChart>
@@ -112,6 +120,14 @@ export function LeadsBySourceChart({ data }: { data: LeadsBySource[] }) {
 }
 
 export function ConversionFunnelChart({ data }: { data: ConversionFunnelItem[] }) {
+  if (data.length === 0) {
+    return (
+      <div className="flex h-[180px] items-center justify-center rounded-lg border border-dashed border-border bg-background-subtle text-xs text-text-muted">
+        Configure etapas do funil para acompanhar conversao
+      </div>
+    );
+  }
+
   return (
     <ResponsiveContainer width="100%" height={180}>
       <BarChart data={data} layout="vertical" margin={{ left: 0, right: 40 }}>
