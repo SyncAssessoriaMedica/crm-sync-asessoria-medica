@@ -58,6 +58,7 @@ export default async function AdminPage() {
     whatsappResult,
     webhookResult,
     customFieldsResult,
+    stagesResult,
     tagsResult,
     sourcesResult,
   ] = await Promise.all([
@@ -69,6 +70,12 @@ export default async function AdminPage() {
     admin.from("whatsapp_instances").select("id, instance_name, phone_number, status, created_at").eq("organization_id", organizationId).order("created_at", { ascending: false }),
     admin.from("webhook_events").select("id, source, event_type, processed, error, created_at").eq("organization_id", organizationId).order("created_at", { ascending: false }).limit(8),
     admin.from("custom_fields").select("id, name, key, field_type, options, required, order, created_at").eq("organization_id", organizationId).order("order", { ascending: true }).order("created_at", { ascending: true }),
+    admin
+      .from("pipelines")
+      .select("id, pipeline_stages(id, pipeline_id, name, order, color)")
+      .eq("organization_id", organizationId)
+      .eq("is_default", true)
+      .maybeSingle(),
     admin.from("tags").select("id, name, color, created_at").eq("organization_id", organizationId).order("name", { ascending: true }),
     admin.from("lead_sources").select("id, name, color, created_at").eq("organization_id", organizationId).order("name", { ascending: true }),
   ]);
@@ -90,6 +97,7 @@ export default async function AdminPage() {
     whatsappInstances: whatsappResult.data ?? [],
     webhookEvents: webhookResult.data ?? [],
     customFields: customFieldsResult.data ?? [],
+    pipelineStages: ((stagesResult.data?.pipeline_stages ?? []) as AdminData["pipelineStages"]).sort((a, b) => a.order - b.order),
     tags: tagsResult.data ?? [],
     sources: sourcesResult.data ?? [],
   };

@@ -47,6 +47,27 @@ function asText(value: FormDataEntryValue | null) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+async function getOrCreateDefaultPipeline(admin: ReturnType<typeof createAdminClient>, organizationId: string) {
+  const { data: existing, error } = await admin
+    .from("pipelines")
+    .select("id")
+    .eq("organization_id", organizationId)
+    .eq("is_default", true)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (existing?.id) return existing.id as string;
+
+  const { data, error: insertError } = await admin
+    .from("pipelines")
+    .insert({ organization_id: organizationId, name: "Funil principal", is_default: true })
+    .select("id")
+    .single();
+
+  if (insertError) throw insertError;
+  return data.id as string;
+}
+
 export async function createOrganizationAction(formData: FormData): Promise<ActionResult> {
   try {
     const { admin, isSyncAdmin } = await getContext();
@@ -135,6 +156,88 @@ export async function createTagAction(formData: FormData): Promise<ActionResult>
     return { ok: true, message: "Tag criada." };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "Erro ao criar tag." };
+  }
+}
+
+export async function createPipelineStageAction(formData: FormData): Promise<ActionResult> {
+  try {
+    const { admin, organizationId } = await getContext();
+    const name = asText(formData.get("name"));
+    const color = asText(formData.get("color")) || "#22c55e";
+    const orderValue = Number(formData.get("order") ?? 0);
+    if (name.length < 2) return { ok: false, message: "Informe o nome da etapa." };
+
+    const pipelineId = await getOrCreateDefaultPipeline(admin, organizationId);
+    const { data: lastStage } = await admin
+      .from("pipeline_stages")
+      .select("order")
+      .eq("pipeline_id", pipelineId)
+      .order("order", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const stageOrder = Number.isFinite(orderValue) && orderValue > 0 ? orderValue : Number(lastStage?.order ?? 0) + 1;
+    const { error } = await admin.from("pipeline_stages").insert({
+      pipeline_id: pipelineId,
+      name,
+      color,
+      order: stageOrder,
+    });
+
+    if (error) return { ok: false, message: error.message };
+    revalidatePath("/admin");
+    revalidatePath("/leads");
+    revalidatePath("/dashboard");
+    return { ok: true, message: "Etapa criada." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao criar etapa." };
+  }
+}
+
+export async function updatePipelineStageAction(formData: FormData): Promise<ActionResult> {
+  try {
+    const { admin, organizationId } = await getContext();
+    const id = asText(formData.get("id"));
+    const name = asText(formData.get("name"));
+    const color = asText(formData.get("color")) || "#22c55e";
+    const order = Number(formData.get("order") ?? 0);
+    if (!id) return { ok: false, message: "Etapa nao encontrada." };
+    if (name.length < 2) return { ok: false, message: "Informe o nome da etapa." };
+
+    const pipelineId = await getOrCreateDefaultPipeline(admin, organizationId);
+    const { error } = await admin
+      .from("pipeline_stages")
+      .update({ name, color, order: Number.isFinite(order) && order > 0 ? order : 1 })
+      .eq("id", id)
+      .eq("pipeline_id", pipelineId);
+
+    if (error) return { ok: false, message: error.message };
+    revalidatePath("/admin");
+    revalidatePath("/leads");
+    revalidatePath("/dashboard");
+    return { ok: true, message: "Etapa atualizada." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao atualizar etapa." };
+  }
+}
+
+export async function deletePipelineStageAction(stageId: string): Promise<ActionResult> {
+  try {
+    const { admin, organizationId } = await getContext();
+    const pipelineId = await getOrCreateDefaultPipeline(admin, organizationId);
+    const { error } = await admin
+      .from("pipeline_stages")
+      .delete()
+      .eq("id", stageId)
+      .eq("pipeline_id", pipelineId);
+
+    if (error) return { ok: false, message: error.message };
+    revalidatePath("/admin");
+    revalidatePath("/leads");
+    revalidatePath("/dashboard");
+    return { ok: true, message: "Etapa removida." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao remover etapa." };
   }
 }
 

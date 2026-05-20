@@ -5,6 +5,7 @@ import {
   Building2,
   CheckCircle2,
   Globe,
+  Layers,
   QrCode,
   Send,
   Settings2,
@@ -31,11 +32,14 @@ import {
   connectWhatsappInstanceAction,
   createCustomFieldAction,
   createOrganizationAction,
+  createPipelineStageAction,
   createSourceAction,
   createTagAction,
   createUserAction,
   createWhatsappInstanceAction,
+  deletePipelineStageAction,
   sendWebhookAction,
+  updatePipelineStageAction,
 } from "./actions";
 
 type Organization = {
@@ -82,6 +86,14 @@ type CustomField = {
   created_at: string;
 };
 
+type PipelineStageRow = {
+  id: string;
+  pipeline_id: string;
+  name: string;
+  order: number;
+  color: string | null;
+};
+
 type TagRow = {
   id: string;
   name: string;
@@ -104,6 +116,7 @@ export type AdminData = {
   whatsappInstances: WhatsappInstance[];
   webhookEvents: WebhookEvent[];
   customFields: CustomField[];
+  pipelineStages: PipelineStageRow[];
   tags: TagRow[];
   sources: SourceRow[];
 };
@@ -141,6 +154,7 @@ export function AdminClient({ data }: { data: AdminData }) {
       { id: "whatsapp", label: "Numeros WhatsApp", icon: Smartphone, count: data.whatsappInstances.length },
       { id: "webhooks", label: "Webhooks", icon: Webhook, count: data.webhookEvents.length },
       { id: "custom_fields", label: "Campos customizados", icon: Settings2, count: data.customFields.length },
+      { id: "stages", label: "Etapas do funil", icon: Layers, count: data.pipelineStages.length },
       { id: "tags", label: "Tags", icon: Tag, count: data.tags.length },
       { id: "sources", label: "Origens", icon: Globe, count: data.sources.length },
     ],
@@ -363,6 +377,54 @@ export function AdminClient({ data }: { data: AdminData }) {
                   field.required ? "Sim" : "Nao",
                 ])}
               />
+            </Section>
+          )}
+
+          {activeSection === "stages" && (
+            <Section title="Etapas do funil" description="Defina as etapas que aparecem nos leads, no dashboard e na troca de status do funil.">
+              <form action={runAction(createPipelineStageAction)} className="grid gap-3 rounded-xl border border-border bg-background-subtle/50 p-4 md:grid-cols-[1fr_110px_120px_auto]">
+                <Field label="Nome da etapa" name="name" placeholder="Novo contato" required />
+                <Field label="Ordem" name="order" type="number" min="1" placeholder="Auto" />
+                <Field label="Cor" name="color" type="color" defaultValue="#22c55e" />
+                <Button className="self-end" disabled={isPending}>Criar</Button>
+              </form>
+
+              {data.pipelineStages.length === 0 ? (
+                <p className="rounded-xl border border-border bg-white p-6 text-center text-xs text-text-muted">
+                  Nenhuma etapa cadastrada.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {data.pipelineStages.map((stage) => (
+                    <form
+                      key={stage.id}
+                      action={runAction(updatePipelineStageAction)}
+                      className="grid gap-3 rounded-xl border border-border bg-white p-3 md:grid-cols-[1fr_100px_110px_auto_auto]"
+                    >
+                      <input type="hidden" name="id" value={stage.id} />
+                      <Field label="Etapa" name="name" defaultValue={stage.name} required />
+                      <Field label="Ordem" name="order" type="number" min="1" defaultValue={stage.order} required />
+                      <Field label="Cor" name="color" type="color" defaultValue={stage.color ?? "#22c55e"} />
+                      <Button variant="secondary" className="self-end" disabled={isPending}>Salvar</Button>
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        className="self-end"
+                        disabled={isPending}
+                        onClick={() => {
+                          if (!confirm(`Remover a etapa ${stage.name}? Leads nesta etapa ficarao sem etapa.`)) return;
+                          startTransition(async () => {
+                            const result = await deletePipelineStageAction(stage.id);
+                            setMessage(result.message);
+                          });
+                        }}
+                      >
+                        Apagar
+                      </Button>
+                    </form>
+                  ))}
+                </div>
+              )}
             </Section>
           )}
 
