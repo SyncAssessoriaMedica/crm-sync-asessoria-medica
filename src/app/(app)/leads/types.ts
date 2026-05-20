@@ -23,6 +23,26 @@ export type LeadListItem = {
 export type LeadOptionData = {
   sources: LeadSource[];
   stages: PipelineStage[];
+  customFields: CustomFieldItem[];
+};
+
+export type CustomFieldItem = {
+  id: string;
+  organization_id: string;
+  name: string;
+  key: string;
+  field_type: "text" | "number" | "date" | "select" | "multiselect" | "boolean" | "url";
+  options: string[] | null;
+  required: boolean;
+  order: number;
+  created_at: string;
+};
+
+export type CustomFieldValueItem = {
+  id: string;
+  lead_id: string;
+  field_id: string;
+  value: string | null;
 };
 
 export type LeadNoteItem = {

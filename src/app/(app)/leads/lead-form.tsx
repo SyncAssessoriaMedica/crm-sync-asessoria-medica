@@ -19,11 +19,12 @@ type LeadFormProps = {
   open: boolean;
   options: LeadOptionData;
   lead?: LeadListItem;
+  customValues?: Record<string, string>;
   onClose: () => void;
   onSubmit: (formData: FormData) => Promise<{ ok: boolean; message: string }>;
 };
 
-export function LeadForm({ mode, open, options, lead, onClose, onSubmit }: LeadFormProps) {
+export function LeadForm({ mode, open, options, lead, customValues = {}, onClose, onSubmit }: LeadFormProps) {
   const [message, setMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
@@ -115,6 +116,26 @@ export function LeadForm({ mode, open, options, lead, onClose, onSubmit }: LeadF
             />
           </div>
 
+          {options.customFields.length > 0 && (
+            <div className="space-y-3 rounded-xl border border-border bg-background-subtle/40 p-4">
+              <div>
+                <p className="label-eyebrow text-text-muted">Campos personalizados</p>
+                <p className="mt-1 text-xs text-text-secondary">
+                  Informacoes criadas no administrador para enriquecer a ficha do lead.
+                </p>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                {options.customFields.map((field) => (
+                  <CustomFieldInput
+                    key={field.id}
+                    field={field}
+                    defaultValue={customValues[field.id] ?? ""}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
           {message && <p className="text-xs font-medium text-text-secondary">{message}</p>}
 
           <div className="flex justify-end gap-2 border-t border-border pt-4">
@@ -128,6 +149,54 @@ export function LeadForm({ mode, open, options, lead, onClose, onSubmit }: LeadF
         </form>
       </div>
     </div>
+  );
+}
+
+function CustomFieldInput({
+  field,
+  defaultValue,
+}: {
+  field: LeadOptionData["customFields"][number];
+  defaultValue: string;
+}) {
+  const name = `custom_${field.key}`;
+  if (field.field_type === "select") {
+    return (
+      <SelectField label={field.name} name={name} defaultValue={defaultValue || "none"}>
+        <SelectItem value="none">Sem valor</SelectItem>
+        {(field.options ?? []).map((option) => (
+          <SelectItem key={option} value={option}>
+            {option}
+          </SelectItem>
+        ))}
+      </SelectField>
+    );
+  }
+
+  if (field.field_type === "boolean") {
+    return (
+      <label className="flex h-10 items-center gap-2 rounded-lg border border-border bg-white px-3 text-sm text-text-secondary">
+        <input
+          type="checkbox"
+          name={name}
+          defaultChecked={defaultValue === "true"}
+          className="h-4 w-4 accent-brand-green"
+        />
+        {field.name}
+      </label>
+    );
+  }
+
+  const type = field.field_type === "number" ? "number" : field.field_type === "date" ? "date" : field.field_type === "url" ? "url" : "text";
+  return (
+    <Field
+      label={field.name}
+      name={name}
+      type={type}
+      defaultValue={defaultValue}
+      required={field.required}
+      placeholder={field.field_type === "multiselect" ? "Separe valores por virgula" : undefined}
+    />
   );
 }
 

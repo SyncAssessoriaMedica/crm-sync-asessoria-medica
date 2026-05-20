@@ -95,6 +95,40 @@ async function getStatusForStage(admin: ReturnType<typeof createAdminClient>, st
   return statusFromStageName(data?.name);
 }
 
+async function saveCustomFieldValues(
+  admin: ReturnType<typeof createAdminClient>,
+  organizationId: string,
+  leadId: string,
+  formData: FormData
+) {
+  const { data: fields, error } = await admin
+    .from("custom_fields")
+    .select("id, key, field_type")
+    .eq("organization_id", organizationId);
+
+  if (error || !fields?.length) return;
+
+  const values = fields.map((field) => {
+    const rawValue = formData.get(`custom_${field.key}`);
+    const value =
+      field.field_type === "boolean"
+        ? rawValue === "on"
+          ? "true"
+          : "false"
+        : typeof rawValue === "string" && rawValue !== "none"
+          ? rawValue.trim()
+          : "";
+
+    return {
+      lead_id: leadId,
+      field_id: field.id,
+      value: value || null,
+    };
+  });
+
+  await admin.from("custom_field_values").upsert(values, { onConflict: "lead_id,field_id" });
+}
+
 function formToLeadPayload(formData: FormData) {
   const parsed = LeadSchema.safeParse({
     name: formData.get("name"),
@@ -143,6 +177,8 @@ export async function createLeadAction(formData: FormData): Promise<ActionResult
 
     if (error) return { ok: false, message: error.message };
 
+    await saveCustomFieldValues(admin, organizationId, data.id as string, formData);
+
     revalidatePath("/leads");
     return { ok: true, message: "Lead criado com sucesso.", id: data.id as string };
   } catch (error) {
@@ -164,6 +200,8 @@ export async function updateLeadAction(leadId: string, formData: FormData): Prom
       .eq("organization_id", organizationId);
 
     if (error) return { ok: false, message: error.message };
+
+    await saveCustomFieldValues(admin, organizationId, leadId, formData);
 
     revalidatePath("/leads");
     revalidatePath(`/leads/${leadId}`);

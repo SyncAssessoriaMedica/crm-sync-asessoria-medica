@@ -35,7 +35,7 @@ export default async function LeadsPage() {
   const organizationId = membership.organization_id as string;
   const organization = membership.organizations as { name?: string } | null;
 
-  const [leadsResult, sourcesResult, pipelinesResult] = await Promise.all([
+  const [leadsResult, sourcesResult, pipelinesResult, customFieldsResult] = await Promise.all([
     admin
       .from("leads")
       .select(
@@ -58,6 +58,12 @@ export default async function LeadsPage() {
       .eq("organization_id", organizationId)
       .eq("is_default", true)
       .maybeSingle(),
+    admin
+      .from("custom_fields")
+      .select("*")
+      .eq("organization_id", organizationId)
+      .order("order", { ascending: true })
+      .order("created_at", { ascending: true }),
   ]);
 
   const options: LeadOptionData = {
@@ -65,6 +71,7 @@ export default async function LeadsPage() {
     stages: ((pipelinesResult.data?.pipeline_stages ?? []) as LeadOptionData["stages"]).sort(
       (a, b) => a.order - b.order
     ),
+    customFields: (customFieldsResult.data ?? []) as LeadOptionData["customFields"],
   };
 
   if (leadsResult.error) {

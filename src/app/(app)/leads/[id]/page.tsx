@@ -3,7 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { createAdminClient, createClient } from "@/lib/supabase/server";
 import { LeadDetailClient } from "./lead-detail-client";
-import type { LeadEventItem, LeadListItem, LeadNoteItem, LeadOptionData, LeadTaskItem } from "../types";
+import type { CustomFieldValueItem, LeadEventItem, LeadListItem, LeadNoteItem, LeadOptionData, LeadTaskItem } from "../types";
 
 export default async function LeadDetailPage({
   params,
@@ -44,7 +44,7 @@ export default async function LeadDetailPage({
 
   const organizationId = membership.organization_id as string;
 
-  const [leadResult, notesResult, eventsResult, tasksResult, sourcesResult, pipelinesResult] =
+  const [leadResult, notesResult, eventsResult, tasksResult, sourcesResult, pipelinesResult, customFieldsResult, customValuesResult] =
     await Promise.all([
       admin
         .from("leads")
@@ -84,6 +84,16 @@ export default async function LeadDetailPage({
         .eq("organization_id", organizationId)
         .eq("is_default", true)
         .maybeSingle(),
+      admin
+        .from("custom_fields")
+        .select("*")
+        .eq("organization_id", organizationId)
+        .order("order", { ascending: true })
+        .order("created_at", { ascending: true }),
+      admin
+        .from("custom_field_values")
+        .select("id, lead_id, field_id, value")
+        .eq("lead_id", id),
     ]);
 
   if (leadResult.error) {
@@ -103,7 +113,12 @@ export default async function LeadDetailPage({
     stages: ((pipelinesResult.data?.pipeline_stages ?? []) as LeadOptionData["stages"]).sort(
       (a, b) => a.order - b.order
     ),
+    customFields: (customFieldsResult.data ?? []) as LeadOptionData["customFields"],
   };
+
+  const customValues = Object.fromEntries(
+    ((customValuesResult.data ?? []) as CustomFieldValueItem[]).map((item) => [item.field_id, item.value ?? ""])
+  );
 
   return (
     <LeadDetailClient
@@ -115,6 +130,7 @@ export default async function LeadDetailPage({
       })) as LeadNoteItem[]}
       events={(eventsResult.data ?? []) as LeadEventItem[]}
       tasks={(tasksResult.data ?? []) as LeadTaskItem[]}
+      customValues={customValues}
     />
   );
 }

@@ -70,9 +70,10 @@ type LeadDetailClientProps = {
   notes: LeadNoteItem[];
   events: LeadEventItem[];
   tasks: LeadTaskItem[];
+  customValues: Record<string, string>;
 };
 
-export function LeadDetailClient({ lead, options, notes, events, tasks }: LeadDetailClientProps) {
+export function LeadDetailClient({ lead, options, notes, events, tasks, customValues }: LeadDetailClientProps) {
   const [editOpen, setEditOpen] = useState(false);
   const [noteContent, setNoteContent] = useState("");
   const [taskTitle, setTaskTitle] = useState("");
@@ -258,6 +259,16 @@ export function LeadDetailClient({ lead, options, notes, events, tasks }: LeadDe
                 <Meta label="Valor Pot." value={lead.potential_value ? formatCurrency(lead.potential_value) : undefined} strong />
                 <Meta label="Valor Fechado" value={lead.closed_value ? formatCurrency(lead.closed_value) : undefined} strong />
               </div>
+              {options.customFields.length > 0 && (
+                <>
+                  <Separator />
+                  <div className="grid grid-cols-2 gap-3">
+                    {options.customFields.map((field) => (
+                      <Meta key={field.id} label={field.name} value={formatCustomValue(customValues[field.id])} />
+                    ))}
+                  </div>
+                </>
+              )}
               <Separator />
               <Meta label="Entrada" value={formatDate(lead.created_at)} />
               {lead.last_interaction_at && <Meta label="Ultima Interacao" value={formatDate(lead.last_interaction_at)} />}
@@ -422,11 +433,19 @@ export function LeadDetailClient({ lead, options, notes, events, tasks }: LeadDe
         open={editOpen}
         options={options}
         lead={lead}
+        customValues={customValues}
         onClose={() => setEditOpen(false)}
         onSubmit={(formData) => updateLeadAction(lead.id, formData)}
       />
     </div>
   );
+}
+
+function formatCustomValue(value?: string) {
+  if (!value) return undefined;
+  if (value === "true") return "Sim";
+  if (value === "false") return "Nao";
+  return value;
 }
 
 function Meta({ label, value, strong }: { label: string; value?: string; strong?: boolean }) {
