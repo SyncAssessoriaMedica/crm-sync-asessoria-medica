@@ -18,7 +18,14 @@ import { formatCurrency, formatNumber, formatPercent } from "@/lib/utils";
 import type { ConversionFunnelItem, DailyLeadsData, LeadStatus, LeadsBySource } from "@/lib/types";
 
 const PIE_COLORS = ["#22c55e", "#16a34a", "#46e27f", "#0f4f2a", "#8a948d"];
-const RANGE_DAYS = 30;
+const PERIOD_LABELS = {
+  today: "hoje",
+  "7d": "ultimos 7 dias",
+  "30d": "ultimos 30 dias",
+  month: "este mes",
+} as const;
+
+type DashboardPeriod = keyof typeof PERIOD_LABELS;
 
 type DashboardLead = {
   id: string;
@@ -45,8 +52,8 @@ function startOfDay(date: Date) {
   return next;
 }
 
-function daysAgo(days: number) {
-  const date = new Date();
+function daysAgo(days: number, base = new Date()) {
+  const date = new Date(base);
   date.setDate(date.getDate() - days);
   return date;
 }
@@ -75,6 +82,36 @@ function isScheduledStatus(status: LeadStatus) {
 
 function isAttendanceBase(status: LeadStatus) {
   return ["attended", "closed_won", "closed_lost", "no_show"].includes(status);
+}
+
+function getPeriod(value?: string): DashboardPeriod {
+  if (value === "today" || value === "7d" || value === "30d" || value === "month") return value;
+  return "30d";
+}
+
+function getPeriodRange(period: DashboardPeriod, baseDate: Date) {
+  const tomorrow = new Date(baseDate);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const end = startOfDay(tomorrow);
+
+  if (period === "today") {
+    const start = startOfDay(baseDate);
+    return { start, end, previousStart: daysAgo(1, start) };
+  }
+
+  if (period === "7d") {
+    const start = daysAgo(6, startOfDay(baseDate));
+    return { start, end, previousStart: daysAgo(7, start) };
+  }
+
+  if (period === "month") {
+    const start = new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
+    const previousStart = new Date(baseDate.getFullYear(), baseDate.getMonth() - 1, 1);
+    return { start, end, previousStart };
+  }
+
+  const start = daysAgo(29, startOfDay(baseDate));
+  return { start, end, previousStart: daysAgo(30, start) };
 }
 
 function buildDailyData(leads: DashboardLead[], start: Date, end: Date): DailyLeadsData[] {
@@ -138,7 +175,13 @@ function buildFunnelData(leads: DashboardLead[], stages: StageOption[]): Convers
   });
 }
 
-export default async function DashboardPage() {
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ period?: string }>;
+}) {
+  const params = await searchParams;
+  const period = getPeriod(params?.period);
   const supabase = await createClient();
   const {
     data: { user },
@@ -169,12 +212,8 @@ export default async function DashboardPage() {
 
   const organizationId = membership.organization_id as string;
   const organization = membership.organizations as { name?: string; subscription_status?: string } | null;
-  const currentStart = daysAgo(RANGE_DAYS);
-  const previousStart = daysAgo(RANGE_DAYS * 2);
   const today = new Date();
-  const chartStart = daysAgo(13);
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
+  const { start: currentStart, end: currentEnd, previousStart } = getPeriodRange(period, today);
 
   const [leadsResult, tasksResult, conversationsResult, pipelinesResult] = await Promise.all([
     admin
@@ -228,7 +267,7 @@ export default async function DashboardPage() {
     stage: Array.isArray(lead.stage) ? lead.stage[0] ?? null : lead.stage,
   })) as DashboardLead[];
   const stages = ((pipelinesResult.data?.pipeline_stages ?? []) as StageOption[]).sort((a, b) => a.order - b.order);
-  const currentLeads = leads.filter((lead) => inRange(lead.created_at, currentStart, today));
+  const currentLeads = leads.filter((lead) => inRange(lead.created_at, currentStart, currentEnd));
   const previousLeads = leads.filter((lead) => inRange(lead.created_at, previousStart, currentStart));
   const scheduledCurrent = currentLeads.filter((lead) => isScheduledStatus(lead.status)).length;
   const scheduledPrevious = previousLeads.filter((lead) => isScheduledStatus(lead.status)).length;
@@ -257,9 +296,9 @@ export default async function DashboardPage() {
     if (task.completed_at || !task.due_at) return false;
     return new Date(task.due_at).getTime() < today.getTime();
   }).length;
-  const dailyData = buildDailyData(leads.filter((lead) => inRange(lead.created_at, chartStart, tomorrow)), chartStart, tomorrow);
+  const dailyData = buildDailyData(currentLeads, currentStart, currentEnd);
   const sourceData = buildSourceData(currentLeads);
-  const funnelData = buildFunnelData(leads, stages);
+  const funnelData = buildFunnelData(currentLeads, stages);
   const monthLabel = new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric" }).format(today);
   const subscriptionLabel = organization?.subscription_status === "active" ? "Assessoria ativa" : "Periodo de implantacao";
 
@@ -268,7 +307,7 @@ export default async function DashboardPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="label-eyebrow text-text-muted">
-            {organization?.name ?? "Sync Marketing"} · {monthLabel}
+            {organization?.name ?? "Sync Marketing"} · {monthLabel} · {PERIOD_LABELS[period]}
           </p>
           <h1 className="mt-1 text-2xl font-black text-text-primary">Dashboard</h1>
         </div>
@@ -343,7 +382,7 @@ export default async function DashboardPage() {
             <LeadsBySourceChart data={sourceData} />
             <div className="mt-1 w-full space-y-1.5">
               {sourceData.length === 0 && (
-                <p className="py-4 text-center text-xs text-text-muted">Nenhum lead nos ultimos 30 dias.</p>
+                <p className="py-4 text-center text-xs text-text-muted">Nenhum lead no periodo selecionado.</p>
               )}
               {sourceData.map((item, index) => (
                 <div key={item.source} className="flex items-center justify-between text-[11px]">
@@ -370,7 +409,7 @@ export default async function DashboardPage() {
           <div className="flex items-center justify-between">
             <CardTitle className="text-sm">Funil de Conversao</CardTitle>
             <Badge variant="secondary" className="text-[10px]">
-              Todos os leads
+              {PERIOD_LABELS[period]}
             </Badge>
           </div>
         </CardHeader>
