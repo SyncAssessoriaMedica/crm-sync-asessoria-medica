@@ -31,11 +31,12 @@ export default async function AppLayout({
   } = await supabase.auth.getUser();
 
   let topbarUser;
+  let sidebarUser;
   let notifications: TopbarNotification[] = [];
   if (user) {
     const { data: profile } = await supabase
       .from("profiles")
-      .select("full_name, email")
+      .select("full_name, email, role")
       .eq("id", user.id)
       .maybeSingle();
 
@@ -43,11 +44,16 @@ export default async function AppLayout({
       name: profile?.full_name ?? user.email ?? "Usuario",
       email: profile?.email ?? user.email ?? "",
     };
+    sidebarUser = {
+      ...topbarUser,
+      role: profile?.role ?? "leitura",
+      organizationName: "Sync Marketing",
+    };
 
     const admin = createAdminClient();
     const { data: membership } = await admin
       .from("organization_members")
-      .select("organization_id")
+      .select("organization_id, role, organizations(name)")
       .eq("user_id", user.id)
       .order("created_at", { ascending: true })
       .limit(1)
@@ -55,6 +61,14 @@ export default async function AppLayout({
 
     if (membership?.organization_id) {
       const organizationId = membership.organization_id as string;
+      const organization = Array.isArray(membership.organizations)
+        ? membership.organizations[0] ?? null
+        : membership.organizations;
+      sidebarUser = {
+        ...(sidebarUser ?? topbarUser),
+        role: profile?.role ?? membership.role ?? "leitura",
+        organizationName: organization?.name ?? "Sync Marketing",
+      };
       const now = new Date().toISOString();
       const [tasksResult, conversationsResult] = await Promise.all([
         admin
@@ -107,7 +121,7 @@ export default async function AppLayout({
 
   return (
     <div className="flex h-screen overflow-hidden bg-background-subtle">
-      <Sidebar />
+      <Sidebar user={sidebarUser} />
       <div className="flex flex-1 flex-col overflow-hidden">
         <Topbar user={topbarUser} notifications={notifications} />
         <main className="flex-1 overflow-y-auto p-6">{children}</main>
