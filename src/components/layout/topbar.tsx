@@ -169,7 +169,9 @@ export function Topbar({ title, subtitle, user, notifications = [] }: TopbarProp
               </div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuItem>Perfil</DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <Link href="/profile">Perfil</Link>
+            </DropdownMenuItem>
             <DropdownMenuItem asChild>
               <Link href="/settings">Configuracoes</Link>
             </DropdownMenuItem>
