@@ -12,7 +12,12 @@ function firstRelation<T>(value: T | T[] | null): T | null {
   return Array.isArray(value) ? value[0] ?? null : value;
 }
 
-export default async function InboxPage() {
+export default async function InboxPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ q?: string; period?: string }>;
+}) {
+  const params = await searchParams;
   const supabase = await createClient();
   const {
     data: { user },
@@ -128,9 +133,12 @@ export default async function InboxPage() {
 
   return (
     <InboxClient
+      key={`${params?.q ?? ""}-${params?.period ?? "30d"}`}
       conversations={conversations}
       messagesByConversation={messagesByConversation}
       instances={(instancesResult.data ?? []) as InboxInstance[]}
+      initialSearch={params?.q ?? ""}
+      period={params?.period ?? "30d"}
     />
   );
 }

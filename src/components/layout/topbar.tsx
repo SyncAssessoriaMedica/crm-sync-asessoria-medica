@@ -1,7 +1,8 @@
 "use client";
 
+import { useRef } from "react";
 import Link from "next/link";
-import { usePathname, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Bell, Calendar, ChevronDown, LogOut, Search } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -44,9 +45,12 @@ interface TopbarProps {
 }
 
 export function Topbar({ title, subtitle, user, notifications = [] }: TopbarProps) {
+  const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const selectedPeriod = searchParams.get("period") ?? "30d";
+  const selectedSearch = searchParams.get("q") ?? "";
+  const searchTimer = useRef<number | null>(null);
   const selectedPeriodLabel = periods.find((period) => period.value === selectedPeriod)?.label ?? "30 dias";
   const displayName = user?.name ?? "Usuario";
   const displayEmail = user?.email ?? "";
@@ -56,7 +60,19 @@ export function Topbar({ title, subtitle, user, notifications = [] }: TopbarProp
   function periodHref(value: string) {
     const params = new URLSearchParams(searchParams.toString());
     params.set("period", value);
-    return `/dashboard?${params.toString()}`;
+    return `${pathname}?${params.toString()}`;
+  }
+
+  function updateSearch(value: string) {
+    if (searchTimer.current) window.clearTimeout(searchTimer.current);
+    searchTimer.current = window.setTimeout(() => {
+      const params = new URLSearchParams(searchParams.toString());
+      const trimmed = value.trim();
+      if (trimmed) params.set("q", trimmed);
+      else params.delete("q");
+      const nextUrl = params.toString() ? `${pathname}?${params.toString()}` : pathname;
+      router.replace(nextUrl, { scroll: false });
+    }, 350);
   }
 
   return (
@@ -71,8 +87,11 @@ export function Topbar({ title, subtitle, user, notifications = [] }: TopbarProp
       <div className="relative max-w-xs flex-1">
         <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-muted" />
         <input
+          key={`${pathname}-${selectedSearch}`}
           type="text"
           placeholder="Buscar lead, conversa..."
+          defaultValue={selectedSearch}
+          onChange={(event) => updateSearch(event.target.value)}
           className={cn(
             "h-8 w-full rounded-lg border border-border bg-background-subtle pl-8 pr-3 text-xs text-text-primary placeholder:text-text-muted",
             "focus:border-brand-green focus:outline-none focus:ring-2 focus:ring-brand-green"

@@ -51,7 +51,29 @@ type InboxClientProps = {
   conversations: InboxConversation[];
   messagesByConversation: Record<string, InboxMessage[]>;
   instances: { id: string; instance_name: string; phone_number: string | null; status: string }[];
+  initialSearch: string;
+  period: string;
 };
+
+function startOfDay(date: Date) {
+  const next = new Date(date);
+  next.setHours(0, 0, 0, 0);
+  return next;
+}
+
+function periodStart(period: string) {
+  const now = new Date();
+  if (period === "today") return startOfDay(now);
+  if (period === "7d") {
+    const start = startOfDay(now);
+    start.setDate(start.getDate() - 6);
+    return start;
+  }
+  if (period === "month") return new Date(now.getFullYear(), now.getMonth(), 1);
+  const start = startOfDay(now);
+  start.setDate(start.getDate() - 29);
+  return start;
+}
 
 function cleanJid(remoteJid: string) {
   return remoteJid.replace("@s.whatsapp.net", "").replace("@c.us", "");
@@ -154,15 +176,16 @@ function ConversationItem({
   );
 }
 
-export function InboxClient({ conversations, messagesByConversation, instances }: InboxClientProps) {
+export function InboxClient({ conversations, messagesByConversation, instances, initialSearch, period }: InboxClientProps) {
   const [activeConvId, setActiveConvId] = useState(conversations[0]?.id ?? "");
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(initialSearch);
   const [filter, setFilter] = useState<"all" | "unread" | "open" | "closed">("all");
   const [message, setMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
   const filteredConversations = useMemo(() => {
     const term = search.toLowerCase().trim();
+    const start = periodStart(period);
     return conversations.filter((conversation) => {
       const lead = conversation.lead;
       const haystack = [
@@ -181,9 +204,10 @@ export function InboxClient({ conversations, messagesByConversation, instances }
         filter === "all" ||
         (filter === "unread" && conversation.unread_count > 0) ||
         conversation.status === filter;
-      return matchesSearch && matchesFilter;
+      const matchesPeriod = new Date(conversation.updated_at).getTime() >= start.getTime();
+      return matchesSearch && matchesFilter && matchesPeriod;
     });
-  }, [conversations, filter, search]);
+  }, [conversations, filter, period, search]);
 
   const activeConv =
     filteredConversations.find((conversation) => conversation.id === activeConvId) ??
