@@ -504,8 +504,16 @@ export function AdminClient({ data }: { data: AdminData }) {
                         onImport={() => {
                           const jids = selectedJids[instance.instance_name] ?? [];
                           if (!jids.length) return;
+                          const state = chatsByInstance[instance.instance_name];
+                          const chatMap = state && state !== "loading"
+                            ? new Map(state.chats.map((c) => [c.remoteJid, c]))
+                            : new Map<string, ChatPreview>();
+                          const contactsToImport = jids.map((jid) => ({
+                            remoteJid: jid,
+                            name: chatMap.get(jid)?.name ?? null,
+                          }));
                           startTransition(async () => {
-                            const result = await importWhatsappConversationsAction(instance.instance_name, jids);
+                            const result = await importWhatsappConversationsAction(instance.instance_name, contactsToImport);
                             setMessage(result.message);
                             if (result.ok) {
                               setChatsByInstance((prev) => { const next = { ...prev }; delete next[instance.instance_name]; return next; });

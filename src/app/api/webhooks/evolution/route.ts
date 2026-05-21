@@ -42,7 +42,11 @@ const ALLOWED_MESSAGE_TYPES = new Set(["text", "image", "audio", "video", "docum
 function verifyEvolutionSignature(request: NextRequest): boolean {
   const apiKey = process.env.EVOLUTION_API_KEY;
   if (!apiKey) return true;
-  return request.headers.get("apikey") === apiKey;
+  // Primary: apikey header (Evolution sends this when delivering webhooks)
+  if (request.headers.get("apikey") === apiKey) return true;
+  // Fallback: ?token query param (used when webhook URL includes token)
+  const url = new URL(request.url);
+  return url.searchParams.get("token") === apiKey;
 }
 
 function isGroupMessage(remoteJid: string) {
@@ -211,13 +215,15 @@ async function resolveWhatsappSource(admin: SupabaseAdmin, organizationId: strin
 async function resolveLead(admin: SupabaseAdmin, organizationId: string, phone: string, name: string | undefined, inbound: boolean) {
   const { data: existing } = await admin
     .from("leads")
-    .select("id")
+    .select("id, name")
     .eq("organization_id", organizationId)
     .eq("phone", phone)
     .maybeSingle();
 
   if (existing?.id) {
-    await admin.from("leads").update({ last_interaction_at: new Date().toISOString() }).eq("id", existing.id);
+    const updates: Record<string, unknown> = { last_interaction_at: new Date().toISOString() };
+    if (name && (!existing.name || existing.name === phone)) updates.name = name;
+    await admin.from("leads").update(updates).eq("id", existing.id);
     return { id: existing.id as string, created: false };
   }
 
@@ -390,19 +396,40 @@ async function handleMessageEvent(admin: SupabaseAdmin, payload: NormalizedPaylo
 }
 
 export async function POST(request: NextRequest) {
+  // Parse body before auth so every failure path can be logged
+  let body: unknown;
+  let rawBodySnippet: string | undefined;
+  try {
+    const text = await request.text();
+    rawBodySnippet = text.slice(0, 1000);
+    body = text ? JSON.parse(text) : undefined;
+  } catch {
+    // body stays undefined; handled below
+  }
+
   if (!verifyEvolutionSignature(request)) {
+    try {
+      const admin = createAdminClient();
+      await logWebhook(
+        admin, null, "AUTH_FAILURE",
+        { apikeyPresent: request.headers.get("apikey") !== null, body },
+        false,
+        "Unauthorized: apikey header or token mismatch"
+      );
+    } catch { /* best-effort */ }
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
+  const admin = createAdminClient();
+
+  if (body === undefined) {
+    await logWebhook(admin, null, "PARSE_FAILURE", { rawBodySnippet }, false, "Invalid or empty JSON body");
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
   const parsed = EvolutionWebhookSchema.safeParse(body);
   if (!parsed.success) {
+    await logWebhook(admin, null, "SCHEMA_FAILURE", body, false, `Schema validation failed: ${parsed.error.message}`);
     return NextResponse.json({ received: true, processed: false, reason: "Unsupported payload" });
   }
 
@@ -410,10 +437,10 @@ export async function POST(request: NextRequest) {
   // Normalise: some Evolution forks send instanceName instead of instance
   const instanceName = rawPayload.instance ?? rawPayload.instanceName ?? "";
   if (!instanceName) {
+    await logWebhook(admin, null, rawPayload.event ?? "UNKNOWN", body, false, "Missing instance identifier");
     return NextResponse.json({ received: true, processed: false, reason: "Missing instance identifier" });
   }
   const payload = { ...rawPayload, instance: instanceName };
-  const admin = createAdminClient();
 
   try {
     if (MESSAGE_EVENTS.has(payload.event)) return handleMessageEvent(admin, payload);

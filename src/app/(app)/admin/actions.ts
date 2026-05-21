@@ -61,7 +61,8 @@ async function tryConfigureWebhook(
   evolutionApiUrl: string,
   instanceName: string,
   apiKey: string,
-  webhookUrl: string
+  webhookUrl: string,
+  publicWebhookUrl: string
 ): Promise<string | null> {
   const endpoint = `${evolutionApiUrl}/webhook/set/${encodeURIComponent(instanceName)}`;
   const events = ["MESSAGES_UPSERT", "SEND_MESSAGE", "CONNECTION_UPDATE", "QRCODE_UPDATED", "MESSAGES_UPDATE"];
@@ -87,9 +88,9 @@ async function tryConfigureWebhook(
 
     const errData = await nestedRes.json().catch(() => ({})) as Record<string, unknown>;
     const msg = (errData?.message ?? errData?.error ?? `HTTP ${nestedRes.status}`) as string;
-    return `Webhook nao configurado automaticamente (${msg}). Configure na Evolution: URL = ${webhookUrl}`;
+    return `Webhook nao configurado automaticamente (${msg}). Configure na Evolution usando a URL do CRM: ${publicWebhookUrl}`;
   } catch {
-    return `Webhook nao configurado automaticamente (erro de rede). Configure na Evolution: URL = ${webhookUrl}`;
+    return `Webhook nao configurado automaticamente (erro de rede). Configure na Evolution usando a URL do CRM: ${publicWebhookUrl}`;
   }
 }
 
@@ -417,8 +418,9 @@ export async function connectWhatsappInstanceAction(instanceName: string): Promi
     }
 
     // Attempt webhook configuration — non-blocking so QR Code still shows on failure
-    const webhookUrl = `${appUrl}/api/webhooks/evolution`;
-    const webhookWarning = await tryConfigureWebhook(evolutionApiUrl, instanceName, apiKey, webhookUrl);
+    const publicWebhookUrl = `${appUrl}/api/webhooks/evolution`;
+    const webhookUrl = `${publicWebhookUrl}?token=${encodeURIComponent(apiKey)}`;
+    const webhookWarning = await tryConfigureWebhook(evolutionApiUrl, instanceName, apiKey, webhookUrl, publicWebhookUrl);
 
     try {
       const stateResponse = await fetch(`${evolutionApiUrl}/instance/connectionState/${encodeURIComponent(instanceName)}`, {
@@ -824,10 +826,12 @@ export async function setWebhookForInstanceAction(instanceName: string): Promise
       return { ok: false, message: "Configure NEXT_PUBLIC_APP_URL no projeto da Vercel." };
     }
 
-    const webhookUrl = `${appUrl}/api/webhooks/evolution`;
-    const warning = await tryConfigureWebhook(evolutionApiUrl, instanceName, apiKey, webhookUrl);
+    // Include ?token so Evolution can authenticate — route.ts checks this as fallback
+    const publicWebhookUrl = `${appUrl}/api/webhooks/evolution`;
+    const webhookUrl = `${publicWebhookUrl}?token=${encodeURIComponent(apiKey)}`;
+    const warning = await tryConfigureWebhook(evolutionApiUrl, instanceName, apiKey, webhookUrl, publicWebhookUrl);
     if (warning) return { ok: false, message: warning };
-    return { ok: true, message: `Webhook configurado com sucesso: ${webhookUrl}` };
+    return { ok: true, message: `Webhook configurado com sucesso: ${publicWebhookUrl}` };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "Erro ao configurar webhook." };
   }
@@ -914,6 +918,25 @@ export async function fetchWhatsappChatsAction(instanceName: string): Promise<Ac
       };
     }
 
+    // Enrich with real contact names from address book (best-effort)
+    const contactNameMap = new Map<string, string>();
+    try {
+      const contactRes = await evolutionFetch(
+        `${evolutionApiUrl}/contact/findContacts/${encodeURIComponent(instanceName)}`,
+        apiKey,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ where: {} }) }
+      );
+      if (contactRes.ok) {
+        const contactData = await contactRes.json().catch(() => []) as unknown;
+        const contactList = Array.isArray(contactData) ? contactData as Record<string, unknown>[] : [];
+        for (const c of contactList) {
+          const jid = (c.id ?? c.remoteJid ?? "") as string;
+          const name = (c.pushName ?? c.name ?? c.notify ?? "") as string;
+          if (jid && name.trim()) contactNameMap.set(jid, name.trim());
+        }
+      }
+    } catch { /* contacts endpoint is best-effort */ }
+
     const phones = individualChats
       .map((chat) => (chat.id ?? chat.remoteJid ?? "") as string)
       .map((jid) => jid.split("@")[0].replace(/\D/g, ""))
@@ -933,10 +956,11 @@ export async function fetchWhatsappChatsAction(instanceName: string): Promise<Ac
       const jid = (chat.id ?? chat.remoteJid ?? "") as string;
       const phone = jid.split("@")[0].replace(/\D/g, "");
       const leadId = phoneToLeadId.get(phone) ?? null;
+      const name = contactNameMap.get(jid) ?? (chat.name ?? chat.pushName ?? null) as string | null;
       return {
         remoteJid: jid,
         phone,
-        name: (chat.name ?? chat.pushName ?? null) as string | null,
+        name,
         lastMessageTimestamp: (chat.lastMsgTimestamp ?? chat.lastMessageTimestamp ?? null) as number | null,
         hasLead: leadId !== null,
         leadId,
@@ -960,13 +984,13 @@ export async function fetchWhatsappChatsAction(instanceName: string): Promise<Ac
 
 export async function importWhatsappConversationsAction(
   instanceName: string,
-  remoteJids: string[]
+  contacts: { remoteJid: string; name?: string | null }[]
 ): Promise<ActionResult> {
   try {
     const { admin, organizationId, isSyncAdmin } = await getContext();
 
-    if (!remoteJids.length) return { ok: false, message: "Nenhuma conversa selecionada." };
-    if (remoteJids.length > 200) return { ok: false, message: "Maximo de 200 conversas por vez." };
+    if (!contacts.length) return { ok: false, message: "Nenhuma conversa selecionada." };
+    if (contacts.length > 200) return { ok: false, message: "Maximo de 200 conversas por vez." };
 
     const { data: instance } = await admin
       .from("whatsapp_instances")
@@ -1002,14 +1026,15 @@ export async function importWhatsappConversationsAction(
     let leadsCreated = 0;
     let conversationsCreated = 0;
 
-    for (const remoteJid of remoteJids) {
+    for (const contact of contacts) {
+      const { remoteJid, name: contactName } = contact;
       if (!remoteJid.endsWith("@s.whatsapp.net")) continue;
       const phone = remoteJid.split("@")[0].replace(/\D/g, "");
       if (!phone) continue;
 
       const { data: existingLead } = await admin
         .from("leads")
-        .select("id")
+        .select("id, name")
         .eq("organization_id", orgId)
         .eq("phone", phone)
         .maybeSingle();
@@ -1017,12 +1042,16 @@ export async function importWhatsappConversationsAction(
       let leadId: string;
       if (existingLead?.id) {
         leadId = existingLead.id as string;
+        // Update name if we now have a real name and lead currently only has phone as name
+        if (contactName && (!existingLead.name || existingLead.name === phone)) {
+          await admin.from("leads").update({ name: contactName }).eq("id", leadId);
+        }
       } else {
         const { data: newLead, error: leadError } = await admin
           .from("leads")
           .insert({
             organization_id: orgId,
-            name: phone,
+            name: contactName || phone,
             phone,
             source_id: sourceId,
             status: "new",
