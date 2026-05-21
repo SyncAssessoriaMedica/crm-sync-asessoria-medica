@@ -389,14 +389,25 @@ export async function deleteLeadsBulkAction(leadIds: string[]): Promise<ActionRe
       return { ok: false, message: "Alguns leads nao pertencem a esta clinica." };
     }
 
+    const { data: linkedConversations, error: conversationLookupError } = await admin
+      .from("conversations")
+      .select("id")
+      .in("lead_id", ownedIds);
+
+    if (conversationLookupError) return { ok: false, message: conversationLookupError.message };
+    const conversationIds = (linkedConversations ?? []).map((row) => row.id as string);
+
     // Delete dependencies explicitly (safe regardless of whether CASCADE is set)
     await admin.from("custom_field_values").delete().in("lead_id", ownedIds);
     await admin.from("lead_tags").delete().in("lead_id", ownedIds);
     await admin.from("lead_notes").delete().in("lead_id", ownedIds);
     await admin.from("lead_events").delete().in("lead_id", ownedIds);
     await admin.from("lead_tasks").delete().in("lead_id", ownedIds);
-    // Keep conversations but detach from deleted leads
-    await admin.from("conversations").update({ lead_id: null }).in("lead_id", ownedIds);
+
+    if (conversationIds.length > 0) {
+      await admin.from("messages").delete().in("conversation_id", conversationIds);
+      await admin.from("conversations").delete().in("id", conversationIds);
+    }
 
     const { error } = await admin.from("leads").delete().in("id", ownedIds);
     if (error) return { ok: false, message: error.message };

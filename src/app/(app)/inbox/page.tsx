@@ -53,6 +53,7 @@ export default async function InboxPage({
       `
       )
       .eq("organization_id", organizationId)
+      .not("lead_id", "is", null)
       .order("updated_at", { ascending: false })
       .limit(80),
     admin
