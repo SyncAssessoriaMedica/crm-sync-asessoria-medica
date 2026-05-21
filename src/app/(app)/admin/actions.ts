@@ -351,31 +351,32 @@ export async function connectWhatsappInstanceAction(instanceName: string): Promi
       };
     }
 
-    const webhookResponse = await fetch(`${baseUrl.replace(/\/$/, "")}/webhook/set/${encodeURIComponent(instanceName)}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        apikey: apiKey,
-      },
-      // Evolution API v2 requires settings nested under "webhook" key
-      body: JSON.stringify({
-        webhook: {
-          enabled: true,
-          url: `${appUrl}/api/webhooks/evolution`,
-          webhookByEvents: false,
-          webhookBase64: false,
-          events: ["MESSAGES_UPSERT", "SEND_MESSAGE", "CONNECTION_UPDATE", "QRCODE_UPDATED", "MESSAGES_UPDATE"],
-        },
-      }),
-      cache: "no-store",
-    });
-
-    if (!webhookResponse.ok) {
-      const errorData = await webhookResponse.json().catch(() => ({}));
-      const errorMsg = (errorData as { message?: string; error?: string })?.message
-        ?? (errorData as { message?: string; error?: string })?.error
-        ?? `Evolution retornou status ${webhookResponse.status}`;
-      return { ok: false, message: `Nao foi possivel configurar o webhook: ${errorMsg}` };
+    // Attempt webhook configuration — non-blocking so QR Code still shows on failure
+    let webhookWarning: string | null = null;
+    try {
+      const webhookResponse = await fetch(`${baseUrl.replace(/\/$/, "")}/webhook/set/${encodeURIComponent(instanceName)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: apiKey },
+        body: JSON.stringify({
+          webhook: {
+            enabled: true,
+            url: `${appUrl}/api/webhooks/evolution`,
+            webhookByEvents: false,
+            webhookBase64: false,
+            events: ["MESSAGES_UPSERT", "SEND_MESSAGE", "CONNECTION_UPDATE", "QRCODE_UPDATED", "MESSAGES_UPDATE"],
+          },
+        }),
+        cache: "no-store",
+      });
+      if (!webhookResponse.ok) {
+        const errorData = await webhookResponse.json().catch(() => ({}));
+        const msg = (errorData as { message?: string; error?: string })?.message
+          ?? (errorData as { message?: string; error?: string })?.error
+          ?? `status ${webhookResponse.status}`;
+        webhookWarning = `Webhook nao configurado automaticamente (${msg}). Configure manualmente na Evolution apos conectar.`;
+      }
+    } catch {
+      webhookWarning = "Webhook nao configurado automaticamente. Configure manualmente na Evolution apos conectar.";
     }
 
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/instance/connect/${encodeURIComponent(instanceName)}`, {
@@ -402,7 +403,7 @@ export async function connectWhatsappInstanceAction(instanceName: string): Promi
     revalidatePath("/admin");
     return {
       ok: true,
-      message: qrCodeDataUrl ? "QR Code gerado no CRM." : "Conexao iniciada, mas a Evolution nao retornou imagem de QR Code.",
+      message: (qrCodeDataUrl ? "QR Code gerado." : "Conexao iniciada, mas a Evolution nao retornou imagem de QR Code.") + (webhookWarning ? ` ${webhookWarning}` : ""),
       data: {
         qrCodeDataUrl,
         pairingCode: data?.pairingCode ?? null,
