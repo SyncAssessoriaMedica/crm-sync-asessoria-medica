@@ -321,7 +321,7 @@ export function AdminClient({ data }: { data: AdminData }) {
           )}
 
           {activeSection === "whatsapp" && (
-            <Section title="Numeros WhatsApp" description="Cadastre instancias da Evolution. Quando EVOLUTION_API_URL e EVOLUTION_API_KEY estiverem na Vercel, o botao Conectar gera o QR Code dentro do CRM.">
+            <Section title="Numeros WhatsApp" description="Cadastre os canais de atendimento e conecte o celular pelo QR Code dentro do CRM.">
               <form action={runAction(createWhatsappInstanceAction)} className="grid gap-3 rounded-xl border border-border bg-background-subtle/50 p-4 md:grid-cols-[1fr_180px_auto]">
                 <Field label="Nome da instancia" name="instance_name" placeholder="clinica-atendimento-1" required />
                 <Field label="Telefone" name="phone_number" placeholder="5511999999999" />
@@ -354,6 +354,7 @@ export function AdminClient({ data }: { data: AdminData }) {
                         {instance.status}
                       </Badge>
                       <Button
+                        type="button"
                         variant="secondary"
                         size="sm"
                         className="gap-1.5"

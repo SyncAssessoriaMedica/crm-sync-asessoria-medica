@@ -325,7 +325,12 @@ export async function connectWhatsappInstanceAction(instanceName: string): Promi
     const { admin, organizationId, isSyncAdmin } = await getContext();
     const baseUrl = process.env.EVOLUTION_API_URL;
     const apiKey = process.env.EVOLUTION_API_KEY;
-    if (!baseUrl || !apiKey) return { ok: false, message: "Configure EVOLUTION_API_URL e EVOLUTION_API_KEY na Vercel." };
+    if (!baseUrl || !apiKey) {
+      return {
+        ok: false,
+        message: "A conexao WhatsApp ainda nao esta disponivel neste deploy. Confirme EVOLUTION_API_URL e EVOLUTION_API_KEY no projeto da Vercel e faca um novo deploy.",
+      };
+    }
 
     const { data: instance } = await admin
       .from("whatsapp_instances")
@@ -339,7 +344,12 @@ export async function connectWhatsappInstanceAction(instanceName: string): Promi
     }
 
     const appUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "");
-    if (!appUrl) return { ok: false, message: "Configure NEXT_PUBLIC_APP_URL na Vercel." };
+    if (!appUrl) {
+      return {
+        ok: false,
+        message: "Configure NEXT_PUBLIC_APP_URL no projeto da Vercel para gerar o webhook automaticamente.",
+      };
+    }
 
     const webhookResponse = await fetch(`${baseUrl.replace(/\/$/, "")}/webhook/set/${encodeURIComponent(instanceName)}`, {
       method: "POST",

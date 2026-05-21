@@ -3,11 +3,12 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import {
   Building2,
   ChevronDown,
   LayoutDashboard,
+  Loader2,
   MessageSquare,
   Settings,
   Shield,
@@ -66,61 +67,128 @@ export function Sidebar({ user }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
+  const [isOpen, setIsOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
   const role = user?.role ?? "leitura";
   const visibleItems = navItems.filter((item) => item.roles.includes(role));
-  const canSwitch = Boolean(user?.canSwitchOrganization && user.organizations && user.organizations.length > 1);
+  const canSwitch = Boolean(
+    user?.canSwitchOrganization && user.organizations && user.organizations.length > 1
+  );
 
-  function handleOrganizationChange(value: string) {
+  useEffect(() => {
+    if (!isOpen) return;
+    function handleMouseDown(event: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleMouseDown);
+    return () => document.removeEventListener("mousedown", handleMouseDown);
+  }, [isOpen]);
+
+  function handleSelect(orgId: string) {
+    setIsOpen(false);
     startTransition(async () => {
-      const result = await switchActiveOrganizationAction(value);
+      const result = await switchActiveOrganizationAction(orgId);
       if (result.ok) router.refresh();
     });
   }
 
   return (
     <aside className="flex h-screen w-60 flex-shrink-0 flex-col bg-sidebar-dark">
-      <div className="flex h-14 items-center gap-3 border-b border-white/10 px-5">
+      {/* ── Brand ───────────────────────────────────────────── */}
+      <div className="flex h-14 items-center border-b border-white/10 px-4">
         <Image
           src="/logo_sync-marketing-cropped.png"
           alt="Sync Marketing"
           width={112}
           height={42}
-          className="h-8 w-auto object-contain"
+          className="h-7 w-auto object-contain"
           priority
         />
-        <div className="flex flex-col leading-none">
-          <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-white/40">CRM</span>
+        <div className="ml-2.5 flex h-6 items-center border-l border-white/15 pl-2.5">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-white/55">
+            CRM
+          </span>
         </div>
       </div>
 
-      <div className="mx-3 my-3">
-        <div className="relative flex w-full items-center gap-2.5 rounded-lg bg-white/6 px-3 py-2.5 text-left transition-colors hover:bg-white/10">
+      {/* ── Clinic selector ─────────────────────────────────── */}
+      <div ref={dropdownRef} className="relative mx-3 my-3">
+        <button
+          type="button"
+          aria-expanded={canSwitch ? isOpen : undefined}
+          aria-haspopup={canSwitch ? "listbox" : undefined}
+          onClick={canSwitch && !isPending ? () => setIsOpen((v) => !v) : undefined}
+          className={cn(
+            "flex w-full items-center gap-2.5 rounded-lg bg-white/6 px-3 py-2.5 text-left transition-colors",
+            canSwitch && !isPending && "cursor-pointer hover:bg-white/10",
+            isPending && "cursor-wait opacity-60",
+            !canSwitch && "cursor-default"
+          )}
+        >
           <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-brand-green/20">
             <Building2 className="h-3.5 w-3.5 text-brand-green" />
           </div>
           <div className="flex-1 overflow-hidden">
-            <p className="truncate text-xs font-semibold text-white">{user?.organizationName ?? "Sync Marketing"}</p>
+            <p className="truncate text-xs font-semibold text-white">
+              {user?.organizationName ?? "Sync Marketing"}
+            </p>
             <p className="text-[10px] text-white/40">{roleLabel(role)}</p>
           </div>
-          {canSwitch && <ChevronDown className="h-3.5 w-3.5 shrink-0 text-white/40" />}
           {canSwitch && (
-            <select
-              aria-label="Alternar clinica ativa"
-              value={user?.organizationId ?? ""}
-              disabled={isPending}
-              onChange={(event) => handleOrganizationChange(event.target.value)}
-              className="absolute inset-0 cursor-pointer opacity-0 disabled:cursor-wait"
-            >
-              {user?.organizations?.map((organization) => (
-                <option key={organization.id} value={organization.id}>
-                  {organization.name}
-                </option>
-              ))}
-            </select>
+            isPending ? (
+              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-white/40" />
+            ) : (
+              <ChevronDown
+                className={cn(
+                  "h-3.5 w-3.5 shrink-0 text-white/40 transition-transform duration-200",
+                  isOpen && "rotate-180"
+                )}
+              />
+            )
           )}
-        </div>
+        </button>
+
+        {canSwitch && isOpen && (
+          <div
+            role="listbox"
+            aria-label="Selecionar clinica ativa"
+            className="absolute left-0 top-full z-50 mt-1 w-full overflow-hidden rounded-lg border border-white/10 bg-[#0d1f14] shadow-lg"
+          >
+            {user?.organizations?.map((org) => {
+              const isActive = org.id === user.organizationId;
+              return (
+                <button
+                  key={org.id}
+                  type="button"
+                  role="option"
+                  aria-selected={isActive}
+                  disabled={isPending}
+                  onClick={() => handleSelect(org.id)}
+                  className={cn(
+                    "flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-xs transition-colors disabled:cursor-wait",
+                    isActive
+                      ? "bg-brand-green/15 text-brand-green"
+                      : "text-white/70 hover:bg-white/8 hover:text-white"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "h-1.5 w-1.5 shrink-0 rounded-full",
+                      isActive ? "bg-brand-green" : "bg-white/20"
+                    )}
+                  />
+                  {org.name}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
+      {/* ── Navigation ──────────────────────────────────────── */}
       <ScrollArea className="flex-1 px-3 sidebar-scroll">
         <nav className="flex flex-col gap-0.5 py-1">
           <p className="label-eyebrow px-2 py-2 text-white/30">Menu</p>
@@ -132,7 +200,9 @@ export function Sidebar({ user }: SidebarProps) {
                 href={item.href}
                 className={cn(
                   "group flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all",
-                  isActive ? "bg-brand-green text-sidebar-dark" : "text-white/60 hover:bg-white/8 hover:text-white"
+                  isActive
+                    ? "bg-brand-green text-sidebar-dark"
+                    : "text-white/60 hover:bg-white/8 hover:text-white"
                 )}
               >
                 <item.icon
@@ -148,6 +218,7 @@ export function Sidebar({ user }: SidebarProps) {
         </nav>
       </ScrollArea>
 
+      {/* ── User footer ─────────────────────────────────────── */}
       <div className="border-t border-white/10 p-3">
         <div className="flex items-center gap-2.5 rounded-lg px-2 py-2">
           <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-green/20 text-[11px] font-bold text-brand-green">
