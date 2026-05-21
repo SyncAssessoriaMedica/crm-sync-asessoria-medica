@@ -138,14 +138,17 @@ function MessageBubble({ message }: { message: InboxMessage }) {
 function ConversationItem({
   conversation,
   isActive,
+  locallyRead,
   onClick,
 }: {
   conversation: InboxConversation;
   isActive: boolean;
+  locallyRead: boolean;
   onClick: () => void;
 }) {
   const lead = conversation.lead;
   const title = lead?.name ?? formatPhone(cleanJid(conversation.remote_jid));
+  const effectiveUnread = locallyRead ? 0 : conversation.unread_count;
 
   return (
     <button
@@ -159,9 +162,9 @@ function ConversationItem({
         <div className="flex h-9 w-9 items-center justify-center rounded-full border border-brand-green/20 bg-brand-green-soft text-sm font-bold text-brand-green-deep">
           {getInitials(title)}
         </div>
-        {conversation.unread_count > 0 && (
+        {effectiveUnread > 0 && (
           <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-brand-green px-1 text-[9px] font-bold text-white">
-            {conversation.unread_count}
+            {effectiveUnread}
           </span>
         )}
       </div>
@@ -182,9 +185,11 @@ function ConversationItem({
 export function InboxClient({ organizationId, conversations, messagesByConversation, instances, initialSearch, period }: InboxClientProps) {
   const router = useRouter();
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const markedReadRef = useRef<Set<string>>(new Set());
   const [activeConvId, setActiveConvId] = useState(conversations[0]?.id ?? "");
   const [search, setSearch] = useState(initialSearch);
   const [filter, setFilter] = useState<"all" | "unread" | "open" | "closed">("all");
+  const [locallyReadIds, setLocallyReadIds] = useState<Set<string>>(new Set());
   const [message, setMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
@@ -283,13 +288,25 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
     };
   }, [conversationIdsKey, organizationId, router]);
 
-  function markRead() {
+  // Auto-mark conversation as read when it becomes active or when unread_count increases
+  useEffect(() => {
     if (!activeConv) return;
-    startTransition(async () => {
-      const result = await markConversationReadAction(activeConv.id);
-      setMessage(result.message);
-    });
-  }
+
+    if (activeConv.unread_count === 0) {
+      // Server confirmed read — clear dedup block so future inbound messages auto-mark again
+      markedReadRef.current.delete(activeConv.id);
+      return;
+    }
+
+    // Prevent duplicate calls for the same (id, unread_count) cycle
+    if (markedReadRef.current.has(activeConv.id)) return;
+    markedReadRef.current.add(activeConv.id);
+
+    // Optimistic: remove badge immediately without waiting for server refresh
+    setLocallyReadIds((prev) => new Set([...prev, activeConv.id]));
+
+    void markConversationReadAction(activeConv.id);
+  }, [activeConv?.id, activeConv?.unread_count]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function toggleClosed() {
     if (!activeConv) return;
@@ -359,6 +376,7 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
               key={conversation.id}
               conversation={conversation}
               isActive={conversation.id === activeConv?.id}
+              locallyRead={locallyReadIds.has(conversation.id)}
               onClick={() => setActiveConvId(conversation.id)}
             />
           ))}
@@ -401,9 +419,6 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
                     {STATUS_LABELS[lead.status] ?? lead.status}
                   </Badge>
                 )}
-                <Button variant="secondary" size="sm" onClick={markRead} disabled={isPending || activeConv.unread_count === 0}>
-                  Marcar lida
-                </Button>
                 <Button variant="ghost" size="icon-sm" asChild>
                   <a href={`https://wa.me/${cleanJid(activeConv.remote_jid)}`} target="_blank" rel="noreferrer">
                     <Phone className="h-3.5 w-3.5" />
