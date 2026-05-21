@@ -776,6 +776,229 @@ export async function deleteCustomFieldAction(fieldId: string): Promise<ActionRe
   }
 }
 
+export async function fetchWhatsappChatsAction(instanceName: string): Promise<ActionResult> {
+  try {
+    const { admin, organizationId, isSyncAdmin } = await getContext();
+    const baseUrl = process.env.EVOLUTION_API_URL;
+    const apiKey = process.env.EVOLUTION_API_KEY;
+    if (!baseUrl || !apiKey) {
+      return { ok: false, message: "Evolution API nao configurada neste deploy." };
+    }
+    const evolutionApiUrl = normalizeEvolutionApiUrl(baseUrl);
+
+    const { data: instance } = await admin
+      .from("whatsapp_instances")
+      .select("id, organization_id")
+      .eq("instance_name", instanceName)
+      .maybeSingle();
+
+    if (!instance?.id) return { ok: false, message: "Instancia nao encontrada no CRM." };
+    if (!isSyncAdmin && instance.organization_id !== organizationId) {
+      return { ok: false, message: "Sem permissao para acessar esta instancia." };
+    }
+
+    const orgId = instance.organization_id as string;
+
+    const response = await fetch(
+      `${evolutionApiUrl}/chat/findChats/${encodeURIComponent(instanceName)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: apiKey },
+        body: JSON.stringify({ where: {} }),
+        cache: "no-store",
+      }
+    );
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({})) as Record<string, unknown>;
+      const msg = (errorData?.message ?? errorData?.error ?? `status ${response.status}`) as string;
+      return { ok: false, message: `Evolution ${response.status}: ${msg}` };
+    }
+
+    const rawData = await response.json().catch(() => []) as unknown;
+    const chatsArray: Record<string, unknown>[] = Array.isArray(rawData)
+      ? rawData as Record<string, unknown>[]
+      : Array.isArray((rawData as Record<string, unknown>)?.chats)
+        ? (rawData as { chats: Record<string, unknown>[] }).chats
+        : Array.isArray((rawData as Record<string, unknown>)?.data)
+          ? (rawData as { data: Record<string, unknown>[] }).data
+          : [];
+
+    const individualChats = chatsArray.filter((chat) => {
+      const jid = (chat.id ?? chat.remoteJid ?? "") as string;
+      return typeof jid === "string" && jid.endsWith("@s.whatsapp.net");
+    });
+
+    if (individualChats.length === 0) {
+      return {
+        ok: true,
+        message: "Nenhuma conversa individual encontrada. Certifique-se de que o WhatsApp esta conectado.",
+        data: { chats: [], instanceId: instance.id },
+      };
+    }
+
+    const phones = individualChats.map((chat) => {
+      const jid = (chat.id ?? chat.remoteJid ?? "") as string;
+      return jid.split("@")[0].replace(/\D/g, "");
+    }).filter(Boolean);
+
+    const { data: existingLeads } = await admin
+      .from("leads")
+      .select("id, phone")
+      .eq("organization_id", orgId)
+      .in("phone", phones);
+
+    const phoneToLeadId = new Map(
+      (existingLeads ?? []).map((lead) => [lead.phone as string, lead.id as string])
+    );
+
+    const chats = individualChats.map((chat) => {
+      const jid = (chat.id ?? chat.remoteJid ?? "") as string;
+      const phone = jid.split("@")[0].replace(/\D/g, "");
+      const leadId = phoneToLeadId.get(phone) ?? null;
+      return {
+        remoteJid: jid,
+        phone,
+        name: (chat.name ?? chat.pushName ?? null) as string | null,
+        lastMessageTimestamp: (chat.lastMsgTimestamp ?? chat.lastMessageTimestamp ?? null) as number | null,
+        hasLead: leadId !== null,
+        leadId,
+      };
+    });
+
+    chats.sort((a, b) => {
+      if (a.hasLead !== b.hasLead) return a.hasLead ? 1 : -1;
+      return (b.lastMessageTimestamp ?? 0) - (a.lastMessageTimestamp ?? 0);
+    });
+
+    return {
+      ok: true,
+      message: `${chats.length} conversa(s) encontrada(s).`,
+      data: { chats, instanceId: instance.id as string },
+    };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao buscar conversas." };
+  }
+}
+
+export async function importWhatsappConversationsAction(
+  instanceName: string,
+  remoteJids: string[]
+): Promise<ActionResult> {
+  try {
+    const { admin, organizationId, isSyncAdmin } = await getContext();
+
+    if (!remoteJids.length) return { ok: false, message: "Nenhuma conversa selecionada." };
+    if (remoteJids.length > 200) return { ok: false, message: "Maximo de 200 conversas por vez." };
+
+    const { data: instance } = await admin
+      .from("whatsapp_instances")
+      .select("id, organization_id")
+      .eq("instance_name", instanceName)
+      .maybeSingle();
+
+    if (!instance?.id) return { ok: false, message: "Instancia nao encontrada no CRM." };
+    if (!isSyncAdmin && instance.organization_id !== organizationId) {
+      return { ok: false, message: "Sem permissao para acessar esta instancia." };
+    }
+
+    const orgId = instance.organization_id as string;
+
+    let sourceId: string | null = null;
+    const { data: waSource } = await admin
+      .from("lead_sources")
+      .select("id")
+      .eq("organization_id", orgId)
+      .ilike("name", "WhatsApp")
+      .maybeSingle();
+    if (waSource?.id) {
+      sourceId = waSource.id as string;
+    } else {
+      const { data: newSource } = await admin
+        .from("lead_sources")
+        .insert({ organization_id: orgId, name: "WhatsApp", color: "#22c55e" })
+        .select("id")
+        .single();
+      sourceId = (newSource?.id as string | undefined) ?? null;
+    }
+
+    let leadsCreated = 0;
+    let conversationsCreated = 0;
+
+    for (const remoteJid of remoteJids) {
+      if (!remoteJid.endsWith("@s.whatsapp.net")) continue;
+      const phone = remoteJid.split("@")[0].replace(/\D/g, "");
+      if (!phone) continue;
+
+      const { data: existingLead } = await admin
+        .from("leads")
+        .select("id")
+        .eq("organization_id", orgId)
+        .eq("phone", phone)
+        .maybeSingle();
+
+      let leadId: string;
+      if (existingLead?.id) {
+        leadId = existingLead.id as string;
+      } else {
+        const { data: newLead, error: leadError } = await admin
+          .from("leads")
+          .insert({
+            organization_id: orgId,
+            name: phone,
+            phone,
+            source_id: sourceId,
+            status: "new",
+            last_interaction_at: new Date().toISOString(),
+          })
+          .select("id")
+          .single();
+        if (leadError || !newLead?.id) continue;
+        leadId = newLead.id as string;
+        leadsCreated++;
+      }
+
+      const { data: existingConv } = await admin
+        .from("conversations")
+        .select("id")
+        .eq("instance_id", instance.id)
+        .eq("remote_jid", remoteJid)
+        .maybeSingle();
+
+      if (!existingConv?.id) {
+        const { error: convError } = await admin
+          .from("conversations")
+          .insert({
+            organization_id: orgId,
+            instance_id: instance.id,
+            lead_id: leadId,
+            remote_jid: remoteJid,
+            unread_count: 0,
+            status: "open",
+          });
+        if (!convError) conversationsCreated++;
+      } else {
+        await admin
+          .from("conversations")
+          .update({ lead_id: leadId })
+          .eq("id", existingConv.id)
+          .is("lead_id", null);
+      }
+    }
+
+    revalidatePath("/admin");
+    revalidatePath("/inbox");
+    revalidatePath("/leads");
+
+    return {
+      ok: true,
+      message: `Importacao concluida: ${leadsCreated} lead(s) criado(s), ${conversationsCreated} conversa(s) nova(s).`,
+    };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao importar conversas." };
+  }
+}
+
 export async function deactivateInboundWebhookAction(token: string): Promise<ActionResult> {
   try {
     const { admin, organizationId } = await getContext();

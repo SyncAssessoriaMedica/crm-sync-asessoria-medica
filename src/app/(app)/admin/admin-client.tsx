@@ -8,8 +8,10 @@ import {
   Building2,
   CheckCircle2,
   Copy,
+  Download,
   Globe,
   Layers,
+  Loader2,
   QrCode,
   RefreshCw,
   Settings2,
@@ -47,7 +49,9 @@ import {
   deletePipelineStageAction,
   deleteSourceAction,
   deleteTagAction,
+  fetchWhatsappChatsAction,
   generatePasswordAction,
+  importWhatsappConversationsAction,
   movePipelineStageAction,
   syncWhatsappInstanceStatusAction,
   toggleUserBanAction,
@@ -144,6 +148,15 @@ type SourceRow = {
   created_at: string;
 };
 
+type ChatPreview = {
+  remoteJid: string;
+  phone: string;
+  name: string | null;
+  lastMessageTimestamp: number | null;
+  hasLead: boolean;
+  leadId: string | null;
+};
+
 export type AdminData = {
   isSyncAdmin: boolean;
   baseUrl: string;
@@ -206,6 +219,10 @@ export function AdminClient({ data }: { data: AdminData }) {
     Object.fromEntries(data.whatsappInstances.map((instance) => [instance.instance_name, instance.status]))
   );
   const [isPending, startTransition] = useTransition();
+  const [chatsByInstance, setChatsByInstance] = useState<
+    Record<string, { chats: ChatPreview[]; instanceId: string } | "loading">
+  >({});
+  const [selectedJids, setSelectedJids] = useState<Record<string, string[]>>({});
 
   function runAction(action: (formData: FormData) => Promise<{ ok: boolean; message: string; data?: unknown }>) {
     return (formData: FormData) => {
@@ -409,7 +426,77 @@ export function AdminClient({ data }: { data: AdminData }) {
                         <QrCode className="h-3.5 w-3.5" />
                         {isConnected ? "Conectado" : "Conectar"}
                       </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="gap-1.5"
+                        disabled={isPending}
+                        onClick={() => {
+                          const name = instance.instance_name;
+                          if (chatsByInstance[name] !== undefined) {
+                            setChatsByInstance((prev) => { const next = { ...prev }; delete next[name]; return next; });
+                            setSelectedJids((prev) => { const next = { ...prev }; delete next[name]; return next; });
+                            return;
+                          }
+                          setChatsByInstance((prev) => ({ ...prev, [name]: "loading" }));
+                          startTransition(async () => {
+                            const result = await fetchWhatsappChatsAction(name);
+                            if (result.ok) {
+                              const d = result.data as { chats: ChatPreview[]; instanceId: string };
+                              setChatsByInstance((prev) => ({ ...prev, [name]: d }));
+                              setMessage(result.message);
+                            } else {
+                              setMessage(result.message);
+                              setChatsByInstance((prev) => { const next = { ...prev }; delete next[name]; return next; });
+                            }
+                          });
+                        }}
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        {chatsByInstance[instance.instance_name] !== undefined ? "Fechar lista" : "Buscar conversas"}
+                      </Button>
                     </CardContent>
+                    {chatsByInstance[instance.instance_name] !== undefined && (
+                      <WhatsappChatPanel
+                        instanceName={instance.instance_name}
+                        chatsState={chatsByInstance[instance.instance_name] as { chats: ChatPreview[]; instanceId: string } | "loading"}
+                        selectedJids={selectedJids[instance.instance_name] ?? []}
+                        isPending={isPending}
+                        onSelectChange={(jid, checked) => {
+                          setSelectedJids((prev) => {
+                            const current = prev[instance.instance_name] ?? [];
+                            return {
+                              ...prev,
+                              [instance.instance_name]: checked
+                                ? [...current, jid]
+                                : current.filter((j) => j !== jid),
+                            };
+                          });
+                        }}
+                        onSelectAll={() => {
+                          const state = chatsByInstance[instance.instance_name];
+                          if (!state || state === "loading") return;
+                          const newJids = state.chats.filter((c) => !c.hasLead).map((c) => c.remoteJid);
+                          setSelectedJids((prev) => ({ ...prev, [instance.instance_name]: newJids }));
+                        }}
+                        onClearSelection={() => {
+                          setSelectedJids((prev) => ({ ...prev, [instance.instance_name]: [] }));
+                        }}
+                        onImport={() => {
+                          const jids = selectedJids[instance.instance_name] ?? [];
+                          if (!jids.length) return;
+                          startTransition(async () => {
+                            const result = await importWhatsappConversationsAction(instance.instance_name, jids);
+                            setMessage(result.message);
+                            if (result.ok) {
+                              setChatsByInstance((prev) => { const next = { ...prev }; delete next[instance.instance_name]; return next; });
+                              setSelectedJids((prev) => { const next = { ...prev }; delete next[instance.instance_name]; return next; });
+                            }
+                          });
+                        }}
+                      />
+                    )}
                   </Card>
                   );
                 })}
@@ -913,6 +1000,116 @@ function webhookNameFromPayload(payload: unknown) {
   if (!payload || typeof payload !== "object") return "-";
   const name = (payload as { webhook_name?: unknown }).webhook_name;
   return typeof name === "string" && name ? name : "-";
+}
+
+function WhatsappChatPanel({
+  chatsState,
+  selectedJids,
+  isPending,
+  onSelectChange,
+  onSelectAll,
+  onClearSelection,
+  onImport,
+}: {
+  instanceName: string;
+  chatsState: { chats: ChatPreview[]; instanceId: string } | "loading";
+  selectedJids: string[];
+  isPending: boolean;
+  onSelectChange: (jid: string, checked: boolean) => void;
+  onSelectAll: () => void;
+  onClearSelection: () => void;
+  onImport: () => void;
+}) {
+  if (chatsState === "loading") {
+    return (
+      <div className="flex items-center gap-2 border-t border-border px-4 py-3 text-xs text-text-muted">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        Buscando conversas na Evolution...
+      </div>
+    );
+  }
+
+  const { chats } = chatsState;
+  const newChats = chats.filter((c) => !c.hasLead);
+
+  return (
+    <div className="space-y-3 border-t border-border px-4 py-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="flex-1 text-xs text-text-secondary">
+          <span className="font-semibold text-text-primary">{chats.length}</span> conversa(s){" · "}
+          <span className="font-semibold text-brand-green-deep">{newChats.length}</span> nova(s){" · "}
+          <span className="font-semibold">{selectedJids.length}</span> selecionada(s)
+        </p>
+        <Button type="button" variant="ghost" size="sm" disabled={isPending || newChats.length === 0} onClick={onSelectAll}>
+          Selecionar novas
+        </Button>
+        <Button type="button" variant="ghost" size="sm" disabled={isPending || selectedJids.length === 0} onClick={onClearSelection}>
+          Limpar
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          className="gap-1.5"
+          disabled={isPending || selectedJids.length === 0}
+          onClick={onImport}
+        >
+          <Download className="h-3.5 w-3.5" />
+          Importar {selectedJids.length > 0 ? selectedJids.length : ""}
+        </Button>
+      </div>
+
+      {chats.length === 0 ? (
+        <p className="rounded-lg border border-border bg-background-subtle px-3 py-2 text-xs text-text-muted">
+          Nenhuma conversa individual encontrada. Certifique-se de que o WhatsApp esta conectado.
+        </p>
+      ) : (
+        <div className="max-h-72 overflow-y-auto rounded-xl border border-border">
+          {chats.map((chat) => {
+            const isSelected = selectedJids.includes(chat.remoteJid);
+            return (
+              <label
+                key={chat.remoteJid}
+                className={cn(
+                  "flex cursor-pointer items-center gap-3 px-3 py-2 transition-colors",
+                  chat.hasLead
+                    ? "cursor-default bg-background-subtle/50"
+                    : isSelected
+                      ? "bg-brand-green-soft"
+                      : "bg-white hover:bg-background-subtle"
+                )}
+              >
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 shrink-0 accent-brand-green"
+                  checked={isSelected}
+                  disabled={chat.hasLead || isPending}
+                  onChange={(e) => onSelectChange(chat.remoteJid, e.target.checked)}
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-xs font-medium text-text-primary">
+                    {chat.name && chat.name !== chat.phone ? chat.name : chat.phone}
+                  </p>
+                  {chat.name && chat.name !== chat.phone && (
+                    <p className="text-[10px] text-text-muted">{chat.phone}</p>
+                  )}
+                </div>
+                {chat.hasLead ? (
+                  <Badge variant="green">Lead</Badge>
+                ) : (
+                  <Badge variant="secondary">Novo</Badge>
+                )}
+                {chat.lastMessageTimestamp !== null && (
+                  <span className="shrink-0 text-[10px] text-text-muted">
+                    {new Date(chat.lastMessageTimestamp * 1000).toLocaleDateString("pt-BR")}
+                  </span>
+                )}
+              </label>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function UserEditRow({
