@@ -29,6 +29,20 @@ function asText(value: FormDataEntryValue | null) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function normalizeEvolutionApiUrl(value: string) {
+  const trimmed = value.trim().replace(/\/+$/, "");
+  try {
+    const url = new URL(trimmed);
+    // The Evolution manager UI lives at /manager, but API routes live at the origin.
+    if (url.pathname === "/manager" || url.pathname.startsWith("/manager/")) {
+      return url.origin;
+    }
+    return `${url.origin}${url.pathname}`.replace(/\/+$/, "");
+  } catch {
+    return trimmed.replace(/\/manager\/?$/, "").replace(/\/+$/, "");
+  }
+}
+
 async function getOrCreateDefaultPipeline(admin: ReturnType<typeof createAdminClient>, organizationId: string) {
   const { data: existing, error } = await admin
     .from("pipelines")
@@ -331,6 +345,7 @@ export async function connectWhatsappInstanceAction(instanceName: string): Promi
         message: "A conexao WhatsApp ainda nao esta disponivel neste deploy. Confirme EVOLUTION_API_URL e EVOLUTION_API_KEY no projeto da Vercel e faca um novo deploy.",
       };
     }
+    const evolutionApiUrl = normalizeEvolutionApiUrl(baseUrl);
 
     const { data: instance } = await admin
       .from("whatsapp_instances")
@@ -354,7 +369,7 @@ export async function connectWhatsappInstanceAction(instanceName: string): Promi
     // Attempt webhook configuration — non-blocking so QR Code still shows on failure
     let webhookWarning: string | null = null;
     try {
-      const webhookResponse = await fetch(`${baseUrl.replace(/\/$/, "")}/webhook/set/${encodeURIComponent(instanceName)}`, {
+      const webhookResponse = await fetch(`${evolutionApiUrl}/webhook/set/${encodeURIComponent(instanceName)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json", apikey: apiKey },
         body: JSON.stringify({
@@ -379,14 +394,17 @@ export async function connectWhatsappInstanceAction(instanceName: string): Promi
       webhookWarning = "Webhook nao configurado automaticamente. Configure manualmente na Evolution apos conectar.";
     }
 
-    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/instance/connect/${encodeURIComponent(instanceName)}`, {
+    const response = await fetch(`${evolutionApiUrl}/instance/connect/${encodeURIComponent(instanceName)}`, {
       headers: { apikey: apiKey },
       cache: "no-store",
     });
     const data = await response.json().catch(() => ({})) as Record<string, unknown>;
     if (!response.ok) {
       const evMsg = (data?.message ?? data?.error ?? JSON.stringify(data).slice(0, 200)) as string;
-      return { ok: false, message: `Evolution ${response.status}: ${evMsg}` };
+      const hint = response.status === 404
+        ? " Verifique se EVOLUTION_API_URL esta sem /manager no final e se o nome da instancia existe na Evolution."
+        : "";
+      return { ok: false, message: `Evolution ${response.status}: ${evMsg}.${hint}` };
     }
 
     // Evolution v2 nests QR under data.qrcode; v1 exposes at root
