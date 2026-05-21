@@ -43,6 +43,10 @@ function normalizeEvolutionApiUrl(value: string) {
   }
 }
 
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function getOrCreateDefaultPipeline(admin: ReturnType<typeof createAdminClient>, organizationId: string) {
   const { data: existing, error } = await admin
     .from("pipelines")
@@ -392,6 +396,24 @@ export async function connectWhatsappInstanceAction(instanceName: string): Promi
       }
     } catch {
       webhookWarning = "Webhook nao configurado automaticamente. Configure manualmente na Evolution apos conectar.";
+    }
+
+    try {
+      const stateResponse = await fetch(`${evolutionApiUrl}/instance/connectionState/${encodeURIComponent(instanceName)}`, {
+        headers: { apikey: apiKey },
+        cache: "no-store",
+      });
+      const stateData = await stateResponse.json().catch(() => ({})) as { instance?: { state?: string } };
+      if (stateResponse.ok && stateData.instance?.state !== "open") {
+        await fetch(`${evolutionApiUrl}/instance/logout/${encodeURIComponent(instanceName)}`, {
+          method: "DELETE",
+          headers: { apikey: apiKey },
+          cache: "no-store",
+        }).catch(() => null);
+        await wait(600);
+      }
+    } catch {
+      // Se a checagem de estado falhar, seguimos para gerar o QR normalmente.
     }
 
     const response = await fetch(`${evolutionApiUrl}/instance/connect/${encodeURIComponent(instanceName)}`, {
