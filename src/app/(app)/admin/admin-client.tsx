@@ -11,6 +11,7 @@ import {
   Globe,
   Layers,
   QrCode,
+  RefreshCw,
   Settings2,
   Smartphone,
   Tag,
@@ -48,6 +49,7 @@ import {
   deleteTagAction,
   generatePasswordAction,
   movePipelineStageAction,
+  syncWhatsappInstanceStatusAction,
   toggleUserBanAction,
   updateCustomFieldAction,
   updateInboundWebhookAction,
@@ -200,6 +202,9 @@ export function AdminClient({ data }: { data: AdminData }) {
     pairingCode: string | null;
     count: number | null;
   } | null>(null);
+  const [instanceStatuses, setInstanceStatuses] = useState<Record<string, string>>(() =>
+    Object.fromEntries(data.whatsappInstances.map((instance) => [instance.instance_name, instance.status]))
+  );
   const [isPending, startTransition] = useTransition();
 
   function runAction(action: (formData: FormData) => Promise<{ ok: boolean; message: string; data?: unknown }>) {
@@ -339,6 +344,8 @@ export function AdminClient({ data }: { data: AdminData }) {
               <div className="grid gap-3">
                 {data.whatsappInstances.map((instance) => {
                   const organization = Array.isArray(instance.organizations) ? instance.organizations[0] ?? null : instance.organizations;
+                  const status = instanceStatuses[instance.instance_name] ?? instance.status;
+                  const isConnected = status === "connected";
                   return (
                   <Card key={instance.id}>
                     <CardContent className="flex flex-wrap items-center gap-3 pt-5">
@@ -350,20 +357,45 @@ export function AdminClient({ data }: { data: AdminData }) {
                           {organization?.name ? ` · ${organization.name}` : ""}
                         </p>
                       </div>
-                      <Badge variant={instance.status === "connected" ? "green" : instance.status === "connecting" ? "warning" : "secondary"}>
-                        {instance.status}
+                      <Badge variant={status === "connected" ? "green" : status === "connecting" ? "warning" : "secondary"}>
+                        {status}
                       </Badge>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="gap-1.5"
+                        disabled={isPending}
+                        onClick={() => {
+                          startTransition(async () => {
+                            const result = await syncWhatsappInstanceStatusAction(instance.instance_name);
+                            setMessage(result.message);
+                            if (result.ok) {
+                              const payload = result.data as { status?: string; instanceName?: string } | undefined;
+                              if (payload?.instanceName && payload.status) {
+                                setInstanceStatuses((current) => ({ ...current, [payload.instanceName!]: payload.status! }));
+                                if (payload.status === "connected") setQrPayload(null);
+                              }
+                            }
+                          });
+                        }}
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                        Atualizar
+                      </Button>
                       <Button
                         type="button"
                         variant="secondary"
                         size="sm"
                         className="gap-1.5"
+                        disabled={isPending || isConnected}
                         onClick={() => {
                           setQrPayload(null);
                           startTransition(async () => {
                             const result = await connectWhatsappInstanceAction(instance.instance_name);
                             setMessage(result.message);
                             if (result.ok) {
+                              setInstanceStatuses((current) => ({ ...current, [instance.instance_name]: "connecting" }));
                               setQrPayload(result.data as {
                                 instanceName: string;
                                 qrCodeDataUrl: string | null;
@@ -375,7 +407,7 @@ export function AdminClient({ data }: { data: AdminData }) {
                         }}
                       >
                         <QrCode className="h-3.5 w-3.5" />
-                        Conectar
+                        {isConnected ? "Conectado" : "Conectar"}
                       </Button>
                     </CardContent>
                   </Card>

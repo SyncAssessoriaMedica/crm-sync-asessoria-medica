@@ -463,6 +463,52 @@ export async function connectWhatsappInstanceAction(instanceName: string): Promi
   }
 }
 
+export async function syncWhatsappInstanceStatusAction(instanceName: string): Promise<ActionResult> {
+  try {
+    const { admin, organizationId, isSyncAdmin } = await getContext();
+    const baseUrl = process.env.EVOLUTION_API_URL;
+    const apiKey = process.env.EVOLUTION_API_KEY;
+    if (!baseUrl || !apiKey) {
+      return { ok: false, message: "Evolution API nao configurada neste deploy." };
+    }
+    const evolutionApiUrl = normalizeEvolutionApiUrl(baseUrl);
+
+    const { data: instance } = await admin
+      .from("whatsapp_instances")
+      .select("id, organization_id, instance_name")
+      .eq("instance_name", instanceName)
+      .maybeSingle();
+
+    if (!instance?.id) return { ok: false, message: "Instancia nao encontrada no CRM." };
+    if (!isSyncAdmin && instance.organization_id !== organizationId) {
+      return { ok: false, message: "Sem permissao para consultar esta instancia." };
+    }
+
+    const response = await fetch(`${evolutionApiUrl}/instance/connectionState/${encodeURIComponent(instanceName)}`, {
+      headers: { apikey: apiKey },
+      cache: "no-store",
+    });
+    const data = await response.json().catch(() => ({})) as { instance?: { state?: string } };
+    if (!response.ok) {
+      const msg = JSON.stringify(data).slice(0, 160);
+      return { ok: false, message: `Nao foi possivel consultar a Evolution (${response.status}). ${msg}` };
+    }
+
+    const state = data.instance?.state ?? "close";
+    const status = state === "open" ? "connected" : state === "connecting" ? "connecting" : "disconnected";
+    await admin.from("whatsapp_instances").update({ status }).eq("id", instance.id);
+    revalidatePath("/admin");
+
+    return {
+      ok: true,
+      message: status === "connected" ? "WhatsApp conectado com sucesso." : `Status atualizado: ${status}.`,
+      data: { status, instanceName },
+    };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao sincronizar WhatsApp." };
+  }
+}
+
 export async function createInboundWebhookAction(formData: FormData): Promise<ActionResult> {
   try {
     const { admin, organizationId } = await getContext();
