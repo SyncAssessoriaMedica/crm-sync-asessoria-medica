@@ -72,7 +72,9 @@ export default async function AdminPage() {
       .from("organization_members")
       .select("id, role, organization_id, organizations(id, name), profiles(id, email, full_name, role)")
       .order("created_at", { ascending: false }),
-    admin.from("whatsapp_instances").select("id, instance_name, phone_number, status, created_at").eq("organization_id", organizationId).order("created_at", { ascending: false }),
+    (isSyncAdmin
+      ? admin.from("whatsapp_instances").select("id, instance_name, phone_number, status, created_at, organizations(id, name)").order("created_at", { ascending: false })
+      : admin.from("whatsapp_instances").select("id, instance_name, phone_number, status, created_at, organizations(id, name)").eq("organization_id", organizationId).order("created_at", { ascending: false })),
     admin.from("webhook_events").select("id, source, event_type, payload, processed, error, created_at").eq("organization_id", organizationId).eq("source", "inbound_webhook_config").order("created_at", { ascending: false }).limit(50),
     admin.from("webhook_events").select("id, source, event_type, payload, processed, error, created_at").eq("organization_id", organizationId).eq("source", "inbound_webhook_incoming").order("created_at", { ascending: false }).limit(10),
     admin.from("custom_fields").select("id, name, key, field_type, options, required, order, created_at").eq("organization_id", organizationId).order("order", { ascending: true }).order("created_at", { ascending: true }),

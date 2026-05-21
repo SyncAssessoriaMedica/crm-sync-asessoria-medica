@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
+import Image from "next/image";
 import {
   ArrowDown,
   ArrowUp,
@@ -78,6 +79,7 @@ type WhatsappInstance = {
   phone_number: string | null;
   status: string;
   created_at: string;
+  organizations?: { id: string; name: string } | { id: string; name: string }[] | null;
 };
 
 type WebhookConfig = {
@@ -192,7 +194,12 @@ export function AdminClient({ data }: { data: AdminData }) {
   );
   const [activeSection, setActiveSection] = useState(sections[0]?.id ?? "users");
   const [message, setMessage] = useState<string | null>(null);
-  const [qrPayload, setQrPayload] = useState<string | null>(null);
+  const [qrPayload, setQrPayload] = useState<{
+    instanceName: string;
+    qrCodeDataUrl: string | null;
+    pairingCode: string | null;
+    count: number | null;
+  } | null>(null);
   const [isPending, startTransition] = useTransition();
 
   function runAction(action: (formData: FormData) => Promise<{ ok: boolean; message: string; data?: unknown }>) {
@@ -318,16 +325,30 @@ export function AdminClient({ data }: { data: AdminData }) {
               <form action={runAction(createWhatsappInstanceAction)} className="grid gap-3 rounded-xl border border-border bg-background-subtle/50 p-4 md:grid-cols-[1fr_180px_auto]">
                 <Field label="Nome da instancia" name="instance_name" placeholder="clinica-atendimento-1" required />
                 <Field label="Telefone" name="phone_number" placeholder="5511999999999" />
+                {data.isSyncAdmin && (
+                  <div className="md:col-span-2">
+                    <SelectField label="Clinica" name="organization_id" defaultValue={data.organizations[0]?.id}>
+                      {data.organizations.map((org) => (
+                        <SelectItem key={org.id} value={org.id}>{org.name}</SelectItem>
+                      ))}
+                    </SelectField>
+                  </div>
+                )}
                 <Button className="self-end" disabled={isPending}>Cadastrar</Button>
               </form>
               <div className="grid gap-3">
-                {data.whatsappInstances.map((instance) => (
+                {data.whatsappInstances.map((instance) => {
+                  const organization = Array.isArray(instance.organizations) ? instance.organizations[0] ?? null : instance.organizations;
+                  return (
                   <Card key={instance.id}>
                     <CardContent className="flex flex-wrap items-center gap-3 pt-5">
                       <Smartphone className="h-4 w-4 text-brand-green" />
                       <div className="flex-1">
                         <p className="text-sm font-semibold text-text-primary">{instance.instance_name}</p>
-                        <p className="text-xs text-text-muted">{instance.phone_number ?? "Sem telefone informado"}</p>
+                        <p className="text-xs text-text-muted">
+                          {instance.phone_number ?? "Sem telefone informado"}
+                          {organization?.name ? ` · ${organization.name}` : ""}
+                        </p>
                       </div>
                       <Badge variant={instance.status === "connected" ? "green" : instance.status === "connecting" ? "warning" : "secondary"}>
                         {instance.status}
@@ -341,7 +362,14 @@ export function AdminClient({ data }: { data: AdminData }) {
                           startTransition(async () => {
                             const result = await connectWhatsappInstanceAction(instance.instance_name);
                             setMessage(result.message);
-                            if (result.ok) setQrPayload(JSON.stringify(result.data, null, 2));
+                            if (result.ok) {
+                              setQrPayload(result.data as {
+                                instanceName: string;
+                                qrCodeDataUrl: string | null;
+                                pairingCode: string | null;
+                                count: number | null;
+                              });
+                            }
                           });
                         }}
                       >
@@ -350,12 +378,40 @@ export function AdminClient({ data }: { data: AdminData }) {
                       </Button>
                     </CardContent>
                   </Card>
-                ))}
+                  );
+                })}
               </div>
               {qrPayload && (
-                <pre className="max-h-80 overflow-auto rounded-xl border border-border bg-sidebar-dark p-4 text-xs text-white">
-                  {qrPayload}
-                </pre>
+                <Card>
+                  <CardContent className="flex flex-col items-center gap-4 pt-5 text-center">
+                    <div>
+                      <p className="text-sm font-bold text-text-primary">Escaneie o QR Code no WhatsApp</p>
+                      <p className="mt-1 text-xs text-text-muted">
+                        Instancia: {qrPayload.instanceName}. Abra o WhatsApp no celular, toque em Aparelhos conectados e escaneie.
+                      </p>
+                    </div>
+                    {qrPayload.qrCodeDataUrl ? (
+                      <Image
+                        src={qrPayload.qrCodeDataUrl}
+                        alt="QR Code WhatsApp"
+                        width={288}
+                        height={288}
+                        unoptimized
+                        className="h-72 w-72 rounded-xl border border-border bg-white p-3 shadow-card"
+                      />
+                    ) : (
+                      <div className="rounded-xl border border-warning-amber/30 bg-warning-amber/10 p-4 text-xs text-text-secondary">
+                        A Evolution iniciou a conexao, mas nao retornou uma imagem de QR Code. Tente clicar em Conectar novamente em alguns segundos.
+                      </div>
+                    )}
+                    {qrPayload.pairingCode && (
+                      <div className="rounded-lg border border-border bg-background-subtle px-4 py-2">
+                        <p className="text-[10px] font-bold uppercase text-text-muted">Codigo de pareamento</p>
+                        <p className="font-mono text-lg font-black text-text-primary">{qrPayload.pairingCode}</p>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
               )}
             </Section>
           )}

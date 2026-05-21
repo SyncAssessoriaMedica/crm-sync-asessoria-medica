@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import QRCode from "qrcode";
 import { z } from "zod";
 import { createAdminClient, createClient } from "@/lib/supabase/server";
 import { slugify } from "@/lib/utils";
@@ -319,12 +320,13 @@ export async function createCustomFieldAction(formData: FormData): Promise<Actio
 
 export async function createWhatsappInstanceAction(formData: FormData): Promise<ActionResult> {
   try {
-    const { admin, organizationId } = await getContext();
+    const { admin, organizationId, isSyncAdmin } = await getContext();
     const instanceName = asText(formData.get("instance_name"));
     const phone = asText(formData.get("phone_number")).replace(/\D/g, "");
+    const targetOrgId = isSyncAdmin ? (asText(formData.get("organization_id")) || organizationId) : organizationId;
     if (instanceName.length < 2) return { ok: false, message: "Informe o nome da instancia." };
     const { error } = await admin.from("whatsapp_instances").insert({
-      organization_id: organizationId,
+      organization_id: targetOrgId,
       instance_name: instanceName,
       phone_number: phone || null,
       status: "disconnected",
@@ -339,23 +341,78 @@ export async function createWhatsappInstanceAction(formData: FormData): Promise<
 
 export async function connectWhatsappInstanceAction(instanceName: string): Promise<ActionResult> {
   try {
-    const { admin, organizationId } = await getContext();
+    const { admin, organizationId, isSyncAdmin } = await getContext();
     const baseUrl = process.env.EVOLUTION_API_URL;
     const apiKey = process.env.EVOLUTION_API_KEY;
     if (!baseUrl || !apiKey) return { ok: false, message: "Configure EVOLUTION_API_URL e EVOLUTION_API_KEY na Vercel." };
+
+    const { data: instance } = await admin
+      .from("whatsapp_instances")
+      .select("id, organization_id, instance_name")
+      .eq("instance_name", instanceName)
+      .maybeSingle();
+
+    if (!instance?.id) return { ok: false, message: "Instancia nao encontrada no CRM." };
+    if (!isSyncAdmin && instance.organization_id !== organizationId) {
+      return { ok: false, message: "Sem permissao para conectar esta instancia." };
+    }
+
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "");
+    if (!appUrl) return { ok: false, message: "Configure NEXT_PUBLIC_APP_URL na Vercel." };
+
+    const webhookResponse = await fetch(`${baseUrl.replace(/\/$/, "")}/webhook/set/${encodeURIComponent(instanceName)}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: apiKey,
+      },
+      body: JSON.stringify({
+        enabled: true,
+        url: `${appUrl}/api/webhooks/evolution`,
+        webhookByEvents: false,
+        webhookBase64: false,
+        events: ["MESSAGES_UPSERT", "SEND_MESSAGE", "CONNECTION_UPDATE", "QRCODE_UPDATED", "MESSAGES_UPDATE"],
+      }),
+      cache: "no-store",
+    });
+
+    if (!webhookResponse.ok) {
+      const data = await webhookResponse.json().catch(() => ({}));
+      return { ok: false, message: data?.message ?? "Nao foi possivel configurar o webhook na Evolution." };
+    }
+
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/instance/connect/${encodeURIComponent(instanceName)}`, {
       headers: { apikey: apiKey },
       cache: "no-store",
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) return { ok: false, message: data?.message ?? "Evolution nao retornou QR Code." };
+
+    const rawQr = data?.base64 ?? data?.qrcode ?? data?.qrCode ?? data?.code;
+    let qrCodeDataUrl: string | null = null;
+    if (typeof rawQr === "string" && rawQr.startsWith("data:image")) {
+      qrCodeDataUrl = rawQr;
+    } else if (typeof rawQr === "string" && rawQr.match(/^[A-Za-z0-9+/=]+$/) && rawQr.length > 200) {
+      qrCodeDataUrl = `data:image/png;base64,${rawQr}`;
+    } else if (typeof data?.code === "string" && data.code.length > 0) {
+      qrCodeDataUrl = await QRCode.toDataURL(data.code, { margin: 1, width: 320 });
+    }
+
     await admin
       .from("whatsapp_instances")
       .update({ status: "connecting" })
-      .eq("organization_id", organizationId)
-      .eq("instance_name", instanceName);
+      .eq("id", instance.id);
     revalidatePath("/admin");
-    return { ok: true, message: "QR Code gerado.", data };
+    return {
+      ok: true,
+      message: qrCodeDataUrl ? "QR Code gerado no CRM." : "Conexao iniciada, mas a Evolution nao retornou imagem de QR Code.",
+      data: {
+        qrCodeDataUrl,
+        pairingCode: data?.pairingCode ?? null,
+        count: data?.count ?? null,
+        instanceName,
+      },
+    };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "Erro ao conectar WhatsApp." };
   }
