@@ -1,6 +1,6 @@
-﻿"use client";
+"use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import {
   ChevronDown,
@@ -9,12 +9,14 @@ import {
   Copy,
   Download,
   Edit2,
+  Edit3,
   Filter,
   MessageCircle,
   MoreHorizontal,
   Plus,
   Search,
   Trash2,
+  X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -35,16 +37,24 @@ import {
 } from "@/components/ui/select";
 import { cn, formatCurrency, formatDate, formatPhone, getInitials } from "@/lib/utils";
 import type { LeadListItem, LeadOptionData } from "./types";
-import { createLeadAction, deleteLeadAction, getLeadCustomValuesAction, updateLeadAction } from "./actions";
+import {
+  createLeadAction,
+  deleteLeadAction,
+  deleteLeadsBulkAction,
+  getLeadCustomValuesAction,
+  updateLeadAction,
+} from "./actions";
 import { LeadForm } from "./lead-form";
+import { BulkEditModal } from "./bulk-edit-modal";
 
 type LeadsClientProps = {
   leads: LeadListItem[];
   options: LeadOptionData;
   organizationName: string;
+  role: string;
 };
 
-export function LeadsClient({ leads, options, organizationName }: LeadsClientProps) {
+export function LeadsClient({ leads, options, organizationName, role }: LeadsClientProps) {
   const [search, setSearch] = useState("");
   const [stageFilter, setStageFilter] = useState("all");
   const [sourceFilter, setSourceFilter] = useState("all");
@@ -56,6 +66,13 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
   const [editingCustomValues, setEditingCustomValues] = useState<Record<string, string>>({});
   const [message, setMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+
+  // ── Bulk selection ──────────────────────────────────────────────────────────
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkEditOpen, setBulkEditOpen] = useState(false);
+  const selectAllRef = useRef<HTMLInputElement>(null);
+
+  const canBulkDelete = ["super_admin", "gestor_sync", "admin_clinica"].includes(role);
 
   const filtered = useMemo(() => {
     const normalizedSearch = search.toLowerCase().trim();
@@ -82,9 +99,66 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
     });
   }, [filtered, sortDir, sortField]);
 
-  const activeFilterCount = [stageFilter, sourceFilter].filter(
-    (value) => value !== "all"
-  ).length;
+  // Drive the select-all checkbox indeterminate state
+  useEffect(() => {
+    if (!selectAllRef.current) return;
+    const visibleIds = sorted.map((l) => l.id);
+    const selectedVisible = visibleIds.filter((id) => selectedIds.has(id));
+    const allSelected = visibleIds.length > 0 && selectedVisible.length === visibleIds.length;
+    const someSelected = selectedVisible.length > 0 && !allSelected;
+    selectAllRef.current.checked = allSelected;
+    selectAllRef.current.indeterminate = someSelected;
+  }, [sorted, selectedIds]);
+
+  const selectedCount = useMemo(
+    () => sorted.filter((l) => selectedIds.has(l.id)).length,
+    [sorted, selectedIds]
+  );
+
+  function toggleSelect(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    const visibleIds = sorted.map((l) => l.id);
+    const allSelected = visibleIds.every((id) => selectedIds.has(id));
+    if (allSelected) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        visibleIds.forEach((id) => next.delete(id));
+        return next;
+      });
+    } else {
+      setSelectedIds((prev) => new Set([...prev, ...visibleIds]));
+    }
+  }
+
+  function clearSelection() {
+    setSelectedIds(new Set());
+  }
+
+  function handleBulkDelete() {
+    const ids = sorted.filter((l) => selectedIds.has(l.id)).map((l) => l.id);
+    if (!ids.length) return;
+    if (
+      !confirm(
+        `Tem certeza que deseja apagar ${ids.length} lead${ids.length !== 1 ? "s" : ""}? Esta acao nao pode ser desfeita.`
+      )
+    )
+      return;
+    startTransition(async () => {
+      const result = await deleteLeadsBulkAction(ids);
+      setMessage(result.message);
+      if (result.ok) clearSelection();
+    });
+  }
+
+  const activeFilterCount = [stageFilter, sourceFilter].filter((v) => v !== "all").length;
 
   const handleSort = (field: keyof LeadListItem) => {
     if (sortField === field) setSortDir(sortDir === "asc" ? "desc" : "asc");
@@ -170,7 +244,7 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
         .join(",");
     });
 
-    const BOM = "\uFEFF";
+    const BOM = "﻿";
     const blob = new Blob([BOM + [headers.join(","), ...csvRows].join("\r\n")], {
       type: "text/csv;charset=utf-8",
     });
@@ -194,6 +268,11 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
       setMessage(result.message);
     });
   }
+
+  const selectedLeadIds = useMemo(
+    () => sorted.filter((l) => selectedIds.has(l.id)).map((l) => l.id),
+    [sorted, selectedIds]
+  );
 
   return (
     <div className="space-y-5">
@@ -222,10 +301,13 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
               placeholder="Buscar por nome, telefone, email, procedimento..."
               className="h-8 pl-8 text-xs"
               value={search}
-              onChange={(event) => setSearch(event.target.value)}
+              onChange={(event) => {
+                setSearch(event.target.value);
+                setSelectedIds(new Set());
+              }}
             />
           </div>
-          <Select value={stageFilter} onValueChange={setStageFilter}>
+          <Select value={stageFilter} onValueChange={(v) => { setStageFilter(v); setSelectedIds(new Set()); }}>
             <SelectTrigger className="h-8 w-44 text-xs">
               <SelectValue placeholder="Todas as etapas" />
             </SelectTrigger>
@@ -242,7 +324,7 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
             variant={showAdvanced ? "outline" : "ghost"}
             size="sm"
             className="gap-1.5 text-xs"
-            onClick={() => setShowAdvanced((value) => !value)}
+            onClick={() => setShowAdvanced((v) => !v)}
           >
             <Filter className="h-3.5 w-3.5" />
             Filtros {activeFilterCount > 0 ? `(${activeFilterCount})` : ""}
@@ -252,7 +334,7 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
 
         {showAdvanced && (
           <div className="mt-4 grid gap-3 border-t border-border pt-4 md:grid-cols-2">
-            <FilterSelect label="Origem" value={sourceFilter} onValueChange={setSourceFilter}>
+            <FilterSelect label="Origem" value={sourceFilter} onValueChange={(v) => { setSourceFilter(v); setSelectedIds(new Set()); }}>
               <SelectItem value="all">Todas as origens</SelectItem>
               {options.sources.map((source) => (
                 <SelectItem key={source.id} value={source.id}>
@@ -268,6 +350,7 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
                   setSearch("");
                   setStageFilter("all");
                   setSourceFilter("all");
+                  setSelectedIds(new Set());
                 }}
               >
                 Limpar filtros
@@ -276,6 +359,51 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
           </div>
         )}
       </div>
+
+      {/* ── Bulk action bar ──────────────────────────────────────────────────── */}
+      {selectedCount > 0 && (
+        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-brand-green/30 bg-brand-green-soft px-4 py-3">
+          <span className="text-xs font-semibold text-brand-green-deep">
+            {selectedCount} lead{selectedCount !== 1 ? "s" : ""} selecionado{selectedCount !== 1 ? "s" : ""}
+          </span>
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              className="gap-1.5"
+              disabled={isPending}
+              onClick={() => setBulkEditOpen(true)}
+            >
+              <Edit3 className="h-3.5 w-3.5" />
+              Editar selecionados
+            </Button>
+            {canBulkDelete && (
+              <Button
+                type="button"
+                size="sm"
+                variant="destructive"
+                className="gap-1.5"
+                disabled={isPending}
+                onClick={handleBulkDelete}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {isPending ? "Apagando..." : "Apagar selecionados"}
+              </Button>
+            )}
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="gap-1.5 text-text-secondary"
+              onClick={clearSelection}
+            >
+              <X className="h-3.5 w-3.5" />
+              Limpar selecao
+            </Button>
+          </div>
+        </div>
+      )}
 
       {message && (
         <div className="rounded-lg border border-border bg-brand-green-soft px-3 py-2 text-xs font-medium text-brand-green-deep">
@@ -288,6 +416,16 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border bg-background-subtle">
+                {/* Checkbox column */}
+                <th className="w-10 px-3 py-2.5">
+                  <input
+                    ref={selectAllRef}
+                    type="checkbox"
+                    aria-label="Selecionar todos os leads visiveis"
+                    className="h-4 w-4 cursor-pointer accent-brand-green"
+                    onChange={toggleSelectAll}
+                  />
+                </th>
                 {[
                   { label: "Lead", field: "name" as keyof LeadListItem },
                   { label: "Telefone", field: null },
@@ -315,18 +453,42 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {sorted.map((lead) => (
-                  <tr key={lead.id} className="group transition-colors hover:bg-background-subtle/50">
+              {sorted.map((lead) => {
+                const isSelected = selectedIds.has(lead.id);
+                return (
+                  <tr
+                    key={lead.id}
+                    className={cn(
+                      "group transition-colors",
+                      isSelected
+                        ? "bg-brand-green-soft/60 hover:bg-brand-green-soft"
+                        : "hover:bg-background-subtle/50"
+                    )}
+                  >
+                    <td className="w-10 px-3 py-3">
+                      <input
+                        type="checkbox"
+                        aria-label={`Selecionar ${lead.name}`}
+                        checked={isSelected}
+                        onChange={() => toggleSelect(lead.id)}
+                        className="h-4 w-4 cursor-pointer accent-brand-green"
+                      />
+                    </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2.5">
                         <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-green-soft text-[10px] font-bold text-brand-green-deep">
                           {getInitials(lead.name)}
                         </div>
                         <div>
-                          <Link href={`/leads/${lead.id}`} className="font-medium leading-none text-text-primary hover:text-brand-green-dark">
+                          <Link
+                            href={`/leads/${lead.id}`}
+                            className="font-medium leading-none text-text-primary hover:text-brand-green-dark"
+                          >
                             {lead.name}
                           </Link>
-                          {lead.email && <p className="mt-0.5 text-[11px] text-text-muted">{lead.email}</p>}
+                          {lead.email && (
+                            <p className="mt-0.5 text-[11px] text-text-muted">{lead.email}</p>
+                          )}
                           {(lead.lead_tags ?? []).length > 0 && (
                             <div className="mt-1 flex flex-wrap gap-1">
                               {(lead.lead_tags ?? []).map((lt) => {
@@ -347,21 +509,32 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
                         </div>
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-xs text-text-secondary">{formatPhone(lead.phone)}</td>
-                    <td className="px-4 py-3 text-xs text-text-secondary">{lead.procedure ?? "-"}</td>
+                    <td className="px-4 py-3 text-xs text-text-secondary">
+                      {formatPhone(lead.phone)}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-text-secondary">
+                      {lead.procedure ?? "-"}
+                    </td>
                     <td className="px-4 py-3">
                       <Badge variant={lead.stage ? "green" : "secondary"}>
                         {lead.stage?.name ?? "Sem etapa"}
                       </Badge>
                     </td>
-                    <td className="px-4 py-3 text-[11px] text-text-muted">{lead.source?.name ?? "-"}</td>
+                    <td className="px-4 py-3 text-[11px] text-text-muted">
+                      {lead.source?.name ?? "-"}
+                    </td>
                     <td className="px-4 py-3 text-xs font-medium text-text-primary">
                       {lead.potential_value ? formatCurrency(lead.potential_value) : "-"}
                     </td>
-                    <td className="px-4 py-3 text-xs text-text-muted">{formatDate(lead.created_at)}</td>
+                    <td className="px-4 py-3 text-xs text-text-muted">
+                      {formatDate(lead.created_at)}
+                    </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-1">
-                        <Link href={`/leads/${lead.id}`} className="text-xs font-medium text-brand-green hover:underline">
+                        <Link
+                          href={`/leads/${lead.id}`}
+                          className="text-xs font-medium text-brand-green hover:underline"
+                        >
                           Ver
                         </Link>
                         <DropdownMenu>
@@ -378,7 +551,11 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
                               <Copy /> Copiar telefone
                             </DropdownMenuItem>
                             <DropdownMenuItem asChild>
-                              <a href={`https://wa.me/${lead.phone.replace(/\D/g, "")}`} target="_blank" rel="noreferrer">
+                              <a
+                                href={`https://wa.me/${lead.phone.replace(/\D/g, "")}`}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
                                 <MessageCircle /> Abrir WhatsApp
                               </a>
                             </DropdownMenuItem>
@@ -386,7 +563,11 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
                               <Download /> Exportar este lead
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
-                            <DropdownMenuItem className="text-danger-red focus:text-danger-red" onClick={() => deleteLead(lead)} disabled={isPending}>
+                            <DropdownMenuItem
+                              className="text-danger-red focus:text-danger-red"
+                              onClick={() => deleteLead(lead)}
+                              disabled={isPending}
+                            >
                               <Trash2 /> Excluir lead
                             </DropdownMenuItem>
                           </DropdownMenuContent>
@@ -394,7 +575,8 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
                       </div>
                     </td>
                   </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -422,6 +604,18 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
             ? updateLeadAction(editingLead.id, formData)
             : createLeadAction(formData)
         }
+      />
+
+      <BulkEditModal
+        open={bulkEditOpen}
+        count={selectedCount}
+        leadIds={selectedLeadIds}
+        options={options}
+        onClose={() => setBulkEditOpen(false)}
+        onSuccess={(msg) => {
+          setMessage(msg);
+          clearSelection();
+        }}
       />
     </div>
   );

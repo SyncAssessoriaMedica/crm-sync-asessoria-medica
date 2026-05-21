@@ -76,6 +76,7 @@ export default async function LeadsPage() {
       leads={(leadsResult.data ?? []) as LeadListItem[]}
       options={options}
       organizationName={organization?.name ?? "Sync Marketing"}
+      role={userRole}
     />
   );
 }

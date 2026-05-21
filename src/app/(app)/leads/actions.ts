@@ -38,6 +38,8 @@ async function getCurrentContext() {
     admin: context.admin,
     user: context.user,
     organizationId: context.organizationId,
+    role: context.role,
+    isSyncAdmin: context.isSyncAdmin,
   };
 }
 
@@ -356,5 +358,125 @@ export async function updateLeadStageAction(leadId: string, stageId: string): Pr
     return { ok: true, message: "Etapa atualizada." };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "Erro ao atualizar etapa." };
+  }
+}
+
+// ─── Bulk actions ─────────────────────────────────────────────────────────────
+
+const BULK_DELETE_ROLES = ["super_admin", "gestor_sync", "admin_clinica"];
+
+export async function deleteLeadsBulkAction(leadIds: string[]): Promise<ActionResult> {
+  try {
+    const { admin, organizationId, role } = await getCurrentContext();
+
+    if (!BULK_DELETE_ROLES.includes(role)) {
+      return { ok: false, message: "Sem permissao para apagar leads em massa." };
+    }
+    if (!leadIds.length) return { ok: false, message: "Nenhum lead selecionado." };
+    if (leadIds.length > 500) return { ok: false, message: "Maximo de 500 leads por operacao." };
+
+    // Confirm all IDs belong to the active org (prevents cross-tenant delete)
+    const { data: owned, error: checkError } = await admin
+      .from("leads")
+      .select("id")
+      .eq("organization_id", organizationId)
+      .in("id", leadIds);
+
+    if (checkError) return { ok: false, message: checkError.message };
+
+    const ownedIds = (owned ?? []).map((row) => row.id as string);
+    if (ownedIds.length !== leadIds.length) {
+      return { ok: false, message: "Alguns leads nao pertencem a esta clinica." };
+    }
+
+    // Delete dependencies explicitly (safe regardless of whether CASCADE is set)
+    await admin.from("custom_field_values").delete().in("lead_id", ownedIds);
+    await admin.from("lead_tags").delete().in("lead_id", ownedIds);
+    await admin.from("lead_notes").delete().in("lead_id", ownedIds);
+    await admin.from("lead_events").delete().in("lead_id", ownedIds);
+    await admin.from("lead_tasks").delete().in("lead_id", ownedIds);
+    // Keep conversations but detach from deleted leads
+    await admin.from("conversations").update({ lead_id: null }).in("lead_id", ownedIds);
+
+    const { error } = await admin.from("leads").delete().in("id", ownedIds);
+    if (error) return { ok: false, message: error.message };
+
+    revalidatePath("/leads");
+    revalidatePath("/dashboard");
+    revalidatePath("/inbox");
+    return { ok: true, message: `${ownedIds.length} lead(s) apagado(s) com sucesso.` };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao apagar leads." };
+  }
+}
+
+export async function updateLeadsBulkAction(
+  leadIds: string[],
+  updates: {
+    stage_id?: string;
+    source_id?: string;
+    tagsToAdd?: string[];
+    tagsToRemove?: string[];
+  }
+): Promise<ActionResult> {
+  try {
+    const { admin, organizationId } = await getCurrentContext();
+
+    if (!leadIds.length) return { ok: false, message: "Nenhum lead selecionado." };
+    if (leadIds.length > 500) return { ok: false, message: "Maximo de 500 leads por operacao." };
+
+    // Confirm all IDs belong to the active org
+    const { data: owned, error: checkError } = await admin
+      .from("leads")
+      .select("id")
+      .eq("organization_id", organizationId)
+      .in("id", leadIds);
+
+    if (checkError) return { ok: false, message: checkError.message };
+
+    const ownedIds = (owned ?? []).map((row) => row.id as string);
+    if (ownedIds.length !== leadIds.length) {
+      return { ok: false, message: "Alguns leads nao pertencem a esta clinica." };
+    }
+
+    const leadUpdates: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    if (updates.stage_id !== undefined) {
+      const stageId = updates.stage_id || null;
+      leadUpdates.stage_id = stageId;
+      leadUpdates.status = await getStatusForStage(admin, stageId);
+    }
+    if (updates.source_id !== undefined) {
+      leadUpdates.source_id = updates.source_id || null;
+    }
+
+    if (Object.keys(leadUpdates).length > 1) {
+      const { error } = await admin
+        .from("leads")
+        .update(leadUpdates)
+        .in("id", ownedIds)
+        .eq("organization_id", organizationId);
+      if (error) return { ok: false, message: error.message };
+    }
+
+    if (updates.tagsToAdd?.length) {
+      const tagRows = ownedIds.flatMap((leadId) =>
+        updates.tagsToAdd!.map((tagId) => ({ lead_id: leadId, tag_id: tagId }))
+      );
+      await admin
+        .from("lead_tags")
+        .upsert(tagRows, { onConflict: "lead_id,tag_id", ignoreDuplicates: true });
+    }
+
+    if (updates.tagsToRemove?.length) {
+      for (const tagId of updates.tagsToRemove) {
+        await admin.from("lead_tags").delete().in("lead_id", ownedIds).eq("tag_id", tagId);
+      }
+    }
+
+    revalidatePath("/leads");
+    revalidatePath("/dashboard");
+    return { ok: true, message: `${ownedIds.length} lead(s) atualizado(s) com sucesso.` };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao atualizar leads." };
   }
 }
