@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   CalendarCheck,
   CheckCheck,
@@ -23,6 +24,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { createClient } from "@/lib/supabase/client";
 import { cn, formatCurrency, formatDateTime, formatPhone, formatTimeAgo, getInitials } from "@/lib/utils";
 import { markConversationReadAction, updateConversationStatusAction } from "./actions";
 import type { InboxConversation, InboxMessage } from "./types";
@@ -48,6 +50,7 @@ const MEDIA_LABELS: Record<string, string> = {
 };
 
 type InboxClientProps = {
+  organizationId: string;
   conversations: InboxConversation[];
   messagesByConversation: Record<string, InboxMessage[]>;
   instances: { id: string; instance_name: string; phone_number: string | null; status: string }[];
@@ -176,7 +179,9 @@ function ConversationItem({
   );
 }
 
-export function InboxClient({ conversations, messagesByConversation, instances, initialSearch, period }: InboxClientProps) {
+export function InboxClient({ organizationId, conversations, messagesByConversation, instances, initialSearch, period }: InboxClientProps) {
+  const router = useRouter();
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [activeConvId, setActiveConvId] = useState(conversations[0]?.id ?? "");
   const [search, setSearch] = useState(initialSearch);
   const [filter, setFilter] = useState<"all" | "unread" | "open" | "closed">("all");
@@ -216,6 +221,67 @@ export function InboxClient({ conversations, messagesByConversation, instances, 
   const messages = activeConv ? messagesByConversation[activeConv.id] ?? [] : [];
   const lead = activeConv?.lead ?? null;
   const activeInstance = activeConv?.instance ?? instances[0] ?? null;
+  const conversationIdsKey = useMemo(
+    () => conversations.map((conversation) => conversation.id).sort().join(","),
+    [conversations]
+  );
+
+  useEffect(() => {
+    const scheduleRefresh = () => {
+      if (refreshTimerRef.current) return;
+      refreshTimerRef.current = setTimeout(() => {
+        refreshTimerRef.current = null;
+        router.refresh();
+      }, 350);
+    };
+
+    const supabase = createClient();
+    const conversationIds = new Set(conversationIdsKey.split(",").filter(Boolean));
+    const channel = supabase
+      .channel(`inbox-live-${organizationId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "conversations",
+          filter: `organization_id=eq.${organizationId}`,
+        },
+        scheduleRefresh
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "messages",
+        },
+        (payload) => {
+          const nextConversationId =
+            (payload.new as { conversation_id?: string } | null)?.conversation_id ??
+            (payload.old as { conversation_id?: string } | null)?.conversation_id;
+          if (!nextConversationId || conversationIds.has(nextConversationId)) scheduleRefresh();
+        }
+      )
+      .subscribe();
+
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") router.refresh();
+    }, 4000);
+
+    const onFocus = () => router.refresh();
+    window.addEventListener("focus", onFocus);
+
+    return () => {
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+      void supabase.removeChannel(channel);
+    };
+  }, [conversationIdsKey, organizationId, router]);
 
   function markRead() {
     if (!activeConv) return;

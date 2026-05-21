@@ -116,6 +116,7 @@ export default async function InboxPage({
   return (
     <InboxClient
       key={`${params?.q ?? ""}-${params?.period ?? "30d"}`}
+      organizationId={organizationId}
       conversations={conversations}
       messagesByConversation={messagesByConversation}
       instances={(instancesResult.data ?? []) as InboxInstance[]}
