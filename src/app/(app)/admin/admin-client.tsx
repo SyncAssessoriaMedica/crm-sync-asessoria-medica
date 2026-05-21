@@ -41,10 +41,19 @@ import {
   createUserAction,
   createWhatsappInstanceAction,
   deactivateInboundWebhookAction,
+  deleteCustomFieldAction,
   deletePipelineStageAction,
+  deleteSourceAction,
+  deleteTagAction,
+  generatePasswordAction,
   movePipelineStageAction,
+  toggleUserBanAction,
+  updateCustomFieldAction,
   updateInboundWebhookAction,
   updatePipelineStageAction,
+  updateSourceAction,
+  updateTagAction,
+  updateUserAction,
 } from "./actions";
 
 type Organization = {
@@ -137,9 +146,11 @@ export type AdminData = {
   organizationName: string;
   organizations: Organization[];
   users: UserRow[];
+  bannedUserIds: string[];
   whatsappInstances: WhatsappInstance[];
   webhookConfigs: WebhookConfig[];
   webhookDeliveries: WebhookDelivery[];
+  lastDeliveryByToken: Record<string, WebhookDelivery>;
   customFields: CustomField[];
   pipelineStages: PipelineStageRow[];
   tags: TagRow[];
@@ -154,12 +165,6 @@ const ROLE_LABELS: Record<string, string> = {
   leitura: "Leitura",
 };
 
-const ROLE_HELP: Record<string, string> = {
-  gestor_sync: "Acesso Sync para gerenciar clinicas, usuarios e configuracoes.",
-  admin_clinica: "Acesso completo da clinica: dashboard, leads, inbox e administrador da propria clinica.",
-  atendente: "Acesso operacional para leads e inbox.",
-  leitura: "Acesso de acompanhamento para dashboard e leitura.",
-};
 
 const FIELD_TYPES = [
   { value: "text", label: "Texto" },
@@ -265,7 +270,7 @@ export function AdminClient({ data }: { data: AdminData }) {
           )}
 
           {activeSection === "users" && (
-            <Section title="Usuarios" description="Crie usuarios e defina o perfil de acesso. Os perfis controlam quais areas fazem sentido para cada pessoa.">
+            <Section title="Usuarios" description="Crie e gerencie usuarios. Edite perfis, troque de organizacao (admin Sync) ou gere uma nova senha temporaria.">
               <form action={runAction(createUserAction)} className="grid gap-3 rounded-xl border border-border bg-background-subtle/50 p-4 md:grid-cols-2">
                 <Field label="Nome" name="full_name" placeholder="Nome do usuario" required />
                 <Field label="Email" name="email" type="email" placeholder="usuario@clinica.com" required />
@@ -285,24 +290,26 @@ export function AdminClient({ data }: { data: AdminData }) {
                 <div className="self-end">
                   <Button disabled={isPending}>Criar usuario</Button>
                 </div>
-                <div className="md:col-span-2 grid gap-2 md:grid-cols-2">
-                  {Object.entries(ROLE_HELP).map(([role, help]) => (
-                    <div key={role} className="rounded-lg border border-border bg-white p-3 text-xs">
-                      <p className="font-semibold text-text-primary">{ROLE_LABELS[role]}</p>
-                      <p className="mt-1 text-text-muted">{help}</p>
-                    </div>
-                  ))}
-                </div>
               </form>
-              <DataTable
-                headers={["Usuario", "Email", "Perfil", "Clinica"]}
-                rows={data.users.map((user) => [
-                  user.profile?.full_name ?? "-",
-                  user.profile?.email ?? "-",
-                  <Badge key="role" variant="secondary">{ROLE_LABELS[user.role] ?? user.role}</Badge>,
-                  user.organization?.name ?? "-",
-                ])}
-              />
+
+              <div className="space-y-2">
+                {data.users.length === 0 && (
+                  <p className="rounded-xl border border-border bg-white p-6 text-center text-xs text-text-muted">Nenhum usuario encontrado.</p>
+                )}
+                {data.users.map((user) => (
+                  <UserEditRow
+                    key={user.id}
+                    user={user}
+                    organizations={data.organizations}
+                    isSyncAdmin={data.isSyncAdmin}
+                    isBanned={data.bannedUserIds.includes(user.profile?.id ?? user.id)}
+                    isPending={isPending}
+                    onRun={runAction}
+                    onMessage={setMessage}
+                    onTransition={startTransition}
+                  />
+                ))}
+              </div>
             </Section>
           )}
 
@@ -371,6 +378,7 @@ export function AdminClient({ data }: { data: AdminData }) {
                     config={config}
                     baseUrl={data.baseUrl}
                     customFields={data.customFields}
+                    lastDelivery={data.lastDeliveryByToken[config.token] ?? null}
                     isPending={isPending}
                     onRun={runAction}
                     onMessage={setMessage}
@@ -391,29 +399,65 @@ export function AdminClient({ data }: { data: AdminData }) {
           )}
 
           {activeSection === "custom_fields" && (
-            <Section title="Campos customizados" description="Campos criados aqui aparecem no formulario e na ficha dos leads. Webhooks podem preencher usando custom_fields com a chave do campo.">
+            <Section title="Campos customizados" description="Campos criados aqui aparecem no formulario e na ficha dos leads. Ao apagar, os valores dos leads tambem sao removidos.">
               <form action={runAction(createCustomFieldAction)} className="grid gap-3 rounded-xl border border-border bg-background-subtle/50 p-4 md:grid-cols-2">
                 <Field label="Nome do campo" name="name" placeholder="Especialidade desejada" required />
                 <Field label="Chave tecnica" name="key" placeholder="especialidade_desejada" />
                 <SelectField label="Tipo" name="field_type" defaultValue="text">
                   {FIELD_TYPES.map((type) => <SelectItem key={type.value} value={type.value}>{type.label}</SelectItem>)}
                 </SelectField>
-                <Field label="Opcoes" name="options" placeholder="Opcao A, Opcao B" />
+                <Field label="Opcoes (para select/lista)" name="options" placeholder="Opcao A, Opcao B" />
                 <label className="flex items-center gap-2 text-sm text-text-secondary">
                   <input type="checkbox" name="required" className="h-4 w-4 accent-brand-green" />
                   Campo obrigatorio
                 </label>
                 <div className="self-end"><Button disabled={isPending}>Criar campo</Button></div>
               </form>
-              <DataTable
-                headers={["Campo", "Chave", "Tipo", "Obrigatorio"]}
-                rows={data.customFields.map((field) => [
-                  field.name,
-                  field.key,
-                  field.field_type,
-                  field.required ? "Sim" : "Nao",
-                ])}
-              />
+              {data.customFields.length === 0 ? (
+                <p className="rounded-xl border border-border bg-white p-6 text-center text-xs text-text-muted">Nenhum campo cadastrado.</p>
+              ) : (
+                <div className="space-y-2">
+                  {data.customFields.map((field) => (
+                    <form
+                      key={field.id}
+                      action={runAction(updateCustomFieldAction)}
+                      className="grid gap-3 rounded-xl border border-border bg-white p-3 md:grid-cols-2"
+                    >
+                      <input type="hidden" name="id" value={field.id} />
+                      <Field label="Nome" name="name" defaultValue={field.name} required />
+                      <SelectField label="Tipo" name="field_type" defaultValue={field.field_type}>
+                        {FIELD_TYPES.map((type) => <SelectItem key={type.value} value={type.value}>{type.label}</SelectItem>)}
+                      </SelectField>
+                      <Field label="Opcoes (separar por virgula)" name="options" defaultValue={(field.options ?? []).join(", ")} />
+                      <div className="flex items-end gap-2">
+                        <label className="flex h-9 items-center gap-2 text-sm text-text-secondary">
+                          <input type="checkbox" name="required" defaultChecked={field.required} className="h-4 w-4 accent-brand-green" />
+                          Obrigatorio
+                        </label>
+                      </div>
+                      <div className="flex items-end gap-2 md:col-span-2">
+                        <p className="flex-1 text-xs text-text-muted">Chave: <code className="font-mono">{field.key}</code></p>
+                        <Button variant="secondary" className="self-end" disabled={isPending}>Salvar</Button>
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          className="self-end"
+                          disabled={isPending}
+                          onClick={() => {
+                            if (!confirm(`Apagar o campo "${field.name}"? Os valores nos leads tambem serao removidos.`)) return;
+                            startTransition(async () => {
+                              const result = await deleteCustomFieldAction(field.id);
+                              setMessage(result.message);
+                            });
+                          }}
+                        >
+                          Apagar
+                        </Button>
+                      </div>
+                    </form>
+                  ))}
+                </div>
+              )}
             </Section>
           )}
 
@@ -496,23 +540,86 @@ export function AdminClient({ data }: { data: AdminData }) {
           )}
 
           {activeSection === "tags" && (
-            <Section title="Tags" description="Padronize etiquetas usadas para classificar leads e conversas.">
+            <Section title="Tags" description="Padronize etiquetas para classificar leads. Tags podem ser aplicadas diretamente na ficha do lead.">
               <form action={runAction(createTagAction)} className="grid gap-3 rounded-xl border border-border bg-background-subtle/50 p-4 md:grid-cols-[1fr_130px_auto]">
                 <Field label="Nome da tag" name="name" placeholder="Quente" required />
                 <Field label="Cor" name="color" type="color" defaultValue="#22c55e" />
                 <Button className="self-end" disabled={isPending}>Criar</Button>
               </form>
-              <PillList items={data.tags.map((tag) => ({ name: tag.name, color: tag.color ?? "#22c55e" }))} />
+              {data.tags.length === 0 ? (
+                <p className="rounded-xl border border-border bg-white p-6 text-center text-xs text-text-muted">Nenhuma tag cadastrada.</p>
+              ) : (
+                <div className="space-y-2">
+                  {data.tags.map((tag) => (
+                    <form
+                      key={tag.id}
+                      action={runAction(updateTagAction)}
+                      className="grid gap-3 rounded-xl border border-border bg-white p-3 md:grid-cols-[1fr_120px_auto_auto]"
+                    >
+                      <input type="hidden" name="id" value={tag.id} />
+                      <Field label="Nome" name="name" defaultValue={tag.name} required />
+                      <Field label="Cor" name="color" type="color" defaultValue={tag.color ?? "#22c55e"} />
+                      <Button variant="secondary" className="self-end" disabled={isPending}>Salvar</Button>
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        className="self-end"
+                        disabled={isPending}
+                        onClick={() => {
+                          if (!confirm(`Remover a tag "${tag.name}"?`)) return;
+                          startTransition(async () => {
+                            const result = await deleteTagAction(tag.id);
+                            setMessage(result.message);
+                          });
+                        }}
+                      >
+                        Apagar
+                      </Button>
+                    </form>
+                  ))}
+                </div>
+              )}
             </Section>
           )}
 
           {activeSection === "sources" && (
-            <Section title="Origens" description="Configure as origens que aparecem no cadastro, filtros e relatórios de leads.">
+            <Section title="Origens" description="Configure as origens de leads. Origens em uso por leads nao podem ser apagadas.">
               <form action={runAction(createSourceAction)} className="grid gap-3 rounded-xl border border-border bg-background-subtle/50 p-4 md:grid-cols-[1fr_auto]">
                 <Field label="Nome da origem" name="name" placeholder="Meta Ads" required />
                 <Button className="self-end" disabled={isPending}>Criar</Button>
               </form>
-              <PillList items={data.sources.map((source) => ({ name: source.name, color: source.color ?? "#22c55e" }))} />
+              {data.sources.length === 0 ? (
+                <p className="rounded-xl border border-border bg-white p-6 text-center text-xs text-text-muted">Nenhuma origem cadastrada.</p>
+              ) : (
+                <div className="space-y-2">
+                  {data.sources.map((source) => (
+                    <form
+                      key={source.id}
+                      action={runAction(updateSourceAction)}
+                      className="grid gap-3 rounded-xl border border-border bg-white p-3 md:grid-cols-[1fr_auto_auto]"
+                    >
+                      <input type="hidden" name="id" value={source.id} />
+                      <Field label="Nome" name="name" defaultValue={source.name} required />
+                      <Button variant="secondary" className="self-end" disabled={isPending}>Salvar</Button>
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        className="self-end"
+                        disabled={isPending}
+                        onClick={() => {
+                          if (!confirm(`Remover a origem "${source.name}"? Origens em uso por leads nao podem ser apagadas.`)) return;
+                          startTransition(async () => {
+                            const result = await deleteSourceAction(source.id);
+                            setMessage(result.message);
+                          });
+                        }}
+                      >
+                        Apagar
+                      </Button>
+                    </form>
+                  ))}
+                </div>
+              )}
             </Section>
           )}
         </div>
@@ -525,6 +632,7 @@ function WebhookConfigCard({
   config,
   baseUrl,
   customFields,
+  lastDelivery,
   isPending,
   onRun,
   onMessage,
@@ -533,11 +641,13 @@ function WebhookConfigCard({
   config: WebhookConfig;
   baseUrl: string;
   customFields: CustomField[];
+  lastDelivery: WebhookDelivery | null;
   isPending: boolean;
   onRun: (action: (formData: FormData) => Promise<{ ok: boolean; message: string; data?: unknown }>) => (formData: FormData) => void;
   onMessage: (message: string | null) => void;
   onTransition: React.TransitionStartFunction;
 }) {
+  const [showPayload, setShowPayload] = useState(false);
   const url = `${baseUrl}/api/webhooks/inbound/${config.token}`;
   const customDefault = JSON.stringify(config.mappings.custom ?? {}, null, 2);
 
@@ -566,6 +676,32 @@ function WebhookConfigCard({
             Copiar
           </Button>
         </div>
+
+        {lastDelivery && (
+          <div className="rounded-lg border border-border bg-background-subtle/50 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                {lastDelivery.processed
+                  ? <StatusOk />
+                  : <StatusError text={lastDelivery.error ?? "Aguardando mapeamento"} />}
+                <span className="text-xs text-text-muted">Ultimo recebimento: {formatDateTime(lastDelivery.created_at)}</span>
+              </div>
+              <Button type="button" variant="ghost" size="sm" className="text-xs" onClick={() => setShowPayload((v) => !v)}>
+                {showPayload ? "Ocultar payload" : "Ver payload"}
+              </Button>
+            </div>
+            {showPayload && (
+              <pre className="mt-2 max-h-48 overflow-auto rounded-lg border border-border bg-sidebar-dark p-3 text-[10px] text-white">
+                {JSON.stringify(lastDelivery.payload, null, 2)}
+              </pre>
+            )}
+          </div>
+        )}
+        {!lastDelivery && (
+          <p className="rounded-lg border border-border bg-background-subtle/50 px-3 py-2 text-xs text-text-muted">
+            Nenhum payload recebido ainda. Cole a URL acima na ferramenta externa e envie um teste.
+          </p>
+        )}
 
         <form action={onRun(updateInboundWebhookAction)} className="space-y-3 rounded-xl border border-border bg-background-subtle/50 p-4">
           <input type="hidden" name="token" value={config.token} />
@@ -675,19 +811,6 @@ function DataTable({ headers, rows }: { headers: string[]; rows: React.ReactNode
   );
 }
 
-function PillList({ items }: { items: Array<{ name: string; color: string }> }) {
-  if (items.length === 0) return <p className="rounded-xl border border-border bg-white p-6 text-center text-xs text-text-muted">Nenhum registro encontrado.</p>;
-  return (
-    <div className="flex flex-wrap gap-2">
-      {items.map((item) => (
-        <span key={item.name} className="inline-flex items-center gap-2 rounded-full border border-border bg-white px-3 py-1.5 text-xs font-semibold text-text-secondary">
-          <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.color }} />
-          {item.name}
-        </span>
-      ))}
-    </div>
-  );
-}
 
 function StatusOk() {
   return <span className="inline-flex items-center gap-1 text-brand-green-deep"><CheckCircle2 className="h-3 w-3" />Processado</span>;
@@ -701,4 +824,108 @@ function webhookNameFromPayload(payload: unknown) {
   if (!payload || typeof payload !== "object") return "-";
   const name = (payload as { webhook_name?: unknown }).webhook_name;
   return typeof name === "string" && name ? name : "-";
+}
+
+function UserEditRow({
+  user,
+  organizations,
+  isSyncAdmin,
+  isBanned,
+  isPending,
+  onRun,
+  onMessage,
+  onTransition,
+}: {
+  user: UserRow;
+  organizations: Organization[];
+  isSyncAdmin: boolean;
+  isBanned: boolean;
+  isPending: boolean;
+  onRun: (action: (formData: FormData) => Promise<{ ok: boolean; message: string; data?: unknown }>) => (formData: FormData) => void;
+  onMessage: (message: string | null) => void;
+  onTransition: React.TransitionStartFunction;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-border bg-white">
+      <div className="flex flex-wrap items-center gap-3 px-4 py-3">
+        <div className="flex-1">
+          <p className="text-sm font-semibold text-text-primary">{user.profile?.full_name ?? "-"}</p>
+          <p className="text-xs text-text-muted">{user.profile?.email ?? "-"}</p>
+        </div>
+        <Badge variant="secondary">{ROLE_LABELS[user.role] ?? user.role}</Badge>
+        {isBanned && <Badge variant="destructive">Desativado</Badge>}
+        <span className="text-xs text-text-muted">{user.organization?.name ?? "-"}</span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="text-xs"
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {expanded ? "Fechar" : "Editar"}
+        </Button>
+      </div>
+
+      {expanded && (
+        <form
+          action={onRun(updateUserAction)}
+          className="grid gap-3 border-t border-border bg-background-subtle/50 p-4 md:grid-cols-2"
+        >
+          <input type="hidden" name="user_id" value={user.profile?.id ?? user.id} />
+          <Field label="Nome" name="full_name" defaultValue={user.profile?.full_name ?? ""} />
+          <SelectField label="Perfil" name="role" defaultValue={user.role}>
+            {(isSyncAdmin
+              ? ["super_admin", "gestor_sync", "admin_clinica", "atendente", "leitura"]
+              : ["admin_clinica", "atendente", "leitura"]
+            ).map((role) => (
+              <SelectItem key={role} value={role}>{ROLE_LABELS[role]}</SelectItem>
+            ))}
+          </SelectField>
+          {isSyncAdmin && (
+            <SelectField label="Clinica" name="organization_id" defaultValue={user.organization_id}>
+              {organizations.map((org) => (
+                <SelectItem key={org.id} value={org.id}>{org.name}</SelectItem>
+              ))}
+            </SelectField>
+          )}
+          <div className="flex flex-wrap items-end gap-2 md:col-span-2">
+            <Button disabled={isPending}>Salvar alteracoes</Button>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={isPending}
+              onClick={() => {
+                if (!confirm("Gerar nova senha temporaria para este usuario?")) return;
+                onTransition(async () => {
+                  const result = await generatePasswordAction(user.profile?.id ?? user.id);
+                  onMessage(result.message);
+                });
+              }}
+            >
+              Gerar nova senha
+            </Button>
+            {isSyncAdmin && (
+              <Button
+                type="button"
+                variant={isBanned ? "secondary" : "destructive"}
+                disabled={isPending}
+                onClick={() => {
+                  const action = isBanned ? "Reativar" : "Desativar";
+                  if (!confirm(`${action} este usuario?`)) return;
+                  onTransition(async () => {
+                    const result = await toggleUserBanAction(user.profile?.id ?? user.id, !isBanned);
+                    onMessage(result.message);
+                  });
+                }}
+              >
+                {isBanned ? "Reativar" : "Desativar"}
+              </Button>
+            )}
+          </div>
+        </form>
+      )}
+    </div>
+  );
 }

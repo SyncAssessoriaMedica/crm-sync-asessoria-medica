@@ -49,7 +49,9 @@ import type {
 import {
   addNoteAction,
   addTaskAction,
+  applyTagToLeadAction,
   deleteLeadAction,
+  removeTagFromLeadAction,
   toggleTaskAction,
   updateLeadAction,
   updateLeadStageAction,
@@ -64,16 +66,20 @@ const EVENT_ICONS: Record<string, { icon: React.ElementType; color: string }> = 
   message: { icon: MessageSquare, color: "bg-blue-50 text-blue-600" },
 };
 
+type TagItem = { id: string; name: string; color: string };
+
 type LeadDetailClientProps = {
   lead: LeadListItem;
   options: LeadOptionData;
+  leadTags: TagItem[];
   notes: LeadNoteItem[];
   events: LeadEventItem[];
   tasks: LeadTaskItem[];
   customValues: Record<string, string>;
 };
 
-export function LeadDetailClient({ lead, options, notes, events, tasks, customValues }: LeadDetailClientProps) {
+export function LeadDetailClient({ lead, options, leadTags: initialLeadTags, notes, events, tasks, customValues }: LeadDetailClientProps) {
+  const [leadTags, setLeadTags] = useState<TagItem[]>(initialLeadTags);
   const [editOpen, setEditOpen] = useState(false);
   const [noteContent, setNoteContent] = useState("");
   const [taskTitle, setTaskTitle] = useState("");
@@ -266,6 +272,56 @@ export function LeadDetailClient({ lead, options, notes, events, tasks, customVa
                     {options.customFields.map((field) => (
                       <Meta key={field.id} label={field.name} value={formatCustomValue(customValues[field.id])} />
                     ))}
+                  </div>
+                </>
+              )}
+              {options.tags.length > 0 && (
+                <>
+                  <Separator />
+                  <div>
+                    <p className="label-eyebrow mb-2">Tags</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {leadTags.map((tag) => (
+                        <span
+                          key={tag.id}
+                          className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-semibold text-white"
+                          style={{ backgroundColor: tag.color }}
+                        >
+                          {tag.name}
+                          <button
+                            type="button"
+                            className="ml-0.5 hover:opacity-70"
+                            onClick={() => {
+                              startTransition(async () => {
+                                const result = await removeTagFromLeadAction(lead.id, tag.id);
+                                if (result.ok) setLeadTags((prev) => prev.filter((t) => t.id !== tag.id));
+                                setMessage(result.message);
+                              });
+                            }}
+                          >
+                            <svg className="h-2.5 w-2.5" viewBox="0 0 10 10" fill="currentColor">
+                              <path d="M1 1l8 8M9 1L1 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                            </svg>
+                          </button>
+                        </span>
+                      ))}
+                      {options.tags.filter((t) => !leadTags.some((lt) => lt.id === t.id)).map((tag) => (
+                        <button
+                          key={tag.id}
+                          type="button"
+                          className="inline-flex items-center gap-1 rounded-full border border-dashed border-border px-2.5 py-0.5 text-[11px] text-text-muted hover:border-brand-green hover:text-brand-green-dark"
+                          onClick={() => {
+                            startTransition(async () => {
+                              const result = await applyTagToLeadAction(lead.id, tag.id);
+                              if (result.ok) setLeadTags((prev) => [...prev, tag]);
+                              setMessage(result.message);
+                            });
+                          }}
+                        >
+                          + {tag.name}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </>
               )}

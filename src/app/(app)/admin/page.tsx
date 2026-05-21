@@ -107,6 +107,23 @@ export default async function AdminPage() {
     });
   }
 
+  const { data: authListData } = await admin.auth.admin.listUsers({ perPage: 1000 });
+  const now = new Date();
+  const bannedUserIds = (authListData?.users ?? [])
+    .filter((u) => u.banned_until && new Date(u.banned_until) > now)
+    .map((u) => u.id);
+
+  const lastDeliveryByToken: Record<string, AdminData["webhookDeliveries"][number]> = {};
+  for (const delivery of webhookDeliveryResult.data ?? []) {
+    const token = (delivery.payload as Record<string, unknown>)?.token as string | undefined;
+    if (token && !lastDeliveryByToken[token]) {
+      lastDeliveryByToken[token] = delivery;
+    }
+    if (!token && !lastDeliveryByToken["__unknown"]) {
+      lastDeliveryByToken["__unknown"] = delivery;
+    }
+  }
+
   const data: AdminData = {
     isSyncAdmin,
     baseUrl: `${protocol}://${host}`,
@@ -122,6 +139,8 @@ export default async function AdminPage() {
     whatsappInstances: whatsappResult.data ?? [],
     webhookConfigs: Array.from(webhookConfigsByToken.values()),
     webhookDeliveries: webhookDeliveryResult.data ?? [],
+    bannedUserIds,
+    lastDeliveryByToken,
     customFields: customFieldsResult.data ?? [],
     pipelineStages: ((stagesResult.data?.pipeline_stages ?? []) as AdminData["pipelineStages"]).sort((a, b) => a.order - b.order),
     tags: tagsResult.data ?? [],

@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useMemo, useState, useTransition } from "react";
 import Link from "next/link";
@@ -35,7 +35,7 @@ import {
 } from "@/components/ui/select";
 import { cn, formatCurrency, formatDate, formatPhone, getInitials } from "@/lib/utils";
 import type { LeadListItem, LeadOptionData } from "./types";
-import { createLeadAction, deleteLeadAction, updateLeadAction } from "./actions";
+import { createLeadAction, deleteLeadAction, getLeadCustomValuesAction, updateLeadAction } from "./actions";
 import { LeadForm } from "./lead-form";
 
 type LeadsClientProps = {
@@ -53,6 +53,7 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [formMode, setFormMode] = useState<"create" | "edit" | null>(null);
   const [editingLead, setEditingLead] = useState<LeadListItem | undefined>();
+  const [editingCustomValues, setEditingCustomValues] = useState<Record<string, string>>({});
   const [message, setMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
@@ -103,16 +104,28 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
   };
 
   function openEdit(lead: LeadListItem) {
+    const existingValues = Object.fromEntries(
+      (lead.custom_field_values ?? []).map((cv) => [cv.field_id, cv.value ?? ""])
+    );
+    setEditingCustomValues(existingValues);
     setEditingLead(lead);
     setFormMode("edit");
+    if (Object.keys(existingValues).length === 0 && options.customFields.length > 0) {
+      startTransition(async () => {
+        const values = await getLeadCustomValuesAction(lead.id);
+        setEditingCustomValues(values);
+      });
+    }
   }
 
   function closeForm() {
     setFormMode(null);
     setEditingLead(undefined);
+    setEditingCustomValues({});
   }
 
   function exportCsv(rows: LeadListItem[]) {
+    const fieldNames = options.customFields.map((f) => f.name);
     const headers = [
       "Nome",
       "Telefone",
@@ -122,11 +135,24 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
       "Etapa",
       "Valor potencial",
       "Valor fechado",
+      "Tags",
+      ...fieldNames,
       "Criado em",
       "Ultima interacao",
     ];
-    const csvRows = rows.map((lead) =>
-      [
+
+    const csvRows = rows.map((lead) => {
+      const leadTagNames = (lead.lead_tags ?? [])
+        .map((lt) => (Array.isArray(lt.tags) ? lt.tags[0] : lt.tags)?.name ?? "")
+        .filter(Boolean)
+        .join("; ");
+
+      const customValueMap = Object.fromEntries(
+        (lead.custom_field_values ?? []).map((cv) => [cv.field_id, cv.value ?? ""])
+      );
+      const customValues = options.customFields.map((f) => customValueMap[f.id] ?? "");
+
+      return [
         lead.name,
         lead.phone,
         lead.email ?? "",
@@ -135,13 +161,17 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
         lead.stage?.name ?? "",
         lead.potential_value ?? "",
         lead.closed_value ?? "",
+        leadTagNames,
+        ...customValues,
         lead.created_at,
         lead.last_interaction_at ?? "",
       ]
         .map((value) => `"${String(value).replace(/"/g, '""')}"`)
-        .join(",")
-    );
-    const blob = new Blob([[headers.join(","), ...csvRows].join("\n")], {
+        .join(",");
+    });
+
+    const BOM = "\uFEFF";
+    const blob = new Blob([BOM + [headers.join(","), ...csvRows].join("\r\n")], {
       type: "text/csv;charset=utf-8",
     });
     const url = URL.createObjectURL(blob);
@@ -297,6 +327,23 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
                             {lead.name}
                           </Link>
                           {lead.email && <p className="mt-0.5 text-[11px] text-text-muted">{lead.email}</p>}
+                          {(lead.lead_tags ?? []).length > 0 && (
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              {(lead.lead_tags ?? []).map((lt) => {
+                                const tag = Array.isArray(lt.tags) ? lt.tags[0] : lt.tags;
+                                if (!tag) return null;
+                                return (
+                                  <span
+                                    key={tag.id}
+                                    className="inline-block rounded-full px-1.5 py-0 text-[9px] font-semibold text-white"
+                                    style={{ backgroundColor: tag.color }}
+                                  >
+                                    {tag.name}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </td>
@@ -368,6 +415,7 @@ export function LeadsClient({ leads, options, organizationName }: LeadsClientPro
         open={formMode !== null}
         options={options}
         lead={editingLead}
+        customValues={editingCustomValues}
         onClose={closeForm}
         onSubmit={(formData) =>
           formMode === "edit" && editingLead

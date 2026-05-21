@@ -101,6 +101,9 @@ export async function createUserAction(formData: FormData): Promise<ActionResult
         organization_id: formData.get("organization_id"),
       });
     if (!parsed.success) return { ok: false, message: "Dados de usuario invalidos." };
+    if (!isSyncAdmin && (parsed.data.role === "super_admin" || parsed.data.role === "gestor_sync")) {
+      return { ok: false, message: "Sem permissao para criar usuario com este perfil." };
+    }
     const targetOrg = isSyncAdmin && parsed.data.organization_id ? parsed.data.organization_id : organizationId;
     const password = asText(formData.get("password")) || `Sync@${Math.floor(100000 + Math.random() * 900000)}`;
     const { data: authUser, error: authError } = await admin.auth.admin.createUser({
@@ -431,6 +434,197 @@ export async function updateInboundWebhookAction(formData: FormData): Promise<Ac
     return { ok: true, message: "Mapeamento salvo." };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "Erro ao salvar webhook." };
+  }
+}
+
+// ─── User management ────────────────────────────────────────────────────────
+
+export async function updateUserAction(formData: FormData): Promise<ActionResult> {
+  try {
+    const { admin, organizationId, isSyncAdmin } = await getContext();
+    const userId = asText(formData.get("user_id"));
+    const fullName = asText(formData.get("full_name"));
+    const role = asText(formData.get("role")) as typeof roles[number];
+    const targetOrgId = isSyncAdmin ? (asText(formData.get("organization_id")) || organizationId) : organizationId;
+
+    if (!userId) return { ok: false, message: "Usuario nao identificado." };
+    if (!roles.includes(role)) return { ok: false, message: "Perfil invalido." };
+    if (!isSyncAdmin && (role === "super_admin" || role === "gestor_sync")) {
+      return { ok: false, message: "Sem permissao para atribuir este perfil." };
+    }
+
+    const updates: Record<string, unknown> = { role };
+    if (fullName.length >= 2) {
+      updates.full_name = fullName;
+      await admin.auth.admin.updateUserById(userId, { user_metadata: { full_name: fullName } });
+    }
+
+    const { data: targetMembership } = await admin
+      .from("organization_members")
+      .select("organization_id")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    const userCurrentOrgId = (targetMembership?.organization_id as string | undefined) ?? organizationId;
+
+    if (!isSyncAdmin && userCurrentOrgId !== organizationId) {
+      return { ok: false, message: "Sem permissao para editar este usuario." };
+    }
+
+    await admin.from("profiles").update(updates).eq("id", userId);
+    await admin.from("organization_members")
+      .update({ role, organization_id: targetOrgId })
+      .eq("user_id", userId)
+      .eq("organization_id", userCurrentOrgId);
+
+    revalidatePath("/admin");
+    return { ok: true, message: "Usuario atualizado." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao atualizar usuario." };
+  }
+}
+
+export async function generatePasswordAction(userId: string): Promise<ActionResult> {
+  try {
+    const { admin } = await getContext();
+    const password = `Sync@${Math.floor(100000 + Math.random() * 900000)}`;
+    const { error } = await admin.auth.admin.updateUserById(userId, { password });
+    if (error) return { ok: false, message: error.message };
+    return { ok: true, message: `Nova senha gerada: ${password}` };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao gerar senha." };
+  }
+}
+
+export async function toggleUserBanAction(userId: string, ban: boolean): Promise<ActionResult> {
+  try {
+    const { admin, isSyncAdmin } = await getContext();
+    if (!isSyncAdmin) return { ok: false, message: "Apenas admin Sync pode desativar usuarios." };
+    const { error } = await admin.auth.admin.updateUserById(userId, {
+      ban_duration: ban ? "876600h" : "none",
+    });
+    if (error) return { ok: false, message: error.message };
+    revalidatePath("/admin");
+    return { ok: true, message: ban ? "Usuario desativado." : "Usuario reativado." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao alterar status do usuario." };
+  }
+}
+
+// ─── Tag management ──────────────────────────────────────────────────────────
+
+export async function updateTagAction(formData: FormData): Promise<ActionResult> {
+  try {
+    const { admin, organizationId } = await getContext();
+    const id = asText(formData.get("id"));
+    const name = asText(formData.get("name"));
+    const color = asText(formData.get("color")) || "#22c55e";
+    if (!id) return { ok: false, message: "Tag nao encontrada." };
+    if (name.length < 2) return { ok: false, message: "Informe o nome da tag." };
+    const { error } = await admin.from("tags").update({ name, color }).eq("id", id).eq("organization_id", organizationId);
+    if (error) return { ok: false, message: error.message };
+    revalidatePath("/admin");
+    revalidatePath("/leads");
+    return { ok: true, message: "Tag atualizada." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao atualizar tag." };
+  }
+}
+
+export async function deleteTagAction(tagId: string): Promise<ActionResult> {
+  try {
+    const { admin, organizationId } = await getContext();
+    const { error } = await admin.from("tags").delete().eq("id", tagId).eq("organization_id", organizationId);
+    if (error) return { ok: false, message: error.message };
+    revalidatePath("/admin");
+    revalidatePath("/leads");
+    return { ok: true, message: "Tag removida." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao remover tag." };
+  }
+}
+
+// ─── Source management ───────────────────────────────────────────────────────
+
+export async function updateSourceAction(formData: FormData): Promise<ActionResult> {
+  try {
+    const { admin, organizationId } = await getContext();
+    const id = asText(formData.get("id"));
+    const name = asText(formData.get("name"));
+    const color = asText(formData.get("color")) || "#22c55e";
+    if (!id) return { ok: false, message: "Origem nao encontrada." };
+    if (name.length < 2) return { ok: false, message: "Informe o nome da origem." };
+    const { error } = await admin.from("lead_sources").update({ name, color }).eq("id", id).eq("organization_id", organizationId);
+    if (error) return { ok: false, message: error.message };
+    revalidatePath("/admin");
+    revalidatePath("/leads");
+    return { ok: true, message: "Origem atualizada." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao atualizar origem." };
+  }
+}
+
+export async function deleteSourceAction(sourceId: string): Promise<ActionResult> {
+  try {
+    const { admin, organizationId } = await getContext();
+    const { count } = await admin
+      .from("leads")
+      .select("id", { count: "exact", head: true })
+      .eq("source_id", sourceId)
+      .eq("organization_id", organizationId);
+
+    if ((count ?? 0) > 0) {
+      return { ok: false, message: `Esta origem esta em uso por ${count} lead(s). Remova a origem dos leads antes de apagar.` };
+    }
+
+    const { error } = await admin.from("lead_sources").delete().eq("id", sourceId).eq("organization_id", organizationId);
+    if (error) return { ok: false, message: error.message };
+    revalidatePath("/admin");
+    revalidatePath("/leads");
+    return { ok: true, message: "Origem removida." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao remover origem." };
+  }
+}
+
+// ─── Custom field management ─────────────────────────────────────────────────
+
+export async function updateCustomFieldAction(formData: FormData): Promise<ActionResult> {
+  try {
+    const { admin, organizationId } = await getContext();
+    const id = asText(formData.get("id"));
+    const name = asText(formData.get("name"));
+    const fieldType = asText(formData.get("field_type")) as typeof fieldTypes[number];
+    const required = formData.get("required") === "on";
+    const optionsRaw = asText(formData.get("options"));
+    if (!id) return { ok: false, message: "Campo nao encontrado." };
+    if (name.length < 2) return { ok: false, message: "Informe o nome do campo." };
+    if (!fieldTypes.includes(fieldType)) return { ok: false, message: "Tipo invalido." };
+    const options = optionsRaw ? optionsRaw.split(",").map((item) => item.trim()).filter(Boolean) : null;
+    const { error } = await admin.from("custom_fields")
+      .update({ name, field_type: fieldType, required, options })
+      .eq("id", id)
+      .eq("organization_id", organizationId);
+    if (error) return { ok: false, message: error.message };
+    revalidatePath("/admin");
+    revalidatePath("/leads");
+    return { ok: true, message: "Campo atualizado." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao atualizar campo." };
+  }
+}
+
+export async function deleteCustomFieldAction(fieldId: string): Promise<ActionResult> {
+  try {
+    const { admin, organizationId } = await getContext();
+    const { error } = await admin.from("custom_fields").delete().eq("id", fieldId).eq("organization_id", organizationId);
+    if (error) return { ok: false, message: error.message };
+    revalidatePath("/admin");
+    revalidatePath("/leads");
+    return { ok: true, message: "Campo removido." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao remover campo." };
   }
 }
 

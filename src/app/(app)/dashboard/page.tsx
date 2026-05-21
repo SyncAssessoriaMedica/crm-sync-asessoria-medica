@@ -347,7 +347,7 @@ export default async function DashboardPage({
 
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         <MetricCard label="Taxa de Comparecimento" value={formatPercent(percent(attendedCurrent, attendanceBaseCurrent))} variation={variation(percent(attendedCurrent, attendanceBaseCurrent), percent(attendedPrevious, attendanceBasePrevious))} icon={UserCheck} />
-        <MetricCard label="Tempo Medio 1a Resposta" value="0" suffix="min" icon={Clock} />
+        <MetricCard label="Tempo Medio 1a Resposta" value="--" icon={Clock} />
         <MetricCard label="Ticket Medio" value={formatCurrency(avgTicket)} icon={DollarSign} />
         <MetricCard label="Receita Projetada" value={formatCurrency(projectedRevenue || revenueCurrent)} variation={variation(projectedRevenue, projectedRevenuePrevious)} icon={TrendingUp} />
       </div>

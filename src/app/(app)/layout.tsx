@@ -1,6 +1,7 @@
 import { Sidebar } from "@/components/layout/sidebar";
 import { Topbar, type TopbarNotification } from "@/components/layout/topbar";
 import { createAdminClient, createClient } from "@/lib/supabase/server";
+import { canAccessRoute } from "@/lib/permissions";
 
 type TaskNotificationRow = {
   id: string;
@@ -64,56 +65,66 @@ export default async function AppLayout({
       const organization = Array.isArray(membership.organizations)
         ? membership.organizations[0] ?? null
         : membership.organizations;
+      // profiles.role = global role (Sync staff); organization_members.role = org role; profile.role takes precedence
+      const effectiveRole = profile?.role ?? membership.role ?? "leitura";
       sidebarUser = {
         ...(sidebarUser ?? topbarUser),
-        role: profile?.role ?? membership.role ?? "leitura",
+        role: effectiveRole,
         organizationName: organization?.name ?? "Sync Marketing",
       };
+
+      const canViewLeads = canAccessRoute(effectiveRole, "/leads");
+      const canViewInbox = canAccessRoute(effectiveRole, "/inbox");
+
       const now = new Date().toISOString();
       const [tasksResult, conversationsResult] = await Promise.all([
-        admin
-          .from("lead_tasks")
-          .select("id, title, due_at, lead:leads!inner(id, name, organization_id)")
-          .eq("lead.organization_id", organizationId)
-          .is("completed_at", null)
-          .lt("due_at", now)
-          .order("due_at", { ascending: true })
-          .limit(4),
-        admin
-          .from("conversations")
-          .select("id, unread_count, updated_at, lead:leads(id, name)")
-          .eq("organization_id", organizationId)
-          .eq("status", "open")
-          .gt("unread_count", 0)
-          .order("updated_at", { ascending: false })
-          .limit(4),
+        canViewLeads
+          ? admin
+              .from("lead_tasks")
+              .select("id, title, due_at, lead:leads!inner(id, name, organization_id)")
+              .eq("lead.organization_id", organizationId)
+              .is("completed_at", null)
+              .lt("due_at", now)
+              .order("due_at", { ascending: true })
+              .limit(4)
+          : Promise.resolve({ data: null }),
+        canViewInbox
+          ? admin
+              .from("conversations")
+              .select("id, unread_count, updated_at, lead:leads(id, name)")
+              .eq("organization_id", organizationId)
+              .eq("status", "open")
+              .gt("unread_count", 0)
+              .order("updated_at", { ascending: false })
+              .limit(4)
+          : Promise.resolve({ data: null }),
       ]);
 
-      const taskNotifications = ((tasksResult.data ?? []) as TaskNotificationRow[]).map((task) => {
-        const lead = firstRelation(task.lead);
-        return {
-          id: `task-${task.id}`,
-          title: "Tarefa atrasada",
-          description: `${task.title}${lead?.name ? ` · ${lead.name}` : ""}`,
-          href: lead?.id ? `/leads/${lead.id}` : "/leads",
-          tone: "warning" as const,
-        };
-      });
+      const taskNotifications = canViewLeads
+        ? ((tasksResult.data ?? []) as TaskNotificationRow[]).map((task) => {
+            const lead = firstRelation(task.lead);
+            return {
+              id: `task-${task.id}`,
+              title: "Tarefa atrasada",
+              description: `${task.title}${lead?.name ? ` · ${lead.name}` : ""}`,
+              href: lead?.id ? `/leads/${lead.id}` : "/leads",
+              tone: "warning" as const,
+            };
+          })
+        : [];
 
-      const conversationNotifications = ((conversationsResult.data ?? []) as ConversationNotificationRow[]).map(
-        (conversation) => {
-          const lead = firstRelation(conversation.lead);
-          return {
-            id: `conversation-${conversation.id}`,
-            title: "Mensagem sem leitura",
-            description: `${conversation.unread_count} mensagem(ns) pendente(s)${
-              lead?.name ? ` · ${lead.name}` : ""
-            }`,
-            href: "/inbox",
-            tone: "danger" as const,
-          };
-        }
-      );
+      const conversationNotifications = canViewInbox
+        ? ((conversationsResult.data ?? []) as ConversationNotificationRow[]).map((conversation) => {
+            const lead = firstRelation(conversation.lead);
+            return {
+              id: `conversation-${conversation.id}`,
+              title: "Mensagem sem leitura",
+              description: `${conversation.unread_count} mensagem(ns) pendente(s)${lead?.name ? ` · ${lead.name}` : ""}`,
+              href: "/inbox",
+              tone: "danger" as const,
+            };
+          })
+        : [];
 
       notifications = [...conversationNotifications, ...taskNotifications].slice(0, 8);
     }

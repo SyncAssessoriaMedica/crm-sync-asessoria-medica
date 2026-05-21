@@ -1,5 +1,20 @@
 import type { LeadStatus, PipelineStage, LeadSource } from "@/lib/types";
 
+export type LeadTagItem = {
+  id: string;
+  name: string;
+  color: string;
+};
+
+export type LeadTagRelation = {
+  tags: LeadTagItem | LeadTagItem[] | null;
+};
+
+export type LeadCustomValueItem = {
+  field_id: string;
+  value: string | null;
+};
+
 export type LeadListItem = {
   id: string;
   organization_id: string;
@@ -18,12 +33,15 @@ export type LeadListItem = {
   last_interaction_at: string | null;
   created_at: string;
   updated_at: string;
+  lead_tags: LeadTagRelation[];
+  custom_field_values: LeadCustomValueItem[];
 };
 
 export type LeadOptionData = {
   sources: LeadSource[];
   stages: PipelineStage[];
   customFields: CustomFieldItem[];
+  tags: LeadTagItem[];
 };
 
 export type CustomFieldItem = {

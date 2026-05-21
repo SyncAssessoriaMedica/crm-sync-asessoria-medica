@@ -1,5 +1,7 @@
 import { redirect } from "next/navigation";
 import { createAdminClient, createClient } from "@/lib/supabase/server";
+import { canAccessRoute } from "@/lib/permissions";
+import { AccessDenied } from "@/components/layout/access-denied";
 import { LeadsClient } from "./leads-client";
 import type { LeadListItem, LeadOptionData } from "./types";
 
@@ -14,7 +16,7 @@ export default async function LeadsPage() {
   const admin = createAdminClient();
   const { data: membership } = await admin
     .from("organization_members")
-    .select("organization_id, organizations(name)")
+    .select("organization_id, role, organizations(name)")
     .eq("user_id", user.id)
     .order("created_at", { ascending: true })
     .limit(1)
@@ -34,15 +36,22 @@ export default async function LeadsPage() {
 
   const organizationId = membership.organization_id as string;
   const organization = membership.organizations as { name?: string } | null;
+  const userRole = membership.role as string;
 
-  const [leadsResult, sourcesResult, pipelinesResult, customFieldsResult] = await Promise.all([
+  if (!canAccessRoute(userRole, "/leads")) {
+    return <AccessDenied />;
+  }
+
+  const [leadsResult, sourcesResult, pipelinesResult, customFieldsResult, tagsResult] = await Promise.all([
     admin
       .from("leads")
       .select(
         `
         *,
         source:lead_sources(*),
-        stage:pipeline_stages(*)
+        stage:pipeline_stages(*),
+        lead_tags(tags(*)),
+        custom_field_values(field_id, value)
       `
       )
       .eq("organization_id", organizationId)
@@ -64,6 +73,11 @@ export default async function LeadsPage() {
       .eq("organization_id", organizationId)
       .order("order", { ascending: true })
       .order("created_at", { ascending: true }),
+    admin
+      .from("tags")
+      .select("id, name, color")
+      .eq("organization_id", organizationId)
+      .order("name", { ascending: true }),
   ]);
 
   const options: LeadOptionData = {
@@ -72,6 +86,7 @@ export default async function LeadsPage() {
       (a, b) => a.order - b.order
     ),
     customFields: (customFieldsResult.data ?? []) as LeadOptionData["customFields"],
+    tags: (tagsResult.data ?? []) as LeadOptionData["tags"],
   };
 
   if (leadsResult.error) {

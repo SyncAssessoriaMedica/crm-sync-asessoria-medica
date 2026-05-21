@@ -2,6 +2,8 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { createAdminClient, createClient } from "@/lib/supabase/server";
+import { canAccessRoute } from "@/lib/permissions";
+import { AccessDenied } from "@/components/layout/access-denied";
 import { LeadDetailClient } from "./lead-detail-client";
 import type { CustomFieldValueItem, LeadEventItem, LeadListItem, LeadNoteItem, LeadOptionData, LeadTaskItem } from "../types";
 
@@ -21,7 +23,7 @@ export default async function LeadDetailPage({
   const admin = createAdminClient();
   const { data: membership } = await admin
     .from("organization_members")
-    .select("organization_id")
+    .select("organization_id, role")
     .eq("user_id", user.id)
     .order("created_at", { ascending: true })
     .limit(1)
@@ -43,8 +45,13 @@ export default async function LeadDetailPage({
   }
 
   const organizationId = membership.organization_id as string;
+  const userRole = membership.role as string;
 
-  const [leadResult, notesResult, eventsResult, tasksResult, sourcesResult, pipelinesResult, customFieldsResult, customValuesResult] =
+  if (!canAccessRoute(userRole, "/leads")) {
+    return <AccessDenied />;
+  }
+
+  const [leadResult, notesResult, eventsResult, tasksResult, sourcesResult, pipelinesResult, customFieldsResult, customValuesResult, leadTagsResult, orgTagsResult] =
     await Promise.all([
       admin
         .from("leads")
@@ -94,6 +101,15 @@ export default async function LeadDetailPage({
         .from("custom_field_values")
         .select("id, lead_id, field_id, value")
         .eq("lead_id", id),
+      admin
+        .from("lead_tags")
+        .select("tag_id, tags(id, name, color)")
+        .eq("lead_id", id),
+      admin
+        .from("tags")
+        .select("id, name, color")
+        .eq("organization_id", organizationId)
+        .order("name", { ascending: true }),
     ]);
 
   if (leadResult.error) {
@@ -114,16 +130,23 @@ export default async function LeadDetailPage({
       (a, b) => a.order - b.order
     ),
     customFields: (customFieldsResult.data ?? []) as LeadOptionData["customFields"],
+    tags: (orgTagsResult.data ?? []) as LeadOptionData["tags"],
   };
 
   const customValues = Object.fromEntries(
     ((customValuesResult.data ?? []) as CustomFieldValueItem[]).map((item) => [item.field_id, item.value ?? ""])
   );
 
+  type LeadTagRow = { tag_id: string; tags: { id: string; name: string; color: string } | { id: string; name: string; color: string }[] | null };
+  const leadTags = ((leadTagsResult.data ?? []) as LeadTagRow[])
+    .map((row) => (Array.isArray(row.tags) ? row.tags[0] ?? null : row.tags))
+    .filter((tag): tag is { id: string; name: string; color: string } => tag !== null);
+
   return (
     <LeadDetailClient
       lead={leadResult.data as LeadListItem}
       options={options}
+      leadTags={leadTags}
       notes={(notesResult.data ?? []).map((note) => ({
         ...note,
         author: Array.isArray(note.author) ? note.author[0] ?? null : note.author,

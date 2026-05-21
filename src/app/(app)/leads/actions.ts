@@ -316,6 +316,48 @@ export async function toggleTaskAction(taskId: string, leadId: string, completed
   }
 }
 
+export async function getLeadCustomValuesAction(leadId: string): Promise<Record<string, string>> {
+  try {
+    const { admin, organizationId } = await getCurrentContext();
+    const { data: lead } = await admin.from("leads").select("id").eq("id", leadId).eq("organization_id", organizationId).maybeSingle();
+    if (!lead) return {};
+    const { data } = await admin.from("custom_field_values").select("field_id, value").eq("lead_id", leadId);
+    return Object.fromEntries((data ?? []).map((row) => [row.field_id, row.value ?? ""]));
+  } catch {
+    return {};
+  }
+}
+
+export async function applyTagToLeadAction(leadId: string, tagId: string): Promise<ActionResult> {
+  try {
+    const { admin, organizationId } = await getCurrentContext();
+    const { data: lead } = await admin.from("leads").select("id").eq("id", leadId).eq("organization_id", organizationId).maybeSingle();
+    if (!lead) return { ok: false, message: "Lead nao encontrado." };
+    const { error } = await admin.from("lead_tags").upsert({ lead_id: leadId, tag_id: tagId });
+    if (error) return { ok: false, message: error.message };
+    revalidatePath(`/leads/${leadId}`);
+    revalidatePath("/leads");
+    return { ok: true, message: "Tag aplicada." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao aplicar tag." };
+  }
+}
+
+export async function removeTagFromLeadAction(leadId: string, tagId: string): Promise<ActionResult> {
+  try {
+    const { admin, organizationId } = await getCurrentContext();
+    const { data: lead } = await admin.from("leads").select("id").eq("id", leadId).eq("organization_id", organizationId).maybeSingle();
+    if (!lead) return { ok: false, message: "Lead nao encontrado." };
+    const { error } = await admin.from("lead_tags").delete().eq("lead_id", leadId).eq("tag_id", tagId);
+    if (error) return { ok: false, message: error.message };
+    revalidatePath(`/leads/${leadId}`);
+    revalidatePath("/leads");
+    return { ok: true, message: "Tag removida." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao remover tag." };
+  }
+}
+
 export async function updateLeadStageAction(leadId: string, stageId: string): Promise<ActionResult> {
   try {
     const { admin, organizationId } = await getCurrentContext();

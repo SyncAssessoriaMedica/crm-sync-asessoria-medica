@@ -1,5 +1,7 @@
 import { redirect } from "next/navigation";
 import { createAdminClient, createClient } from "@/lib/supabase/server";
+import { canAccessRoute } from "@/lib/permissions";
+import { AccessDenied } from "@/components/layout/access-denied";
 import { InboxClient } from "./inbox-client";
 import type { InboxConversation, InboxInstance, InboxLead, InboxMessage } from "./types";
 
@@ -28,7 +30,7 @@ export default async function InboxPage({
   const admin = createAdminClient();
   const { data: membership } = await admin
     .from("organization_members")
-    .select("organization_id")
+    .select("organization_id, role")
     .eq("user_id", user.id)
     .order("created_at", { ascending: true })
     .limit(1)
@@ -47,6 +49,12 @@ export default async function InboxPage({
   }
 
   const organizationId = membership.organization_id as string;
+  const userRole = membership.role as string;
+
+  if (!canAccessRoute(userRole, "/inbox")) {
+    return <AccessDenied />;
+  }
+
   const [conversationsResult, instancesResult] = await Promise.all([
     admin
       .from("conversations")
