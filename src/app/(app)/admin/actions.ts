@@ -47,6 +47,52 @@ function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function evolutionFetch(url: string, apiKey: string, init: RequestInit = {}): Promise<Response> {
+  const { headers: extra, ...rest } = init;
+  return fetch(url, {
+    ...rest,
+    headers: { apikey: apiKey, ...(extra as Record<string, string> | undefined) },
+    cache: "no-store",
+    signal: AbortSignal.timeout(12000),
+  });
+}
+
+async function tryConfigureWebhook(
+  evolutionApiUrl: string,
+  instanceName: string,
+  apiKey: string,
+  webhookUrl: string
+): Promise<string | null> {
+  const endpoint = `${evolutionApiUrl}/webhook/set/${encodeURIComponent(instanceName)}`;
+  const events = ["MESSAGES_UPSERT", "SEND_MESSAGE", "CONNECTION_UPDATE", "QRCODE_UPDATED", "MESSAGES_UPDATE"];
+
+  try {
+    // Try nested format (Evolution v2 standard)
+    const nestedRes = await evolutionFetch(endpoint, apiKey, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        webhook: { enabled: true, url: webhookUrl, webhookByEvents: false, webhookBase64: false, events },
+      }),
+    });
+    if (nestedRes.ok) return null;
+
+    // Try flat format (some Evolution v2 deployments)
+    const flatRes = await evolutionFetch(endpoint, apiKey, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: true, url: webhookUrl, webhookByEvents: false, webhookBase64: false, events }),
+    });
+    if (flatRes.ok) return null;
+
+    const errData = await nestedRes.json().catch(() => ({})) as Record<string, unknown>;
+    const msg = (errData?.message ?? errData?.error ?? `HTTP ${nestedRes.status}`) as string;
+    return `Webhook nao configurado automaticamente (${msg}). Configure na Evolution: URL = ${webhookUrl}`;
+  } catch {
+    return `Webhook nao configurado automaticamente (erro de rede). Configure na Evolution: URL = ${webhookUrl}`;
+  }
+}
+
 async function getOrCreateDefaultPipeline(admin: ReturnType<typeof createAdminClient>, organizationId: string) {
   const { data: existing, error } = await admin
     .from("pipelines")
@@ -371,32 +417,8 @@ export async function connectWhatsappInstanceAction(instanceName: string): Promi
     }
 
     // Attempt webhook configuration — non-blocking so QR Code still shows on failure
-    let webhookWarning: string | null = null;
-    try {
-      const webhookResponse = await fetch(`${evolutionApiUrl}/webhook/set/${encodeURIComponent(instanceName)}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", apikey: apiKey },
-        body: JSON.stringify({
-          webhook: {
-            enabled: true,
-            url: `${appUrl}/api/webhooks/evolution`,
-            webhookByEvents: false,
-            webhookBase64: false,
-            events: ["MESSAGES_UPSERT", "SEND_MESSAGE", "CONNECTION_UPDATE", "QRCODE_UPDATED", "MESSAGES_UPDATE"],
-          },
-        }),
-        cache: "no-store",
-      });
-      if (!webhookResponse.ok) {
-        const errorData = await webhookResponse.json().catch(() => ({}));
-        const msg = (errorData as { message?: string; error?: string })?.message
-          ?? (errorData as { message?: string; error?: string })?.error
-          ?? `status ${webhookResponse.status}`;
-        webhookWarning = `Webhook nao configurado automaticamente (${msg}). Configure manualmente na Evolution apos conectar.`;
-      }
-    } catch {
-      webhookWarning = "Webhook nao configurado automaticamente. Configure manualmente na Evolution apos conectar.";
-    }
+    const webhookUrl = `${appUrl}/api/webhooks/evolution`;
+    const webhookWarning = await tryConfigureWebhook(evolutionApiUrl, instanceName, apiKey, webhookUrl);
 
     try {
       const stateResponse = await fetch(`${evolutionApiUrl}/instance/connectionState/${encodeURIComponent(instanceName)}`, {
@@ -776,6 +798,41 @@ export async function deleteCustomFieldAction(fieldId: string): Promise<ActionRe
   }
 }
 
+export async function setWebhookForInstanceAction(instanceName: string): Promise<ActionResult> {
+  try {
+    const { admin, organizationId, isSyncAdmin } = await getContext();
+    const baseUrl = process.env.EVOLUTION_API_URL;
+    const apiKey = process.env.EVOLUTION_API_KEY;
+    if (!baseUrl || !apiKey) {
+      return { ok: false, message: "Evolution API nao configurada neste deploy." };
+    }
+    const evolutionApiUrl = normalizeEvolutionApiUrl(baseUrl);
+
+    const { data: instance } = await admin
+      .from("whatsapp_instances")
+      .select("id, organization_id")
+      .eq("instance_name", instanceName)
+      .maybeSingle();
+
+    if (!instance?.id) return { ok: false, message: "Instancia nao encontrada no CRM." };
+    if (!isSyncAdmin && instance.organization_id !== organizationId) {
+      return { ok: false, message: "Sem permissao para configurar esta instancia." };
+    }
+
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "");
+    if (!appUrl) {
+      return { ok: false, message: "Configure NEXT_PUBLIC_APP_URL no projeto da Vercel." };
+    }
+
+    const webhookUrl = `${appUrl}/api/webhooks/evolution`;
+    const warning = await tryConfigureWebhook(evolutionApiUrl, instanceName, apiKey, webhookUrl);
+    if (warning) return { ok: false, message: warning };
+    return { ok: true, message: `Webhook configurado com sucesso: ${webhookUrl}` };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao configurar webhook." };
+  }
+}
+
 export async function fetchWhatsappChatsAction(instanceName: string): Promise<ActionResult> {
   try {
     const { admin, organizationId, isSyncAdmin } = await getContext();
@@ -798,21 +855,41 @@ export async function fetchWhatsappChatsAction(instanceName: string): Promise<Ac
     }
 
     const orgId = instance.organization_id as string;
+    const chatEndpoint = `${evolutionApiUrl}/chat/findChats/${encodeURIComponent(instanceName)}`;
 
-    const response = await fetch(
-      `${evolutionApiUrl}/chat/findChats/${encodeURIComponent(instanceName)}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json", apikey: apiKey },
-        body: JSON.stringify({ where: {} }),
-        cache: "no-store",
+    let response: Response;
+    let httpMethod = "GET";
+    try {
+      // GET first — simpler, works on more Evolution versions
+      response = await evolutionFetch(chatEndpoint, apiKey, { method: "GET" });
+      // Some versions return 405 Method Not Allowed for GET; retry with POST
+      if (response.status === 405 || response.status === 404) {
+        httpMethod = "POST";
+        response = await evolutionFetch(chatEndpoint, apiKey, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ where: {} }),
+        });
       }
-    );
+    } catch (networkError) {
+      const isTimeout = networkError instanceof Error && (networkError.name === "TimeoutError" || networkError.name === "AbortError");
+      const cause = networkError instanceof Error
+        ? ((networkError as NodeJS.ErrnoException).cause instanceof Error
+          ? (networkError as NodeJS.ErrnoException & { cause: Error }).cause.message
+          : networkError.message)
+        : String(networkError);
+      return {
+        ok: false,
+        message: isTimeout
+          ? `Timeout (12s) ao buscar conversas. Verifique se a Evolution esta ativa: ${evolutionApiUrl}`
+          : `Erro de rede (${cause}). URL tentada: ${chatEndpoint}. Confirme EVOLUTION_API_URL e que a instancia esta conectada.`,
+      };
+    }
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({})) as Record<string, unknown>;
-      const msg = (errorData?.message ?? errorData?.error ?? `status ${response.status}`) as string;
-      return { ok: false, message: `Evolution ${response.status}: ${msg}` };
+      const msg = (errorData?.message ?? errorData?.error ?? `HTTP ${response.status}`) as string;
+      return { ok: false, message: `Evolution retornou erro em ${httpMethod} /chat/findChats: ${msg}` };
     }
 
     const rawData = await response.json().catch(() => []) as unknown;
@@ -832,15 +909,15 @@ export async function fetchWhatsappChatsAction(instanceName: string): Promise<Ac
     if (individualChats.length === 0) {
       return {
         ok: true,
-        message: "Nenhuma conversa individual encontrada. Certifique-se de que o WhatsApp esta conectado.",
+        message: "Nenhuma conversa individual encontrada. O WhatsApp pode estar desconectado ou sem historico.",
         data: { chats: [], instanceId: instance.id },
       };
     }
 
-    const phones = individualChats.map((chat) => {
-      const jid = (chat.id ?? chat.remoteJid ?? "") as string;
-      return jid.split("@")[0].replace(/\D/g, "");
-    }).filter(Boolean);
+    const phones = individualChats
+      .map((chat) => (chat.id ?? chat.remoteJid ?? "") as string)
+      .map((jid) => jid.split("@")[0].replace(/\D/g, ""))
+      .filter(Boolean);
 
     const { data: existingLeads } = await admin
       .from("leads")

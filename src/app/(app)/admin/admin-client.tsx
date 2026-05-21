@@ -52,6 +52,7 @@ import {
   fetchWhatsappChatsAction,
   generatePasswordAction,
   importWhatsappConversationsAction,
+  setWebhookForInstanceAction,
   movePipelineStageAction,
   syncWhatsappInstanceStatusAction,
   toggleUserBanAction,
@@ -377,6 +378,23 @@ export function AdminClient({ data }: { data: AdminData }) {
                       <Badge variant={status === "connected" ? "green" : status === "connecting" ? "warning" : "secondary"}>
                         {status}
                       </Badge>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="gap-1.5"
+                        title="Configurar webhook na Evolution"
+                        disabled={isPending}
+                        onClick={() => {
+                          startTransition(async () => {
+                            const result = await setWebhookForInstanceAction(instance.instance_name);
+                            setMessage(result.message);
+                          });
+                        }}
+                      >
+                        <Webhook className="h-3.5 w-3.5" />
+                        Webhook
+                      </Button>
                       <Button
                         type="button"
                         variant="ghost"

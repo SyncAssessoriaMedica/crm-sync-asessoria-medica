@@ -4,7 +4,9 @@ import { createAdminClient } from "@/lib/supabase/server";
 
 const EvolutionWebhookSchema = z.object({
   event: z.string(),
-  instance: z.string().min(1),
+  // Evolution v2 always sends "instance"; some forks use "instanceName"
+  instance: z.string().optional(),
+  instanceName: z.string().optional(),
   data: z
     .object({
       key: z
@@ -18,6 +20,7 @@ const EvolutionWebhookSchema = z.object({
       messageType: z.string().optional(),
       pushName: z.string().optional(),
       timestamp: z.union([z.number(), z.string()]).optional(),
+      messageTimestamp: z.union([z.number(), z.string()]).optional(),
       status: z.string().optional(),
       state: z.string().optional(),
       qrcode: z.string().optional(),
@@ -28,6 +31,7 @@ const EvolutionWebhookSchema = z.object({
 });
 
 type EvolutionPayload = z.infer<typeof EvolutionWebhookSchema>;
+type NormalizedPayload = Omit<EvolutionPayload, "instance"> & { instance: string };
 type SupabaseAdmin = ReturnType<typeof createAdminClient>;
 
 const MESSAGE_EVENTS = new Set(["messages.upsert", "MESSAGES_UPSERT", "SEND_MESSAGE", "send.message"]);
@@ -50,7 +54,8 @@ function normalizePhone(value: string) {
 }
 
 function getTimestamp(value: EvolutionPayload["data"]) {
-  const raw = value?.timestamp;
+  // Evolution v2 uses messageTimestamp; v1 used timestamp
+  const raw = (value as Record<string, unknown> | undefined)?.messageTimestamp ?? value?.timestamp;
   if (!raw) return new Date().toISOString();
   const numeric = Number(raw);
   if (!Number.isFinite(numeric)) return new Date().toISOString();
@@ -273,7 +278,7 @@ async function resolveConversation(
   return data as { id: string; unread_count: number };
 }
 
-async function handleConnectionEvent(admin: SupabaseAdmin, payload: EvolutionPayload) {
+async function handleConnectionEvent(admin: SupabaseAdmin, payload: NormalizedPayload) {
   const instance = await resolveWhatsAppInstance(admin, payload.instance);
   const rawStatus = payload.data?.state ?? payload.data?.status ?? "";
   const normalized = rawStatus.toLowerCase();
@@ -293,14 +298,14 @@ async function handleConnectionEvent(admin: SupabaseAdmin, payload: EvolutionPay
   return NextResponse.json({ success: true, processed: true, status });
 }
 
-async function handleQrCodeEvent(admin: SupabaseAdmin, payload: EvolutionPayload) {
+async function handleQrCodeEvent(admin: SupabaseAdmin, payload: NormalizedPayload) {
   const instance = await resolveWhatsAppInstance(admin, payload.instance);
   await logWebhook(admin, instance?.organization_id ?? null, payload.event, payload, Boolean(instance), instance ? undefined : `Instancia desconhecida: ${payload.instance}`);
   if (instance) await admin.from("whatsapp_instances").update({ status: "connecting" }).eq("id", instance.id);
   return NextResponse.json({ success: true, processed: Boolean(instance), event: payload.event });
 }
 
-async function handleMessageEvent(admin: SupabaseAdmin, payload: EvolutionPayload) {
+async function handleMessageEvent(admin: SupabaseAdmin, payload: NormalizedPayload) {
   const data = payload.data;
   const remoteJid = data?.key?.remoteJid;
   const evolutionMessageId = data?.key?.id;
@@ -401,13 +406,24 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ received: true, processed: false, reason: "Unsupported payload" });
   }
 
-  const payload = parsed.data;
+  const rawPayload = parsed.data;
+  // Normalise: some Evolution forks send instanceName instead of instance
+  const instanceName = rawPayload.instance ?? rawPayload.instanceName ?? "";
+  if (!instanceName) {
+    return NextResponse.json({ received: true, processed: false, reason: "Missing instance identifier" });
+  }
+  const payload = { ...rawPayload, instance: instanceName };
   const admin = createAdminClient();
 
   try {
     if (MESSAGE_EVENTS.has(payload.event)) return handleMessageEvent(admin, payload);
     if (CONNECTION_EVENTS.has(payload.event)) return handleConnectionEvent(admin, payload);
     if (QRCODE_EVENTS.has(payload.event)) return handleQrCodeEvent(admin, payload);
+    // MESSAGES_UPDATE: status updates (delivered/read) — log and acknowledge
+    if (payload.event === "MESSAGES_UPDATE" || payload.event === "messages.update") {
+      await logWebhook(admin, null, payload.event, payload, true);
+      return NextResponse.json({ received: true, processed: true, reason: "Status update logged" });
+    }
 
     await logWebhook(admin, null, payload.event, payload, false, "Evento ignorado pelo CRM.");
     return NextResponse.json({ received: true, processed: false, reason: "Event not handled" });
