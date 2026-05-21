@@ -383,17 +383,24 @@ export async function connectWhatsappInstanceAction(instanceName: string): Promi
       headers: { apikey: apiKey },
       cache: "no-store",
     });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) return { ok: false, message: data?.message ?? "Evolution nao retornou QR Code." };
+    const data = await response.json().catch(() => ({})) as Record<string, unknown>;
+    if (!response.ok) {
+      const evMsg = (data?.message ?? data?.error ?? JSON.stringify(data).slice(0, 200)) as string;
+      return { ok: false, message: `Evolution ${response.status}: ${evMsg}` };
+    }
 
-    const rawQr = data?.base64 ?? data?.qrcode ?? data?.qrCode ?? data?.code;
+    // Evolution v2 nests QR under data.qrcode; v1 exposes at root
+    const qrObj = (data?.qrcode ?? data?.qrCode) as Record<string, unknown> | undefined;
+    const rawQr = qrObj?.base64 ?? qrObj?.code ?? data?.base64 ?? data?.code;
+    const rawPairing = qrObj?.pairingCode ?? data?.pairingCode;
+
     let qrCodeDataUrl: string | null = null;
     if (typeof rawQr === "string" && rawQr.startsWith("data:image")) {
       qrCodeDataUrl = rawQr;
-    } else if (typeof rawQr === "string" && rawQr.match(/^[A-Za-z0-9+/=]+$/) && rawQr.length > 200) {
+    } else if (typeof rawQr === "string" && /^[A-Za-z0-9+/=]+$/.test(rawQr) && rawQr.length > 200) {
       qrCodeDataUrl = `data:image/png;base64,${rawQr}`;
-    } else if (typeof data?.code === "string" && data.code.length > 0) {
-      qrCodeDataUrl = await QRCode.toDataURL(data.code, { margin: 1, width: 320 });
+    } else if (typeof rawQr === "string" && rawQr.length > 0) {
+      qrCodeDataUrl = await QRCode.toDataURL(rawQr, { margin: 1, width: 320 });
     }
 
     await admin
@@ -406,8 +413,8 @@ export async function connectWhatsappInstanceAction(instanceName: string): Promi
       message: (qrCodeDataUrl ? "QR Code gerado." : "Conexao iniciada, mas a Evolution nao retornou imagem de QR Code.") + (webhookWarning ? ` ${webhookWarning}` : ""),
       data: {
         qrCodeDataUrl,
-        pairingCode: data?.pairingCode ?? null,
-        count: data?.count ?? null,
+        pairingCode: (rawPairing as string | null | undefined) ?? null,
+        count: (data?.count as number | null | undefined) ?? null,
         instanceName,
       },
     };
