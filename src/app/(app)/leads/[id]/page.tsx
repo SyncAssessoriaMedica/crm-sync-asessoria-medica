@@ -1,11 +1,11 @@
-import Link from "next/link";
-import { notFound, redirect } from "next/navigation";
-import { Button } from "@/components/ui/button";
-import { createAdminClient, createClient } from "@/lib/supabase/server";
+import { notFound } from "next/navigation";
 import { canAccessRoute } from "@/lib/permissions";
+import { getOrganizationContext } from "@/lib/organization-context";
 import { AccessDenied } from "@/components/layout/access-denied";
 import { LeadDetailClient } from "./lead-detail-client";
 import type { CustomFieldValueItem, LeadEventItem, LeadListItem, LeadNoteItem, LeadOptionData, LeadTaskItem } from "../types";
+
+export const dynamic = "force-dynamic";
 
 export default async function LeadDetailPage({
   params,
@@ -13,39 +13,7 @@ export default async function LeadDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) redirect("/login");
-
-  const admin = createAdminClient();
-  const { data: membership } = await admin
-    .from("organization_members")
-    .select("organization_id, role")
-    .eq("user_id", user.id)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (!membership) {
-    return (
-      <div className="rounded-xl border border-border bg-white p-8 shadow-card">
-        <p className="label-eyebrow text-text-muted">Acesso</p>
-        <h1 className="mt-1 text-xl font-black text-text-primary">Organizacao nao configurada</h1>
-        <p className="mt-2 text-sm text-text-secondary">
-          Este usuario ainda nao possui uma organizacao vinculada.
-        </p>
-        <Button asChild className="mt-4">
-          <Link href="/leads">Voltar para leads</Link>
-        </Button>
-      </div>
-    );
-  }
-
-  const organizationId = membership.organization_id as string;
-  const userRole = membership.role as string;
+  const { admin, organizationId, role: userRole } = await getOrganizationContext();
 
   if (!canAccessRoute(userRole, "/leads")) {
     return <AccessDenied />;

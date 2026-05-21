@@ -1,47 +1,16 @@
-import { redirect } from "next/navigation";
 import { headers } from "next/headers";
-import { createAdminClient, createClient } from "@/lib/supabase/server";
+import { getOrganizationContext } from "@/lib/organization-context";
 import { AdminClient, type AdminData } from "./admin-client";
 
+export const dynamic = "force-dynamic";
+
 export default async function AdminPage() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) redirect("/login");
-
-  const admin = createAdminClient();
-  const [{ data: profile }, { data: membership }] = await Promise.all([
-    admin.from("profiles").select("role").eq("id", user.id).maybeSingle(),
-    admin
-      .from("organization_members")
-      .select("organization_id, role, organizations(name)")
-      .eq("user_id", user.id)
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle(),
-  ]);
-
-  if (!membership) {
-    return (
-      <div className="rounded-xl border border-border bg-white p-8 shadow-card">
-        <p className="label-eyebrow text-text-muted">Acesso</p>
-        <h1 className="mt-1 text-xl font-black text-text-primary">Organizacao nao configurada</h1>
-        <p className="mt-2 text-sm text-text-secondary">
-          Este usuario ainda nao possui uma organizacao vinculada.
-        </p>
-      </div>
-    );
-  }
-
-  const organizationId = membership.organization_id as string;
+  const context = await getOrganizationContext();
+  const { admin, organizationId, organization, membershipRole, isSyncAdmin } = context;
   const headersList = await headers();
   const host = headersList.get("x-forwarded-host") ?? headersList.get("host") ?? "localhost:3000";
   const protocol = host.includes("localhost") ? "http" : "https";
-  const userRole = (profile?.role ?? membership.role) as string;
-  const isSyncAdmin = userRole === "super_admin" || userRole === "gestor_sync";
-  const canManage = isSyncAdmin || membership.role === "admin_clinica";
+  const canManage = isSyncAdmin || membershipRole === "admin_clinica";
 
   if (!canManage) {
     return (
@@ -55,7 +24,6 @@ export default async function AdminPage() {
     );
   }
 
-  const orgFilter = isSyncAdmin ? undefined : organizationId;
   const [
     organizationsResult,
     usersResult,
@@ -72,9 +40,7 @@ export default async function AdminPage() {
       .from("organization_members")
       .select("id, role, organization_id, organizations(id, name), profiles(id, email, full_name, role)")
       .order("created_at", { ascending: false }),
-    (isSyncAdmin
-      ? admin.from("whatsapp_instances").select("id, instance_name, phone_number, status, created_at, organizations(id, name)").order("created_at", { ascending: false })
-      : admin.from("whatsapp_instances").select("id, instance_name, phone_number, status, created_at, organizations(id, name)").eq("organization_id", organizationId).order("created_at", { ascending: false })),
+    admin.from("whatsapp_instances").select("id, instance_name, phone_number, status, created_at, organizations(id, name)").eq("organization_id", organizationId).order("created_at", { ascending: false }),
     admin.from("webhook_events").select("id, source, event_type, payload, processed, error, created_at").eq("organization_id", organizationId).eq("source", "inbound_webhook_config").order("created_at", { ascending: false }).limit(50),
     admin.from("webhook_events").select("id, source, event_type, payload, processed, error, created_at").eq("organization_id", organizationId).eq("source", "inbound_webhook_incoming").order("created_at", { ascending: false }).limit(10),
     admin.from("custom_fields").select("id, name, key, field_type, options, required, order, created_at").eq("organization_id", organizationId).order("order", { ascending: true }).order("created_at", { ascending: true }),
@@ -89,7 +55,7 @@ export default async function AdminPage() {
   ]);
 
   const rawUsers = usersResult.data ?? [];
-  const scopedUsers = orgFilter ? rawUsers.filter((item) => item.organization_id === orgFilter) : rawUsers;
+  const scopedUsers = rawUsers.filter((item) => item.organization_id === organizationId);
   const webhookConfigsByToken = new Map<string, AdminData["webhookConfigs"][number]>();
   for (const event of webhookConfigResult.data ?? []) {
     const payload = event.payload as {
@@ -129,7 +95,7 @@ export default async function AdminPage() {
   const data: AdminData = {
     isSyncAdmin,
     baseUrl: `${protocol}://${host}`,
-    organizationName: ((membership.organizations as { name?: string } | null)?.name ?? "Sync Marketing"),
+    organizationName: organization.name ?? "Sync Marketing",
     organizations: organizationsResult.data ?? [],
     users: scopedUsers.map((item) => ({
       id: item.id,

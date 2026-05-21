@@ -1,10 +1,10 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
 import QRCode from "qrcode";
 import { z } from "zod";
-import { createAdminClient, createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/server";
+import { canManageActiveOrganization, getOrganizationContext } from "@/lib/organization-context";
 import { slugify } from "@/lib/utils";
 
 type ActionResult = { ok: true; message: string; data?: unknown } | { ok: false; message: string };
@@ -13,34 +13,15 @@ const roles = ["super_admin", "gestor_sync", "admin_clinica", "atendente", "leit
 const fieldTypes = ["text", "number", "date", "select", "multiselect", "boolean", "url"] as const;
 
 async function getContext() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) redirect("/login");
-
-  const admin = createAdminClient();
-  const { data: profile } = await admin.from("profiles").select("role").eq("id", user.id).maybeSingle();
-  const { data: membership } = await admin
-    .from("organization_members")
-    .select("organization_id, role")
-    .eq("user_id", user.id)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (!membership) throw new Error("Usuario sem organizacao configurada.");
-
-  const role = (profile?.role ?? membership.role) as string;
-  const isSyncAdmin = role === "super_admin" || role === "gestor_sync";
-  const canManage = isSyncAdmin || membership.role === "admin_clinica";
+  const context = await getOrganizationContext();
+  const canManage = canManageActiveOrganization(context);
   if (!canManage) throw new Error("Sem permissao para administrar esta organizacao.");
 
   return {
-    admin,
-    user,
-    organizationId: membership.organization_id as string,
-    isSyncAdmin,
+    admin: context.admin,
+    user: context.user,
+    organizationId: context.organizationId,
+    isSyncAdmin: context.isSyncAdmin,
   };
 }
 

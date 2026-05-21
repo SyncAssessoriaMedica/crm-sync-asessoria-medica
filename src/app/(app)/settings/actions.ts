@@ -1,9 +1,8 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
 import { z } from "zod";
-import { createAdminClient, createClient } from "@/lib/supabase/server";
+import { canManageActiveOrganization, getOrganizationContext } from "@/lib/organization-context";
 
 type ActionResult = { ok: true; message: string } | { ok: false; message: string };
 
@@ -15,38 +14,14 @@ const notificationKeys = [
 ] as const;
 
 async function getSettingsContext() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) redirect("/login");
-
-  const admin = createAdminClient();
-  const [{ data: profile }, { data: membership }] = await Promise.all([
-    admin.from("profiles").select("role").eq("id", user.id).maybeSingle(),
-    admin
-      .from("organization_members")
-      .select("organization_id, role")
-      .eq("user_id", user.id)
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle(),
-  ]);
-
-  if (!membership?.organization_id) throw new Error("Usuario sem organizacao configurada.");
-
-  const effectiveRole = (profile?.role ?? membership.role) as string;
-  const canManage =
-    effectiveRole === "super_admin" ||
-    effectiveRole === "gestor_sync" ||
-    membership.role === "admin_clinica";
+  const context = await getOrganizationContext();
+  const canManage = canManageActiveOrganization(context);
 
   if (!canManage) throw new Error("Sem permissao para alterar configuracoes.");
 
   return {
-    admin,
-    organizationId: membership.organization_id as string,
+    admin: context.admin,
+    organizationId: context.organizationId,
   };
 }
 

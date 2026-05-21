@@ -1,4 +1,3 @@
-import { redirect } from "next/navigation";
 import {
   AlertCircle,
   Bell,
@@ -13,7 +12,7 @@ import { ConversionFunnelChart, DailyLeadsChart, LeadsBySourceChart } from "@/co
 import { MetricCard } from "@/components/dashboard/metric-card";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { createAdminClient, createClient } from "@/lib/supabase/server";
+import { getOrganizationContext } from "@/lib/organization-context";
 import { formatCurrency, formatNumber, formatPercent } from "@/lib/utils";
 import type { ConversionFunnelItem, DailyLeadsData, LeadStatus, LeadsBySource } from "@/lib/types";
 
@@ -45,6 +44,8 @@ type StageOption = {
   name: string;
   order: number;
 };
+
+export const dynamic = "force-dynamic";
 
 function startOfDay(date: Date) {
   const next = new Date(date);
@@ -182,36 +183,8 @@ export default async function DashboardPage({
 }) {
   const params = await searchParams;
   const period = getPeriod(params?.period);
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) redirect("/login");
-
-  const admin = createAdminClient();
-  const { data: membership } = await admin
-    .from("organization_members")
-    .select("organization_id, organizations(name, subscription_status)")
-    .eq("user_id", user.id)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (!membership) {
-    return (
-      <div className="rounded-xl border border-border bg-white p-8 shadow-card">
-        <p className="label-eyebrow text-text-muted">Acesso</p>
-        <h1 className="mt-1 text-xl font-black text-text-primary">Organizacao nao configurada</h1>
-        <p className="mt-2 text-sm text-text-secondary">
-          Este usuario ainda nao possui uma organizacao vinculada.
-        </p>
-      </div>
-    );
-  }
-
-  const organizationId = membership.organization_id as string;
-  const organization = membership.organizations as { name?: string; subscription_status?: string } | null;
+  const context = await getOrganizationContext();
+  const { admin, organizationId, organization } = context;
   const today = new Date();
   const { start: currentStart, end: currentEnd, previousStart } = getPeriodRange(period, today);
 

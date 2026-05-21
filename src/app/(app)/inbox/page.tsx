@@ -1,6 +1,5 @@
-import { redirect } from "next/navigation";
-import { createAdminClient, createClient } from "@/lib/supabase/server";
 import { canAccessRoute } from "@/lib/permissions";
+import { getOrganizationContext } from "@/lib/organization-context";
 import { AccessDenied } from "@/components/layout/access-denied";
 import { InboxClient } from "./inbox-client";
 import type { InboxConversation, InboxInstance, InboxLead, InboxMessage } from "./types";
@@ -14,42 +13,16 @@ function firstRelation<T>(value: T | T[] | null): T | null {
   return Array.isArray(value) ? value[0] ?? null : value;
 }
 
+export const dynamic = "force-dynamic";
+
 export default async function InboxPage({
   searchParams,
 }: {
   searchParams?: Promise<{ q?: string; period?: string }>;
 }) {
   const params = await searchParams;
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) redirect("/login");
-
-  const admin = createAdminClient();
-  const { data: membership } = await admin
-    .from("organization_members")
-    .select("organization_id, role")
-    .eq("user_id", user.id)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (!membership) {
-    return (
-      <div className="rounded-xl border border-border bg-white p-8 shadow-card">
-        <p className="label-eyebrow text-text-muted">Acesso</p>
-        <h1 className="mt-1 text-xl font-black text-text-primary">Organizacao nao configurada</h1>
-        <p className="mt-2 text-sm text-text-secondary">
-          Este usuario ainda nao possui uma organizacao vinculada.
-        </p>
-      </div>
-    );
-  }
-
-  const organizationId = membership.organization_id as string;
-  const userRole = membership.role as string;
+  const context = await getOrganizationContext();
+  const { admin, organizationId, role: userRole } = context;
 
   if (!canAccessRoute(userRole, "/inbox")) {
     return <AccessDenied />;

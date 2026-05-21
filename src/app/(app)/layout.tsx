@@ -1,7 +1,7 @@
 import { Sidebar } from "@/components/layout/sidebar";
 import { Topbar, type TopbarNotification } from "@/components/layout/topbar";
-import { createAdminClient, createClient } from "@/lib/supabase/server";
 import { canAccessRoute } from "@/lib/permissions";
+import { getOrganizationContext } from "@/lib/organization-context";
 
 type TaskNotificationRow = {
   id: string;
@@ -21,60 +21,34 @@ function firstRelation<T>(value: T | T[] | null): T | null {
   return Array.isArray(value) ? value[0] ?? null : value;
 }
 
+export const dynamic = "force-dynamic";
+
 export default async function AppLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
   let topbarUser;
   let sidebarUser;
   let notifications: TopbarNotification[] = [];
-  if (user) {
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("full_name, email, role")
-      .eq("id", user.id)
-      .maybeSingle();
-
+  try {
+    const context = await getOrganizationContext();
+    const { admin, profile, user, organization, organizationId, role, organizations, isSyncAdmin } = context;
     topbarUser = {
       name: profile?.full_name ?? user.email ?? "Usuario",
       email: profile?.email ?? user.email ?? "",
     };
     sidebarUser = {
       ...topbarUser,
-      role: profile?.role ?? "leitura",
-      organizationName: "Sync Marketing",
+      role,
+      organizationId,
+      organizationName: organization.name ?? "Sync Marketing",
+      organizations: organizations.map((org) => ({ id: org.id, name: org.name })),
+      canSwitchOrganization: isSyncAdmin,
     };
 
-    const admin = createAdminClient();
-    const { data: membership } = await admin
-      .from("organization_members")
-      .select("organization_id, role, organizations(name)")
-      .eq("user_id", user.id)
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
-
-    if (membership?.organization_id) {
-      const organizationId = membership.organization_id as string;
-      const organization = Array.isArray(membership.organizations)
-        ? membership.organizations[0] ?? null
-        : membership.organizations;
-      // profiles.role = global role (Sync staff); organization_members.role = org role; profile.role takes precedence
-      const effectiveRole = profile?.role ?? membership.role ?? "leitura";
-      sidebarUser = {
-        ...(sidebarUser ?? topbarUser),
-        role: effectiveRole,
-        organizationName: organization?.name ?? "Sync Marketing",
-      };
-
-      const canViewLeads = canAccessRoute(effectiveRole, "/leads");
-      const canViewInbox = canAccessRoute(effectiveRole, "/inbox");
+      const canViewLeads = canAccessRoute(role, "/leads");
+      const canViewInbox = canAccessRoute(role, "/inbox");
 
       const now = new Date().toISOString();
       const [tasksResult, conversationsResult] = await Promise.all([
@@ -127,7 +101,8 @@ export default async function AppLayout({
         : [];
 
       notifications = [...conversationNotifications, ...taskNotifications].slice(0, 8);
-    }
+  } catch {
+    // As paginas internas tratam login/acesso; aqui mantemos o layout renderizavel.
   }
 
   return (

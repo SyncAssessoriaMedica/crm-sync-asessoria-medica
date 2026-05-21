@@ -1,9 +1,9 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
 import { z } from "zod";
-import { createAdminClient, createClient } from "@/lib/supabase/server";
+import { getOrganizationContext } from "@/lib/organization-context";
+import { createAdminClient } from "@/lib/supabase/server";
 import type { LeadStatus } from "@/lib/types";
 
 type ActionResult = { ok: true; message: string; id?: string } | { ok: false; message: string };
@@ -32,32 +32,12 @@ const TaskSchema = z.object({
 });
 
 async function getCurrentContext() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    redirect("/login");
-  }
-
-  const admin = createAdminClient();
-  const { data: membership, error } = await admin
-    .from("organization_members")
-    .select("organization_id, role")
-    .eq("user_id", user.id)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (error || !membership) {
-    throw new Error("Usuario sem organizacao configurada.");
-  }
+  const context = await getOrganizationContext();
 
   return {
-    admin,
-    user,
-    organizationId: membership.organization_id as string,
+    admin: context.admin,
+    user: context.user,
+    organizationId: context.organizationId,
   };
 }
 
