@@ -357,19 +357,25 @@ export async function connectWhatsappInstanceAction(instanceName: string): Promi
         "Content-Type": "application/json",
         apikey: apiKey,
       },
+      // Evolution API v2 requires settings nested under "webhook" key
       body: JSON.stringify({
-        enabled: true,
-        url: `${appUrl}/api/webhooks/evolution`,
-        webhookByEvents: false,
-        webhookBase64: false,
-        events: ["MESSAGES_UPSERT", "SEND_MESSAGE", "CONNECTION_UPDATE", "QRCODE_UPDATED", "MESSAGES_UPDATE"],
+        webhook: {
+          enabled: true,
+          url: `${appUrl}/api/webhooks/evolution`,
+          webhookByEvents: false,
+          webhookBase64: false,
+          events: ["MESSAGES_UPSERT", "SEND_MESSAGE", "CONNECTION_UPDATE", "QRCODE_UPDATED", "MESSAGES_UPDATE"],
+        },
       }),
       cache: "no-store",
     });
 
     if (!webhookResponse.ok) {
-      const data = await webhookResponse.json().catch(() => ({}));
-      return { ok: false, message: data?.message ?? "Nao foi possivel configurar o webhook na Evolution." };
+      const errorData = await webhookResponse.json().catch(() => ({}));
+      const errorMsg = (errorData as { message?: string; error?: string })?.message
+        ?? (errorData as { message?: string; error?: string })?.error
+        ?? `Evolution retornou status ${webhookResponse.status}`;
+      return { ok: false, message: `Nao foi possivel configurar o webhook: ${errorMsg}` };
     }
 
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/instance/connect/${encodeURIComponent(instanceName)}`, {
