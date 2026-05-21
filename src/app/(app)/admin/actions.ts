@@ -837,6 +837,35 @@ export async function setWebhookForInstanceAction(instanceName: string): Promise
   }
 }
 
+// ─── Evolution contact name helpers ─────────────────────────────────────────
+
+const NAME_FIELDS = ["name", "pushName", "notify", "verifiedName", "displayName", "profileName", "fullName", "shortName"] as const;
+
+function extractBestName(obj: Record<string, unknown>, phone: string): string | null {
+  for (const field of NAME_FIELDS) {
+    const val = obj[field];
+    if (typeof val !== "string") continue;
+    const trimmed = val.trim();
+    if (!trimmed) continue;
+    // Reject if the value is phone-like (no letters, numerically matches the phone)
+    if (!/[a-zA-ZÀ-ÿ]/.test(trimmed)) {
+      const digits = trimmed.replace(/\D/g, "");
+      if (digits === phone || phone.endsWith(digits) || digits.endsWith(phone)) continue;
+    }
+    return trimmed;
+  }
+  // Recurse into nested `contact` sub-object (some Evolution forks wrap it)
+  const nested = obj.contact;
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    return extractBestName(nested as Record<string, unknown>, phone);
+  }
+  return null;
+}
+
+function isValidPhoneNumber(phone: string): boolean {
+  return phone.length >= 7 && phone !== "0" && !/^0+$/.test(phone);
+}
+
 export async function fetchWhatsappChatsAction(instanceName: string): Promise<ActionResult> {
   try {
     const { admin, organizationId, isSyncAdmin } = await getContext();
@@ -905,9 +934,13 @@ export async function fetchWhatsappChatsAction(instanceName: string): Promise<Ac
           ? (rawData as { data: Record<string, unknown>[] }).data
           : [];
 
+    // Keep only valid individual chats (no groups, broadcasts, or invalid JIDs)
     const individualChats = chatsArray.filter((chat) => {
       const jid = (chat.id ?? chat.remoteJid ?? "") as string;
-      return typeof jid === "string" && jid.endsWith("@s.whatsapp.net");
+      if (typeof jid !== "string" || !jid.endsWith("@s.whatsapp.net")) return false;
+      if (jid.startsWith("status@") || jid.includes("broadcast")) return false;
+      const phone = jid.split("@")[0].replace(/\D/g, "");
+      return isValidPhoneNumber(phone);
     });
 
     if (individualChats.length === 0) {
@@ -919,6 +952,7 @@ export async function fetchWhatsappChatsAction(instanceName: string): Promise<Ac
     }
 
     // Enrich with real contact names from address book (best-effort)
+    // Checks all known Evolution name fields; handles nested contact sub-object and wrapped responses
     const contactNameMap = new Map<string, string>();
     try {
       const contactRes = await evolutionFetch(
@@ -928,11 +962,19 @@ export async function fetchWhatsappChatsAction(instanceName: string): Promise<Ac
       );
       if (contactRes.ok) {
         const contactData = await contactRes.json().catch(() => []) as unknown;
-        const contactList = Array.isArray(contactData) ? contactData as Record<string, unknown>[] : [];
+        const contactList: Record<string, unknown>[] = Array.isArray(contactData)
+          ? contactData as Record<string, unknown>[]
+          : Array.isArray((contactData as Record<string, unknown>)?.contacts)
+            ? (contactData as { contacts: Record<string, unknown>[] }).contacts
+            : Array.isArray((contactData as Record<string, unknown>)?.data)
+              ? (contactData as { data: Record<string, unknown>[] }).data
+              : [];
         for (const c of contactList) {
           const jid = (c.id ?? c.remoteJid ?? "") as string;
-          const name = (c.pushName ?? c.name ?? c.notify ?? "") as string;
-          if (jid && name.trim()) contactNameMap.set(jid, name.trim());
+          if (!jid) continue;
+          const phone = jid.split("@")[0].replace(/\D/g, "");
+          const name = extractBestName(c, phone);
+          if (name) contactNameMap.set(jid, name);
         }
       }
     } catch { /* contacts endpoint is best-effort */ }
@@ -956,11 +998,14 @@ export async function fetchWhatsappChatsAction(instanceName: string): Promise<Ac
       const jid = (chat.id ?? chat.remoteJid ?? "") as string;
       const phone = jid.split("@")[0].replace(/\D/g, "");
       const leadId = phoneToLeadId.get(phone) ?? null;
-      const name = contactNameMap.get(jid) ?? (chat.name ?? chat.pushName ?? null) as string | null;
+      // Contact endpoint is preferred; fall back to fields on the chat object itself
+      const name = contactNameMap.get(jid) ?? extractBestName(chat, phone);
+      const displayName = name ?? phone;
       return {
         remoteJid: jid,
         phone,
         name,
+        displayName,
         lastMessageTimestamp: (chat.lastMsgTimestamp ?? chat.lastMessageTimestamp ?? null) as number | null,
         hasLead: leadId !== null,
         leadId,

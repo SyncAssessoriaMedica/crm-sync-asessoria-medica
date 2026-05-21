@@ -153,6 +153,7 @@ type ChatPreview = {
   remoteJid: string;
   phone: string;
   name: string | null;
+  displayName: string;
   lastMessageTimestamp: number | null;
   hasLead: boolean;
   leadId: string | null;
@@ -1113,9 +1114,9 @@ function WhatsappChatPanel({
                 />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-xs font-medium text-text-primary">
-                    {chat.name && chat.name !== chat.phone ? chat.name : chat.phone}
+                    {chat.displayName}
                   </p>
-                  {chat.name && chat.name !== chat.phone && (
+                  {chat.name && (
                     <p className="text-[10px] text-text-muted">{chat.phone}</p>
                   )}
                 </div>
