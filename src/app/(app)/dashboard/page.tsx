@@ -3,8 +3,6 @@ import {
   Bell,
   CalendarCheck,
   Clock,
-  DollarSign,
-  TrendingUp,
   UserCheck,
   Users,
 } from "lucide-react";
@@ -13,7 +11,7 @@ import { MetricCard } from "@/components/dashboard/metric-card";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getOrganizationContext } from "@/lib/organization-context";
-import { formatCurrency, formatNumber, formatPercent } from "@/lib/utils";
+import { formatNumber, formatPercent } from "@/lib/utils";
 import type { ConversionFunnelItem, DailyLeadsData, LeadStatus, LeadsBySource } from "@/lib/types";
 
 const PIE_COLORS = ["#22c55e", "#16a34a", "#46e27f", "#0f4f2a", "#8a948d"];
@@ -31,8 +29,6 @@ type DashboardLead = {
   source_id: string | null;
   stage_id: string | null;
   status: LeadStatus;
-  potential_value: number | null;
-  closed_value: number | null;
   created_at: string;
   last_interaction_at: string | null;
   source: { name: string | null } | null;
@@ -43,6 +39,12 @@ type StageOption = {
   id: string;
   name: string;
   order: number;
+};
+
+type MsgRow = {
+  conversation_id: string;
+  direction: string;
+  created_at: string;
 };
 
 export const dynamic = "force-dynamic";
@@ -73,16 +75,8 @@ function variation(current: number, previous: number) {
   return ((current - previous) / previous) * 100;
 }
 
-function numberValue(value: number | null) {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
 function isScheduledStatus(status: LeadStatus) {
   return ["scheduled", "attended", "closed_won", "closed_lost", "no_show"].includes(status);
-}
-
-function isAttendanceBase(status: LeadStatus) {
-  return ["attended", "closed_won", "closed_lost", "no_show"].includes(status);
 }
 
 function getPeriod(value?: string): DashboardPeriod {
@@ -151,12 +145,11 @@ function buildFunnelData(leads: DashboardLead[], stages: StageOption[]): Convers
   if (stages.length > 0) {
     return stages.map((stage, index) => {
       const count = leads.filter((lead) => lead.stage_id === stage.id).length;
-      const base = index === 0 ? leads.length : leads.filter((lead) => lead.stage_id === stages[0]?.id).length || leads.length;
-      return {
-        stage: stage.name,
-        count,
-        rate: percent(count, base),
-      };
+      const base =
+        index === 0
+          ? leads.length
+          : leads.filter((lead) => lead.stage_id === stages[0]?.id).length || leads.length;
+      return { stage: stage.name, count, rate: percent(count, base) };
     });
   }
 
@@ -176,6 +169,79 @@ function buildFunnelData(leads: DashboardLead[], stages: StageOption[]): Convers
   });
 }
 
+// Convert milliseconds to human-readable duration (e.g. "3 min", "1h 12min")
+function formatDuration(ms: number | null): string {
+  if (ms === null || ms <= 0) return "--";
+  const totalMinutes = Math.floor(ms / 60000);
+  if (totalMinutes === 0) return "< 1 min";
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours === 0) return `${minutes} min`;
+  return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}min`;
+}
+
+// Compute avg first response time and avg general response time.
+// msgs must be ordered ASC by created_at within each conversation.
+function computeResponseTimes(msgs: MsgRow[]): {
+  avgFirstResponse: number | null;
+  avgResponseTime: number | null;
+} {
+  const byConv = new Map<string, MsgRow[]>();
+  for (const msg of msgs) {
+    const list = byConv.get(msg.conversation_id) ?? [];
+    list.push(msg);
+    byConv.set(msg.conversation_id, list);
+  }
+
+  const firstDeltas: number[] = [];
+  const allDeltas: number[] = [];
+
+  for (const convMsgs of byConv.values()) {
+    const firstInboundIdx = convMsgs.findIndex((m) => m.direction === "inbound");
+    if (firstInboundIdx === -1) continue;
+
+    // First response: time from first inbound to first outbound after it
+    const firstOutboundAfter = convMsgs.slice(firstInboundIdx + 1).find((m) => m.direction === "outbound");
+    if (firstOutboundAfter) {
+      firstDeltas.push(
+        new Date(firstOutboundAfter.created_at).getTime() -
+          new Date(convMsgs[firstInboundIdx].created_at).getTime()
+      );
+    }
+
+    // General: for each inbound, time to the next outbound
+    for (let i = 0; i < convMsgs.length; i++) {
+      if (convMsgs[i].direction !== "inbound") continue;
+      const nextOut = convMsgs.slice(i + 1).find((m) => m.direction === "outbound");
+      if (nextOut) {
+        allDeltas.push(
+          new Date(nextOut.created_at).getTime() - new Date(convMsgs[i].created_at).getTime()
+        );
+      }
+    }
+  }
+
+  const avg = (arr: number[]) =>
+    arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+
+  return { avgFirstResponse: avg(firstDeltas), avgResponseTime: avg(allDeltas) };
+}
+
+// Count open conversations whose last message was inbound and older than cutoff.
+// recentMsgs must be ordered DESC by created_at (first entry per conv = last message).
+function computeNoFollowup(openConvIds: string[], recentMsgs: MsgRow[], cutoff: Date): number {
+  const lastMsgByConv = new Map<string, MsgRow>();
+  for (const msg of recentMsgs) {
+    if (!lastMsgByConv.has(msg.conversation_id)) lastMsgByConv.set(msg.conversation_id, msg);
+  }
+  let count = 0;
+  for (const id of openConvIds) {
+    const last = lastMsgByConv.get(id);
+    if (last && last.direction === "inbound" && new Date(last.created_at) < cutoff) count++;
+  }
+  return count;
+}
+
 export default async function DashboardPage({
   searchParams,
 }: {
@@ -187,23 +253,16 @@ export default async function DashboardPage({
   const { admin, organizationId, organization } = context;
   const today = new Date();
   const { start: currentStart, end: currentEnd, previousStart } = getPeriodRange(period, today);
+  const fortyEightHoursAgo = new Date(today.getTime() - 48 * 60 * 60 * 1000);
 
-  const [leadsResult, tasksResult, conversationsResult, pipelinesResult] = await Promise.all([
+  // Batch 1 — all independent queries in parallel
+  const [leadsResult, tasksResult, openConvsResult, allConvsResult, pipelinesResult] = await Promise.all([
     admin
       .from("leads")
       .select(
-        `
-        id,
-        source_id,
-        stage_id,
-        status,
-        potential_value,
-        closed_value,
-        created_at,
-        last_interaction_at,
-        source:lead_sources(name),
-        stage:pipeline_stages(id, name, order)
-      `
+        `id, source_id, stage_id, status, created_at, last_interaction_at,
+         source:lead_sources(name),
+         stage:pipeline_stages(id, name, order)`
       )
       .eq("organization_id", organizationId)
       .order("created_at", { ascending: false }),
@@ -211,11 +270,19 @@ export default async function DashboardPage({
       .from("lead_tasks")
       .select("id, due_at, completed_at, lead:leads!inner(id, organization_id)")
       .eq("lead.organization_id", organizationId),
+    // Open conversations (for unread alert + follow-up card). Groups filtered in JS below.
     admin
       .from("conversations")
-      .select("id, unread_count, status")
+      .select("id, remote_jid, unread_count")
       .eq("organization_id", organizationId)
-      .eq("status", "open"),
+      .eq("status", "open")
+      .not("lead_id", "is", null),
+    // All lead-linked conversations in the org. Response metrics filter messages by period.
+    admin
+      .from("conversations")
+      .select("id, remote_jid")
+      .eq("organization_id", organizationId)
+      .not("lead_id", "is", null),
     admin
       .from("pipelines")
       .select("id, pipeline_stages(id, name, order)")
@@ -234,46 +301,87 @@ export default async function DashboardPage({
     );
   }
 
+  // Filter out WhatsApp group JIDs in JS (avoids PostgREST LIKE syntax issues)
+  const openConvs = (openConvsResult.data ?? []).filter((c) => !c.remote_jid.includes("@g.us"));
+  const openConvIds = openConvs.map((c) => c.id);
+  const allLeadConvs = (allConvsResult.data ?? []).filter((c) => !c.remote_jid.includes("@g.us"));
+  const allLeadConvIds = allLeadConvs.map((c) => c.id);
+
+  // Batch 2 — depends on conversation IDs from batch 1
+  const emptyMsgs = { data: [] as MsgRow[], error: null };
+  const [periodMsgsResult, recentMsgsResult] = await Promise.all([
+    allLeadConvIds.length > 0
+      ? admin
+          .from("messages")
+          .select("conversation_id, direction, created_at")
+          .in("conversation_id", allLeadConvIds)
+          .gte("created_at", currentStart.toISOString())
+          .lt("created_at", currentEnd.toISOString())
+          .order("created_at", { ascending: true })
+      : Promise.resolve(emptyMsgs),
+    openConvIds.length > 0
+      ? admin
+          .from("messages")
+          .select("conversation_id, direction, created_at")
+          .in("conversation_id", openConvIds)
+          .order("created_at", { ascending: false })
+      : Promise.resolve(emptyMsgs),
+  ]);
+
+  // ── Lead metrics ──────────────────────────────────────────────────────────────
   const leads = (leadsResult.data ?? []).map((lead) => ({
     ...lead,
-    source: Array.isArray(lead.source) ? lead.source[0] ?? null : lead.source,
-    stage: Array.isArray(lead.stage) ? lead.stage[0] ?? null : lead.stage,
+    source: Array.isArray(lead.source) ? (lead.source[0] ?? null) : lead.source,
+    stage: Array.isArray(lead.stage) ? (lead.stage[0] ?? null) : lead.stage,
   })) as DashboardLead[];
-  const stages = ((pipelinesResult.data?.pipeline_stages ?? []) as StageOption[]).sort((a, b) => a.order - b.order);
+
+  const stages = ((pipelinesResult.data?.pipeline_stages ?? []) as StageOption[]).sort(
+    (a, b) => a.order - b.order
+  );
+
   const currentLeads = leads.filter((lead) => inRange(lead.created_at, currentStart, currentEnd));
   const previousLeads = leads.filter((lead) => inRange(lead.created_at, previousStart, currentStart));
+
+  // Scheduled = reached scheduled stage or beyond
   const scheduledCurrent = currentLeads.filter((lead) => isScheduledStatus(lead.status)).length;
   const scheduledPrevious = previousLeads.filter((lead) => isScheduledStatus(lead.status)).length;
-  const attendedCurrent = currentLeads.filter((lead) => ["attended", "closed_won", "closed_lost"].includes(lead.status)).length;
-  const attendedPrevious = previousLeads.filter((lead) => ["attended", "closed_won", "closed_lost"].includes(lead.status)).length;
-  const attendanceBaseCurrent = currentLeads.filter((lead) => isAttendanceBase(lead.status)).length;
-  const attendanceBasePrevious = previousLeads.filter((lead) => isAttendanceBase(lead.status)).length;
-  const closedCurrent = currentLeads.filter((lead) => lead.status === "closed_won").length;
-  const closedPrevious = previousLeads.filter((lead) => lead.status === "closed_won").length;
-  const revenueCurrent = currentLeads.reduce((sum, lead) => sum + numberValue(lead.closed_value), 0);
-  const wonWithValue = leads.filter((lead) => lead.status === "closed_won" && numberValue(lead.closed_value) > 0);
-  const avgTicket =
-    wonWithValue.length > 0
-      ? wonWithValue.reduce((sum, lead) => sum + numberValue(lead.closed_value), 0) / wonWithValue.length
-      : 0;
-  const projectedRevenue = currentLeads.reduce((sum, lead) => {
-    if (lead.status === "closed_won") return sum + numberValue(lead.closed_value);
-    return sum + numberValue(lead.potential_value);
-  }, 0);
-  const projectedRevenuePrevious = previousLeads.reduce((sum, lead) => {
-    if (lead.status === "closed_won") return sum + numberValue(lead.closed_value);
-    return sum + numberValue(lead.potential_value);
-  }, 0);
-  const leadsWithoutResponse = (conversationsResult.data ?? []).filter((conversation) => conversation.unread_count > 0).length;
+
+  // Attended = showed up (includes closed outcomes which imply attendance)
+  const attendedCurrent = currentLeads.filter((lead) =>
+    ["attended", "closed_won", "closed_lost"].includes(lead.status)
+  ).length;
+  const attendedPrevious = previousLeads.filter((lead) =>
+    ["attended", "closed_won", "closed_lost"].includes(lead.status)
+  ).length;
+
+  // ── Response time metrics ─────────────────────────────────────────────────────
+  const { avgFirstResponse, avgResponseTime } = computeResponseTimes(
+    (periodMsgsResult.data ?? []) as MsgRow[]
+  );
+
+  // ── Follow-up 48h+ ────────────────────────────────────────────────────────────
+  // Independent of dashboard period — reflects current operational state
+  const noFollowupCount = computeNoFollowup(
+    openConvIds,
+    (recentMsgsResult.data ?? []) as MsgRow[],
+    fortyEightHoursAgo
+  );
+
+  // ── Alert banners ─────────────────────────────────────────────────────────────
+  const leadsWithoutResponse = openConvs.filter((c) => c.unread_count > 0).length;
   const leadsWithoutFollowup = (tasksResult.data ?? []).filter((task) => {
     if (task.completed_at || !task.due_at) return false;
     return new Date(task.due_at).getTime() < today.getTime();
   }).length;
+
+  // ── Chart data ────────────────────────────────────────────────────────────────
   const dailyData = buildDailyData(currentLeads, currentStart, currentEnd);
   const sourceData = buildSourceData(currentLeads);
   const funnelData = buildFunnelData(currentLeads, stages);
+
   const monthLabel = new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric" }).format(today);
-  const subscriptionLabel = organization?.subscription_status === "active" ? "Assessoria ativa" : "Periodo de implantacao";
+  const subscriptionLabel =
+    organization?.subscription_status === "active" ? "Assessoria ativa" : "Periodo de implantacao";
 
   return (
     <div className="space-y-6">
@@ -311,18 +419,48 @@ export default async function DashboardPage({
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-        <MetricCard label="Total de Leads" value={formatNumber(leads.length)} icon={Users} />
-        <MetricCard label="Novos Leads" value={formatNumber(currentLeads.length)} variation={variation(currentLeads.length, previousLeads.length)} icon={TrendingUp} />
-        <MetricCard label="Taxa de Agendamento" value={formatPercent(percent(scheduledCurrent, currentLeads.length))} variation={variation(percent(scheduledCurrent, currentLeads.length), percent(scheduledPrevious, previousLeads.length))} icon={CalendarCheck} />
-        <MetricCard label="Taxa de Fechamento" value={formatPercent(percent(closedCurrent, attendedCurrent))} variation={variation(percent(closedCurrent, attendedCurrent), percent(closedPrevious, attendedPrevious))} icon={UserCheck} />
-      </div>
-
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-        <MetricCard label="Taxa de Comparecimento" value={formatPercent(percent(attendedCurrent, attendanceBaseCurrent))} variation={variation(percent(attendedCurrent, attendanceBaseCurrent), percent(attendedPrevious, attendanceBasePrevious))} icon={UserCheck} />
-        <MetricCard label="Tempo Medio 1a Resposta" value="--" icon={Clock} />
-        <MetricCard label="Ticket Medio" value={formatCurrency(avgTicket)} icon={DollarSign} />
-        <MetricCard label="Receita Projetada" value={formatCurrency(projectedRevenue || revenueCurrent)} variation={variation(projectedRevenue, projectedRevenuePrevious)} icon={TrendingUp} />
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
+        <MetricCard
+          label="Total de Leads"
+          value={formatNumber(currentLeads.length)}
+          variation={variation(currentLeads.length, previousLeads.length)}
+          icon={Users}
+        />
+        <MetricCard
+          label="Taxa de Agendamento"
+          value={formatPercent(percent(scheduledCurrent, currentLeads.length))}
+          variation={variation(
+            percent(scheduledCurrent, currentLeads.length),
+            percent(scheduledPrevious, previousLeads.length)
+          )}
+          icon={CalendarCheck}
+        />
+        <MetricCard
+          label="Taxa de Comparecimento"
+          value={formatPercent(percent(attendedCurrent, scheduledCurrent))}
+          variation={variation(
+            percent(attendedCurrent, scheduledCurrent),
+            percent(attendedPrevious, scheduledPrevious)
+          )}
+          icon={UserCheck}
+        />
+        <MetricCard
+          label="Tempo Medio 1a Resposta"
+          value={formatDuration(avgFirstResponse)}
+          icon={Clock}
+        />
+        <MetricCard
+          label="Tempo Medio de Resposta"
+          value={formatDuration(avgResponseTime)}
+          icon={Clock}
+        />
+        <MetricCard
+          label="Sem follow-up 48h+"
+          value={formatNumber(noFollowupCount)}
+          icon={AlertCircle}
+          iconColor={noFollowupCount > 0 ? "text-warning-amber" : "text-brand-green"}
+          alert={noFollowupCount > 0}
+        />
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
