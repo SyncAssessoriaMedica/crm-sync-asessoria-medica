@@ -68,6 +68,7 @@ export function Sidebar({ user }: SidebarProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [isOpen, setIsOpen] = useState(false);
+  const [pendingHref, setPendingHref] = useState<string | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const role = user?.role ?? "leitura";
@@ -87,12 +88,18 @@ export function Sidebar({ user }: SidebarProps) {
     return () => document.removeEventListener("mousedown", handleMouseDown);
   }, [isOpen]);
 
+
   function handleSelect(orgId: string) {
     setIsOpen(false);
     startTransition(async () => {
       const result = await switchActiveOrganizationAction(orgId);
       if (result.ok) router.refresh();
     });
+  }
+
+  function handleNavClick(href: string) {
+    if (pathname === href || pathname.startsWith(`${href}/`)) return;
+    setPendingHref(href);
   }
 
   return (
@@ -194,23 +201,32 @@ export function Sidebar({ user }: SidebarProps) {
           <p className="label-eyebrow px-2 py-2 text-white/30">Menu</p>
           {visibleItems.map((item) => {
             const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
+            const isItemPending =
+              pendingHref === item.href &&
+              !(pathname === item.href || pathname.startsWith(`${item.href}/`));
             return (
               <Link
                 key={item.href}
                 href={item.href}
+                onClick={() => handleNavClick(item.href)}
                 className={cn(
                   "group flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all",
                   isActive
                     ? "bg-brand-green text-sidebar-dark"
-                    : "text-white/60 hover:bg-white/8 hover:text-white"
+                    : "text-white/60 hover:bg-white/8 hover:text-white",
+                  isItemPending && !isActive && "opacity-70"
                 )}
               >
-                <item.icon
-                  className={cn(
-                    "h-4 w-4 shrink-0 transition-colors",
-                    isActive ? "text-sidebar-dark" : "text-white/40 group-hover:text-white/80"
-                  )}
-                />
+                {isItemPending && !isActive ? (
+                  <Loader2 className="h-4 w-4 shrink-0 animate-spin text-white/60" />
+                ) : (
+                  <item.icon
+                    className={cn(
+                      "h-4 w-4 shrink-0 transition-colors",
+                      isActive ? "text-sidebar-dark" : "text-white/40 group-hover:text-white/80"
+                    )}
+                  />
+                )}
                 {item.label}
               </Link>
             );

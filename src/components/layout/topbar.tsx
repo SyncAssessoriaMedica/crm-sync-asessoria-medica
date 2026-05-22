@@ -1,9 +1,9 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, useTransition } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Bell, Calendar, ChevronDown, LogOut, Search } from "lucide-react";
+import { Bell, Calendar, ChevronDown, Loader2, LogOut, Search } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
@@ -51,6 +51,7 @@ export function Topbar({ title, subtitle, user, notifications = [] }: TopbarProp
   const selectedPeriod = searchParams.get("period") ?? "30d";
   const selectedSearch = searchParams.get("q") ?? "";
   const searchTimer = useRef<number | null>(null);
+  const [isPeriodPending, startPeriodTransition] = useTransition();
   const selectedPeriodLabel = periods.find((period) => period.value === selectedPeriod)?.label ?? "30 dias";
   const displayName = user?.name ?? "Usuario";
   const displayEmail = user?.email ?? "";
@@ -102,8 +103,12 @@ export function Topbar({ title, subtitle, user, notifications = [] }: TopbarProp
       <div className="ml-auto flex items-center gap-2">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="secondary" size="sm" className="h-8 gap-1.5 text-xs">
-              <Calendar className="h-3.5 w-3.5" />
+            <Button variant="secondary" size="sm" className="h-8 gap-1.5 text-xs" disabled={isPeriodPending}>
+              {isPeriodPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Calendar className="h-3.5 w-3.5" />
+              )}
               {selectedPeriodLabel}
               <ChevronDown className="h-3 w-3 text-text-muted" />
             </Button>
@@ -112,17 +117,20 @@ export function Topbar({ title, subtitle, user, notifications = [] }: TopbarProp
             <DropdownMenuLabel>Periodo</DropdownMenuLabel>
             <DropdownMenuSeparator />
             {periods.map((period) => (
-              <DropdownMenuItem key={period.value} asChild>
-                <Link
-                  href={periodHref(period.value)}
-                  className={cn(
-                    pathname === "/dashboard" &&
-                      period.value === selectedPeriod &&
-                      "font-medium text-brand-green-dark"
-                  )}
-                >
-                  {period.label}
-                </Link>
+              <DropdownMenuItem
+                key={period.value}
+                className={cn(
+                  pathname === "/dashboard" &&
+                    period.value === selectedPeriod &&
+                    "font-medium text-brand-green-dark"
+                )}
+                onSelect={() => {
+                  startPeriodTransition(() => {
+                    router.push(periodHref(period.value));
+                  });
+                }}
+              >
+                {period.label}
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>
