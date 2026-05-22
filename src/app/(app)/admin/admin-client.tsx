@@ -19,6 +19,7 @@ import {
   Settings2,
   Smartphone,
   Tag,
+  Trash2,
   Users,
   Webhook,
   XCircle,
@@ -48,6 +49,7 @@ import {
   createWhatsappInstanceAction,
   deactivateInboundWebhookAction,
   deleteCustomFieldAction,
+  deleteOrganizationAction,
   deletePipelineStageAction,
   deleteSourceAction,
   deleteTagAction,
@@ -293,12 +295,37 @@ export function AdminClient({ data }: { data: AdminData }) {
                 <Button className="self-end" disabled={isPending}>Criar</Button>
               </form>
               <DataTable
-                headers={["Clinica", "Slug", "Status", "Criada em"]}
+                headers={["Clinica", "Slug", "Status", "Criada em", ""]}
                 rows={data.organizations.map((org) => [
-                  org.name,
-                  org.slug,
+                  <span key="name" className="font-medium text-text-primary">{org.name}</span>,
+                  <span key="slug" className="font-mono text-[11px]">{org.slug}</span>,
                   <Badge key="status" variant={org.subscription_status === "active" ? "green" : "secondary"}>{org.subscription_status ?? "trial"}</Badge>,
                   formatDateTime(org.created_at),
+                  org.slug === "sync-marketing" ? (
+                    <span key="protected" className="text-[11px] text-text-muted">Protegida</span>
+                  ) : (
+                    <Button
+                      key="delete"
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="gap-1.5 text-danger-red hover:bg-danger-red/5 hover:text-danger-red"
+                      disabled={isPending}
+                      onClick={() => {
+                        if (!window.confirm(
+                          `Apagar a clinica "${org.name}"?\n\nEsta acao e irreversivel. Todos os leads, conversas, mensagens, instancias WhatsApp e configuracoes desta clinica serao apagados permanentemente.`
+                        )) return;
+                        startTransition(async () => {
+                          const result = await deleteOrganizationAction(org.id);
+                          setMessage(result.message);
+                          if (result.ok) router.refresh();
+                        });
+                      }}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      Apagar
+                    </Button>
+                  ),
                 ])}
               />
             </Section>

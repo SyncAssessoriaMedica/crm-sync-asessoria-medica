@@ -131,6 +131,44 @@ export async function createOrganizationAction(formData: FormData): Promise<Acti
   }
 }
 
+export async function deleteOrganizationAction(organizationId: string): Promise<ActionResult> {
+  try {
+    const { admin, isSyncAdmin } = await getContext();
+    if (!isSyncAdmin) return { ok: false, message: "Apenas admin Sync pode apagar clinicas." };
+
+    const { data: org, error: fetchError } = await admin
+      .from("organizations")
+      .select("id, name, slug")
+      .eq("id", organizationId)
+      .maybeSingle();
+
+    if (fetchError) return { ok: false, message: fetchError.message };
+    if (!org?.id) return { ok: false, message: "Clinica nao encontrada." };
+    if (org.slug === "sync-marketing") {
+      return { ok: false, message: "A clinica Sync Marketing nao pode ser apagada." };
+    }
+
+    const { count } = await admin
+      .from("organizations")
+      .select("id", { count: "exact", head: true });
+    if ((count ?? 0) <= 1) {
+      return { ok: false, message: "Nao e possivel apagar a unica clinica do sistema." };
+    }
+
+    const { error } = await admin.from("organizations").delete().eq("id", organizationId);
+    if (error) return { ok: false, message: error.message };
+
+    revalidatePath("/admin");
+    revalidatePath("/dashboard");
+    revalidatePath("/leads");
+    revalidatePath("/inbox");
+
+    return { ok: true, message: `Clinica "${org.name}" apagada permanentemente.`, data: { organizationId } };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao apagar clinica." };
+  }
+}
+
 export async function createUserAction(formData: FormData): Promise<ActionResult> {
   try {
     const { admin, organizationId, isSyncAdmin } = await getContext();
