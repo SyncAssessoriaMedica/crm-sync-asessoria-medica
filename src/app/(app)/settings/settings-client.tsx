@@ -2,20 +2,27 @@
 
 import { useState, useTransition } from "react";
 import Image from "next/image";
-import { Bell, Building2, CheckCircle2, Lock, Shield, type LucideIcon } from "lucide-react";
+import { Bell, Building2, CheckCircle2, Clock, Lock, Shield, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
-import { updateClinicSettingsAction, updateNotificationSettingsAction } from "./actions";
+import { updateBusinessHoursAction, updateClinicSettingsAction, updateNotificationSettingsAction } from "./actions";
 
 type NotificationPreferences = {
   new_lead: boolean;
   lead_without_response: boolean;
   lead_without_followup: boolean;
   appointment_confirmed: boolean;
+};
+
+type BusinessHoursSettings = {
+  startTime: string;
+  endTime: string;
+  workingDays: number[];
+  timezone: string;
 };
 
 export type SettingsData = {
@@ -32,6 +39,7 @@ export type SettingsData = {
     state: string;
     scheduling_url: string;
     notification_preferences: NotificationPreferences;
+    business_hours: BusinessHoursSettings;
   };
   user: {
     role: string;
@@ -40,9 +48,20 @@ export type SettingsData = {
 
 const settingsSections = [
   { id: "clinic", label: "Dados da clinica", icon: Building2 },
+  { id: "business-hours", label: "Horario de funcionamento", icon: Clock },
   { id: "notifications", label: "Notificacoes internas", icon: Bell },
   { id: "security", label: "Seguranca", icon: Shield },
 ] as const;
+
+const weekDays = [
+  { value: 1, label: "Seg" },
+  { value: 2, label: "Ter" },
+  { value: 3, label: "Qua" },
+  { value: 4, label: "Qui" },
+  { value: 5, label: "Sex" },
+  { value: 6, label: "Sab" },
+  { value: 0, label: "Dom" },
+];
 
 const notificationOptions = [
   {
@@ -175,6 +194,70 @@ export function SettingsClient({ data }: { data: SettingsData }) {
             </Card>
           )}
 
+          {activeSection === "business-hours" && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm">Horario de funcionamento</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <form action={runAction(updateBusinessHoursAction)} className="space-y-5">
+                  <div>
+                    <Label>Dias de funcionamento</Label>
+                    <div className="mt-2 grid grid-cols-4 gap-2 sm:grid-cols-7">
+                      {weekDays.map((day) => (
+                        <label
+                          key={day.value}
+                          className="flex cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-border bg-background-subtle/40 px-2 py-2 text-xs font-semibold text-text-secondary transition-colors hover:bg-brand-green-soft"
+                        >
+                          <input
+                            type="checkbox"
+                            name={`day_${day.value}`}
+                            defaultChecked={data.settings.business_hours.workingDays.includes(day.value)}
+                            className="h-4 w-4 rounded border-border accent-brand-green"
+                          />
+                          {day.label}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                    <Field
+                      label="Inicio do atendimento"
+                      name="start_time"
+                      type="time"
+                      defaultValue={data.settings.business_hours.startTime}
+                      required
+                    />
+                    <Field
+                      label="Fim do atendimento"
+                      name="end_time"
+                      type="time"
+                      defaultValue={data.settings.business_hours.endTime}
+                      required
+                    />
+                    <Field
+                      label="Fuso horario"
+                      name="timezone"
+                      defaultValue={data.settings.business_hours.timezone}
+                      required
+                    />
+                  </div>
+
+                  <div className="rounded-xl border border-brand-green/20 bg-brand-green-soft px-4 py-3 text-xs text-brand-green-deep">
+                    O Dashboard usa estes dias e horarios no modo Horario util. O modo Tempo real continua mostrando o
+                    tempo corrido completo, inclusive noite e fora do expediente.
+                  </div>
+
+                  <Separator />
+                  <div className="flex justify-end">
+                    <Button disabled={isPending}>{isPending ? "Salvando..." : "Salvar horario"}</Button>
+                  </div>
+                </form>
+              </CardContent>
+            </Card>
+          )}
+
           {activeSection === "notifications" && (
             <Card>
               <CardHeader>
@@ -249,17 +332,26 @@ function Field({
   defaultValue,
   placeholder,
   required,
+  type = "text",
 }: {
   label: string;
   name: string;
   defaultValue?: string;
   placeholder?: string;
   required?: boolean;
+  type?: string;
 }) {
   return (
     <div className="space-y-1.5">
       <Label htmlFor={name}>{label}</Label>
-      <Input id={name} name={name} defaultValue={defaultValue} placeholder={placeholder} required={required} />
+      <Input
+        id={name}
+        name={name}
+        type={type}
+        defaultValue={defaultValue}
+        placeholder={placeholder}
+        required={required}
+      />
     </div>
   );
 }

@@ -13,6 +13,8 @@ const notificationKeys = [
   "appointment_confirmed",
 ] as const;
 
+const workingDayKeys = ["0", "1", "2", "3", "4", "5", "6"] as const;
+
 async function getSettingsContext() {
   const context = await getOrganizationContext();
   const canManage = canManageActiveOrganization(context);
@@ -100,5 +102,47 @@ export async function updateNotificationSettingsAction(formData: FormData): Prom
     return { ok: true, message: "Notificacoes internas atualizadas." };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "Erro ao salvar notificacoes." };
+  }
+}
+
+export async function updateBusinessHoursAction(formData: FormData): Promise<ActionResult> {
+  try {
+    const { admin, organizationId } = await getSettingsContext();
+    const startTime = asText(formData.get("start_time"));
+    const endTime = asText(formData.get("end_time"));
+    const timezone = asText(formData.get("timezone")) || "America/Sao_Paulo";
+    const workingDays = workingDayKeys
+      .filter((key) => formData.get(`day_${key}`) === "on")
+      .map((key) => Number(key));
+
+    const parsed = z
+      .object({
+        startTime: z.string().regex(/^\d{2}:\d{2}$/, "Informe o horario inicial."),
+        endTime: z.string().regex(/^\d{2}:\d{2}$/, "Informe o horario final."),
+        timezone: z.string().trim().min(3).max(80),
+        workingDays: z.array(z.number().int().min(0).max(6)).min(1, "Selecione ao menos um dia de funcionamento."),
+      })
+      .safeParse({ startTime, endTime, timezone, workingDays });
+
+    if (!parsed.success) {
+      return { ok: false, message: parsed.error.issues[0]?.message ?? "Dados invalidos." };
+    }
+
+    if (parsed.data.startTime >= parsed.data.endTime) {
+      return { ok: false, message: "O horario inicial precisa ser menor que o horario final." };
+    }
+
+    const { error } = await admin.from("organization_settings").upsert({
+      organization_id: organizationId,
+      business_hours: parsed.data,
+    });
+
+    if (error) return { ok: false, message: error.message };
+
+    revalidatePath("/settings");
+    revalidatePath("/dashboard");
+    return { ok: true, message: "Horario de funcionamento salvo." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao salvar horario." };
   }
 }

@@ -55,17 +55,10 @@ type MsgRow = {
 
 // Structured so future code can replace this with per-org DB config.
 type BusinessHoursConfig = {
-  startHour: number;     // inclusive, e.g. 7  → counts from 07:00
-  endHour: number;       // exclusive,  e.g. 22 → counts until 22:00
+  startTime: string;
+  endTime: string;
   workingDays: number[]; // 0=Sun … 6=Sat
   timezone: string;
-};
-
-const DEFAULT_BUSINESS_HOURS: BusinessHoursConfig = {
-  startHour: 7,
-  endHour: 22,
-  workingDays: [1, 2, 3, 4, 5, 6], // Mon–Sat
-  timezone: "America/Sao_Paulo",
 };
 
 // ─── Period helpers ───────────────────────────────────────────────────────────
@@ -111,6 +104,23 @@ function getResponseMode(value?: string): ResponseMode {
   return value === "real_time" ? "real_time" : "business_hours";
 }
 
+function parseBusinessHoursConfig(value: unknown): BusinessHoursConfig | null {
+  if (!value || typeof value !== "object") return null;
+  const data = value as Record<string, unknown>;
+  const startTime = typeof data.startTime === "string" ? data.startTime : "";
+  const endTime = typeof data.endTime === "string" ? data.endTime : "";
+  const timezone = typeof data.timezone === "string" ? data.timezone : "America/Sao_Paulo";
+  const workingDays = Array.isArray(data.workingDays)
+    ? data.workingDays.filter((day): day is number => typeof day === "number" && day >= 0 && day <= 6)
+    : [];
+
+  if (!/^\d{2}:\d{2}$/.test(startTime) || !/^\d{2}:\d{2}$/.test(endTime)) return null;
+  if (workingDays.length === 0) return null;
+  if (timeToMinutes(startTime) >= timeToMinutes(endTime)) return null;
+
+  return { startTime, endTime, workingDays, timezone };
+}
+
 function getPeriodRange(period: DashboardPeriod, baseDate: Date) {
   const tomorrow = new Date(baseDate);
   tomorrow.setDate(tomorrow.getDate() + 1);
@@ -144,23 +154,34 @@ function localWeekday(date: Date, tz: string): number {
   return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(name);
 }
 
-// Returns the local hour (0–23) in the given timezone for a UTC timestamp.
-function localHour(date: Date, tz: string): number {
+function timeToMinutes(value: string): number {
+  const [hours, minutes] = value.split(":").map(Number);
+  return hours * 60 + minutes;
+}
+
+// Returns the local minute of day (0–1439) in the given timezone for a UTC timestamp.
+function localMinuteOfDay(date: Date, tz: string): number {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: tz,
     hour: "numeric",
+    minute: "numeric",
     hour12: false,
   }).formatToParts(date);
   const h = parseInt(parts.find((p) => p.type === "hour")?.value ?? "0");
-  return h === 24 ? 0 : h;
+  const m = parseInt(parts.find((p) => p.type === "minute")?.value ?? "0");
+  return (h === 24 ? 0 : h) * 60 + m;
 }
 
-// Returns the UTC timestamp for `hour:00:00` on the same local date as `refDate` in `tz`.
+// Returns the UTC timestamp for `minuteOfDay` on the same local date as `refDate` in `tz`.
 // Uses the "sv" locale trick to extract local date components without a library.
-function utcForLocalHour(refDate: Date, hour: number, tz: string): Date {
+function utcForLocalMinuteOfDay(refDate: Date, minuteOfDay: number, tz: string): Date {
   const localStr = refDate.toLocaleString("sv", { timeZone: tz }); // "YYYY-MM-DD HH:MM:SS"
   const datePart = localStr.slice(0, 10);
-  const targetLocal = new Date(`${datePart}T${String(hour).padStart(2, "0")}:00:00`);
+  const hours = Math.floor(minuteOfDay / 60);
+  const minutes = minuteOfDay % 60;
+  const targetLocal = new Date(
+    `${datePart}T${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:00`
+  );
   const refLocal = new Date(localStr.replace(" ", "T"));
   // offset = how far ahead UTC is from local time (positive for western timezones)
   const tzOffsetMs = refDate.getTime() - refLocal.getTime();
@@ -171,10 +192,11 @@ function utcForLocalHour(refDate: Date, hour: number, tz: string): Date {
 // Adds 24 h to safely cross into the next calendar day in the local timezone,
 // then searches up to 7 days forward for the first working day.
 function nextWorkingPeriodStart(afterDate: Date, config: BusinessHoursConfig): Date {
+  const startMinute = timeToMinutes(config.startTime);
   let candidate = new Date(afterDate.getTime() + 24 * 3_600_000);
   for (let i = 0; i < 7; i++) {
     if (config.workingDays.includes(localWeekday(candidate, config.timezone))) {
-      return utcForLocalHour(candidate, config.startHour, config.timezone);
+      return utcForLocalMinuteOfDay(candidate, startMinute, config.timezone);
     }
     candidate = new Date(candidate.getTime() + 24 * 3_600_000);
   }
@@ -188,29 +210,31 @@ function businessHoursMs(start: Date, end: Date, config: BusinessHoursConfig): n
 
   let current = new Date(start.getTime());
   let total = 0;
+  const startMinute = timeToMinutes(config.startTime);
+  const endMinute = timeToMinutes(config.endTime);
 
   // Safety cap: max 60 calendar-day iterations
   for (let iter = 0; iter < 60 && current < end; iter++) {
     const wd = localWeekday(current, config.timezone);
-    const hr = localHour(current, config.timezone);
+    const minute = localMinuteOfDay(current, config.timezone);
 
     if (!config.workingDays.includes(wd)) {
       current = nextWorkingPeriodStart(current, config);
       continue;
     }
 
-    if (hr < config.startHour) {
-      current = utcForLocalHour(current, config.startHour, config.timezone);
+    if (minute < startMinute) {
+      current = utcForLocalMinuteOfDay(current, startMinute, config.timezone);
       continue;
     }
 
-    if (hr >= config.endHour) {
+    if (minute >= endMinute) {
       current = nextWorkingPeriodStart(current, config);
       continue;
     }
 
     // Inside working hours — accumulate until end of this period or target end
-    const periodEnd = utcForLocalHour(current, config.endHour, config.timezone);
+    const periodEnd = utcForLocalMinuteOfDay(current, endMinute, config.timezone);
     const intervalEnd = end < periodEnd ? end : periodEnd;
     total += intervalEnd.getTime() - current.getTime();
 
@@ -381,18 +405,13 @@ export default async function DashboardPage({
   const { start: currentStart, end: currentEnd, previousStart } = getPeriodRange(period, today);
   const fortyEightHoursAgo = new Date(today.getTime() - 48 * 60 * 60 * 1000);
 
-  // Business hours config: use DEFAULT or null for real-time mode.
-  // Replace DEFAULT_BUSINESS_HOURS with a DB lookup per-org when ready.
-  const bhConfig: BusinessHoursConfig | null =
-    responseMode === "business_hours" ? DEFAULT_BUSINESS_HOURS : null;
-
   // Toggle URLs — preserve the current period when switching mode
   const toggleBase = `?period=${period}`;
   const businessHoursUrl = `${toggleBase}&responseMode=business_hours`;
   const realTimeUrl = `${toggleBase}&responseMode=real_time`;
 
   // Batch 1 — all independent queries in parallel
-  const [leadsResult, tasksResult, openConvsResult, allConvsResult, pipelinesResult] =
+  const [leadsResult, tasksResult, openConvsResult, allConvsResult, pipelinesResult, settingsResult] =
     await Promise.all([
       admin
         .from("leads")
@@ -426,6 +445,11 @@ export default async function DashboardPage({
         .eq("organization_id", organizationId)
         .eq("is_default", true)
         .maybeSingle(),
+      admin
+        .from("organization_settings")
+        .select("business_hours")
+        .eq("organization_id", organizationId)
+        .maybeSingle(),
     ]);
 
   if (leadsResult.error) {
@@ -443,6 +467,9 @@ export default async function DashboardPage({
   const openConvIds = openConvs.map((c) => c.id);
   const allLeadConvs = (allConvsResult.data ?? []).filter((c) => !c.remote_jid.includes("@g.us"));
   const allLeadConvIds = allLeadConvs.map((c) => c.id);
+  const configuredBusinessHours = parseBusinessHoursConfig(settingsResult.data?.business_hours);
+  const bhConfig: BusinessHoursConfig | null =
+    responseMode === "business_hours" ? configuredBusinessHours : null;
 
   // Batch 2 — depends on conversation IDs from batch 1
   const emptyMsgs = { data: [] as MsgRow[], error: null };
@@ -492,10 +519,10 @@ export default async function DashboardPage({
   ).length;
 
   // ── Response time metrics ───────────────────────────────────────────────────
-  const { avgFirstResponse, avgResponseTime } = computeResponseTimes(
-    (periodMsgsResult.data ?? []) as MsgRow[],
-    bhConfig
-  );
+  const { avgFirstResponse, avgResponseTime } =
+    responseMode === "business_hours" && !bhConfig
+      ? { avgFirstResponse: null, avgResponseTime: null }
+      : computeResponseTimes((periodMsgsResult.data ?? []) as MsgRow[], bhConfig);
 
   // ── Follow-up 48h+ ──────────────────────────────────────────────────────────
   // Period-independent: reflects current operational state
@@ -569,6 +596,16 @@ export default async function DashboardPage({
           </div>
         </div>
       </div>
+
+      {responseMode === "business_hours" && !configuredBusinessHours && (
+        <div className="rounded-xl border border-warning-amber/30 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          Configure o horario de funcionamento da clinica em{" "}
+          <Link href="/settings" className="font-semibold underline underline-offset-2">
+            Configuracoes
+          </Link>{" "}
+          para usar as metricas por horario util. O modo Tempo real continua disponivel.
+        </div>
+      )}
 
       {/* Alert banners */}
       {(leadsWithoutResponse > 0 || leadsWithoutFollowup > 0) && (

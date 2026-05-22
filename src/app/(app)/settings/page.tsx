@@ -10,6 +10,28 @@ const defaultNotificationPreferences = {
   appointment_confirmed: true,
 };
 
+const defaultBusinessHours = {
+  startTime: "",
+  endTime: "",
+  workingDays: [] as number[],
+  timezone: "America/Sao_Paulo",
+};
+
+function parseBusinessHours(value: unknown) {
+  if (!value || typeof value !== "object") return defaultBusinessHours;
+  const data = value as Record<string, unknown>;
+  const workingDays = Array.isArray(data.workingDays)
+    ? data.workingDays.filter((day): day is number => typeof day === "number" && day >= 0 && day <= 6)
+    : [];
+
+  return {
+    startTime: typeof data.startTime === "string" ? data.startTime : "",
+    endTime: typeof data.endTime === "string" ? data.endTime : "",
+    workingDays,
+    timezone: typeof data.timezone === "string" ? data.timezone : "America/Sao_Paulo",
+  };
+}
+
 export const dynamic = "force-dynamic";
 
 export default async function SettingsPage() {
@@ -21,7 +43,7 @@ export default async function SettingsPage() {
 
   const { data: settings } = await admin
     .from("organization_settings")
-    .select("cnpj, city, state, scheduling_url, notification_preferences")
+    .select("cnpj, city, state, scheduling_url, notification_preferences, business_hours")
     .eq("organization_id", organizationId)
     .maybeSingle();
 
@@ -47,6 +69,7 @@ export default async function SettingsPage() {
       state: settings?.state ?? "",
       scheduling_url: settings?.scheduling_url ?? "",
       notification_preferences: notificationPreferences,
+      business_hours: parseBusinessHours(settings?.business_hours),
     },
     user: {
       role: effectiveRole,
