@@ -1,3 +1,4 @@
+import Link from "next/link";
 import {
   AlertCircle,
   Bell,
@@ -11,8 +12,10 @@ import { MetricCard } from "@/components/dashboard/metric-card";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getOrganizationContext } from "@/lib/organization-context";
-import { formatNumber, formatPercent } from "@/lib/utils";
+import { cn, formatNumber, formatPercent } from "@/lib/utils";
 import type { ConversionFunnelItem, DailyLeadsData, LeadStatus, LeadsBySource } from "@/lib/types";
+
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 const PIE_COLORS = ["#22c55e", "#16a34a", "#46e27f", "#0f4f2a", "#8a948d"];
 const PERIOD_LABELS = {
@@ -22,7 +25,10 @@ const PERIOD_LABELS = {
   month: "este mes",
 } as const;
 
+// ─── Types ────────────────────────────────────────────────────────────────────
+
 type DashboardPeriod = keyof typeof PERIOD_LABELS;
+type ResponseMode = "business_hours" | "real_time";
 
 type DashboardLead = {
   id: string;
@@ -46,6 +52,23 @@ type MsgRow = {
   direction: string;
   created_at: string;
 };
+
+// Structured so future code can replace this with per-org DB config.
+type BusinessHoursConfig = {
+  startHour: number;     // inclusive, e.g. 7  → counts from 07:00
+  endHour: number;       // exclusive,  e.g. 22 → counts until 22:00
+  workingDays: number[]; // 0=Sun … 6=Sat
+  timezone: string;
+};
+
+const DEFAULT_BUSINESS_HOURS: BusinessHoursConfig = {
+  startHour: 7,
+  endHour: 22,
+  workingDays: [1, 2, 3, 4, 5, 6], // Mon–Sat
+  timezone: "America/Sao_Paulo",
+};
+
+// ─── Period helpers ───────────────────────────────────────────────────────────
 
 export const dynamic = "force-dynamic";
 
@@ -84,6 +107,10 @@ function getPeriod(value?: string): DashboardPeriod {
   return "30d";
 }
 
+function getResponseMode(value?: string): ResponseMode {
+  return value === "real_time" ? "real_time" : "business_hours";
+}
+
 function getPeriodRange(period: DashboardPeriod, baseDate: Date) {
   const tomorrow = new Date(baseDate);
   tomorrow.setDate(tomorrow.getDate() + 1);
@@ -108,6 +135,94 @@ function getPeriodRange(period: DashboardPeriod, baseDate: Date) {
   const start = daysAgo(29, startOfDay(baseDate));
   return { start, end, previousStart: daysAgo(30, start) };
 }
+
+// ─── Business hours calculation ───────────────────────────────────────────────
+
+// Returns 0–6 (Sun–Sat) in the given timezone for a UTC timestamp.
+function localWeekday(date: Date, tz: string): number {
+  const name = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short" }).format(date);
+  return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(name);
+}
+
+// Returns the local hour (0–23) in the given timezone for a UTC timestamp.
+function localHour(date: Date, tz: string): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    hour: "numeric",
+    hour12: false,
+  }).formatToParts(date);
+  const h = parseInt(parts.find((p) => p.type === "hour")?.value ?? "0");
+  return h === 24 ? 0 : h;
+}
+
+// Returns the UTC timestamp for `hour:00:00` on the same local date as `refDate` in `tz`.
+// Uses the "sv" locale trick to extract local date components without a library.
+function utcForLocalHour(refDate: Date, hour: number, tz: string): Date {
+  const localStr = refDate.toLocaleString("sv", { timeZone: tz }); // "YYYY-MM-DD HH:MM:SS"
+  const datePart = localStr.slice(0, 10);
+  const targetLocal = new Date(`${datePart}T${String(hour).padStart(2, "0")}:00:00`);
+  const refLocal = new Date(localStr.replace(" ", "T"));
+  // offset = how far ahead UTC is from local time (positive for western timezones)
+  const tzOffsetMs = refDate.getTime() - refLocal.getTime();
+  return new Date(targetLocal.getTime() + tzOffsetMs);
+}
+
+// Advances `afterDate` to the start of the next working period.
+// Adds 24 h to safely cross into the next calendar day in the local timezone,
+// then searches up to 7 days forward for the first working day.
+function nextWorkingPeriodStart(afterDate: Date, config: BusinessHoursConfig): Date {
+  let candidate = new Date(afterDate.getTime() + 24 * 3_600_000);
+  for (let i = 0; i < 7; i++) {
+    if (config.workingDays.includes(localWeekday(candidate, config.timezone))) {
+      return utcForLocalHour(candidate, config.startHour, config.timezone);
+    }
+    candidate = new Date(candidate.getTime() + 24 * 3_600_000);
+  }
+  return new Date(afterDate.getTime() + 8 * 24 * 3_600_000); // safety fallback
+}
+
+// Returns how many milliseconds of business hours fall between `start` and `end`.
+// Equivalent to real elapsed time when start/end are both within working hours.
+function businessHoursMs(start: Date, end: Date, config: BusinessHoursConfig): number {
+  if (start.getTime() >= end.getTime()) return 0;
+
+  let current = new Date(start.getTime());
+  let total = 0;
+
+  // Safety cap: max 60 calendar-day iterations
+  for (let iter = 0; iter < 60 && current < end; iter++) {
+    const wd = localWeekday(current, config.timezone);
+    const hr = localHour(current, config.timezone);
+
+    if (!config.workingDays.includes(wd)) {
+      current = nextWorkingPeriodStart(current, config);
+      continue;
+    }
+
+    if (hr < config.startHour) {
+      current = utcForLocalHour(current, config.startHour, config.timezone);
+      continue;
+    }
+
+    if (hr >= config.endHour) {
+      current = nextWorkingPeriodStart(current, config);
+      continue;
+    }
+
+    // Inside working hours — accumulate until end of this period or target end
+    const periodEnd = utcForLocalHour(current, config.endHour, config.timezone);
+    const intervalEnd = end < periodEnd ? end : periodEnd;
+    total += intervalEnd.getTime() - current.getTime();
+
+    if (end.getTime() <= periodEnd.getTime()) break;
+
+    current = nextWorkingPeriodStart(periodEnd, config);
+  }
+
+  return total;
+}
+
+// ─── Metric helpers ───────────────────────────────────────────────────────────
 
 function buildDailyData(leads: DashboardLead[], start: Date, end: Date): DailyLeadsData[] {
   const days: DailyLeadsData[] = [];
@@ -169,7 +284,7 @@ function buildFunnelData(leads: DashboardLead[], stages: StageOption[]): Convers
   });
 }
 
-// Convert milliseconds to human-readable duration (e.g. "3 min", "1h 12min")
+// Format milliseconds to human-readable duration (e.g. "3 min", "1h 12min")
 function formatDuration(ms: number | null): string {
   if (ms === null || ms <= 0) return "--";
   const totalMinutes = Math.floor(ms / 60000);
@@ -180,12 +295,13 @@ function formatDuration(ms: number | null): string {
   return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}min`;
 }
 
-// Compute avg first response time and avg general response time.
+// Compute avg first response and avg general response times.
 // msgs must be ordered ASC by created_at within each conversation.
-function computeResponseTimes(msgs: MsgRow[]): {
-  avgFirstResponse: number | null;
-  avgResponseTime: number | null;
-} {
+// Pass bhConfig=null to use raw elapsed time (real_time mode).
+function computeResponseTimes(
+  msgs: MsgRow[],
+  bhConfig: BusinessHoursConfig | null
+): { avgFirstResponse: number | null; avgResponseTime: number | null } {
   const byConv = new Map<string, MsgRow[]>();
   for (const msg of msgs) {
     const list = byConv.get(msg.conversation_id) ?? [];
@@ -196,16 +312,24 @@ function computeResponseTimes(msgs: MsgRow[]): {
   const firstDeltas: number[] = [];
   const allDeltas: number[] = [];
 
+  // Compute elapsed ms between two ISO timestamps, respecting the chosen mode
+  const elapsed = (from: string, to: string) => {
+    const s = new Date(from);
+    const e = new Date(to);
+    return bhConfig ? businessHoursMs(s, e, bhConfig) : e.getTime() - s.getTime();
+  };
+
   for (const convMsgs of byConv.values()) {
     const firstInboundIdx = convMsgs.findIndex((m) => m.direction === "inbound");
     if (firstInboundIdx === -1) continue;
 
-    // First response: time from first inbound to first outbound after it
-    const firstOutboundAfter = convMsgs.slice(firstInboundIdx + 1).find((m) => m.direction === "outbound");
+    // First response: first inbound → first outbound after it
+    const firstOutboundAfter = convMsgs
+      .slice(firstInboundIdx + 1)
+      .find((m) => m.direction === "outbound");
     if (firstOutboundAfter) {
       firstDeltas.push(
-        new Date(firstOutboundAfter.created_at).getTime() -
-          new Date(convMsgs[firstInboundIdx].created_at).getTime()
+        elapsed(convMsgs[firstInboundIdx].created_at, firstOutboundAfter.created_at)
       );
     }
 
@@ -214,9 +338,7 @@ function computeResponseTimes(msgs: MsgRow[]): {
       if (convMsgs[i].direction !== "inbound") continue;
       const nextOut = convMsgs.slice(i + 1).find((m) => m.direction === "outbound");
       if (nextOut) {
-        allDeltas.push(
-          new Date(nextOut.created_at).getTime() - new Date(convMsgs[i].created_at).getTime()
-        );
+        allDeltas.push(elapsed(convMsgs[i].created_at, nextOut.created_at));
       }
     }
   }
@@ -228,7 +350,7 @@ function computeResponseTimes(msgs: MsgRow[]): {
 }
 
 // Count open conversations whose last message was inbound and older than cutoff.
-// recentMsgs must be ordered DESC by created_at (first entry per conv = last message).
+// recentMsgs must be ordered DESC (first entry per conv = last message).
 function computeNoFollowup(openConvIds: string[], recentMsgs: MsgRow[], cutoff: Date): number {
   const lastMsgByConv = new Map<string, MsgRow>();
   for (const msg of recentMsgs) {
@@ -242,54 +364,69 @@ function computeNoFollowup(openConvIds: string[], recentMsgs: MsgRow[], cutoff: 
   return count;
 }
 
+// ─── Page ─────────────────────────────────────────────────────────────────────
+
 export default async function DashboardPage({
   searchParams,
 }: {
-  searchParams?: Promise<{ period?: string }>;
+  searchParams?: Promise<{ period?: string; responseMode?: string }>;
 }) {
   const params = await searchParams;
   const period = getPeriod(params?.period);
+  const responseMode = getResponseMode(params?.responseMode);
+
   const context = await getOrganizationContext();
   const { admin, organizationId, organization } = context;
   const today = new Date();
   const { start: currentStart, end: currentEnd, previousStart } = getPeriodRange(period, today);
   const fortyEightHoursAgo = new Date(today.getTime() - 48 * 60 * 60 * 1000);
 
+  // Business hours config: use DEFAULT or null for real-time mode.
+  // Replace DEFAULT_BUSINESS_HOURS with a DB lookup per-org when ready.
+  const bhConfig: BusinessHoursConfig | null =
+    responseMode === "business_hours" ? DEFAULT_BUSINESS_HOURS : null;
+
+  // Toggle URLs — preserve the current period when switching mode
+  const toggleBase = `?period=${period}`;
+  const businessHoursUrl = `${toggleBase}&responseMode=business_hours`;
+  const realTimeUrl = `${toggleBase}&responseMode=real_time`;
+
   // Batch 1 — all independent queries in parallel
-  const [leadsResult, tasksResult, openConvsResult, allConvsResult, pipelinesResult] = await Promise.all([
-    admin
-      .from("leads")
-      .select(
-        `id, source_id, stage_id, status, created_at, last_interaction_at,
-         source:lead_sources(name),
-         stage:pipeline_stages(id, name, order)`
-      )
-      .eq("organization_id", organizationId)
-      .order("created_at", { ascending: false }),
-    admin
-      .from("lead_tasks")
-      .select("id, due_at, completed_at, lead:leads!inner(id, organization_id)")
-      .eq("lead.organization_id", organizationId),
-    // Open conversations (for unread alert + follow-up card). Groups filtered in JS below.
-    admin
-      .from("conversations")
-      .select("id, remote_jid, unread_count")
-      .eq("organization_id", organizationId)
-      .eq("status", "open")
-      .not("lead_id", "is", null),
-    // All lead-linked conversations in the org. Response metrics filter messages by period.
-    admin
-      .from("conversations")
-      .select("id, remote_jid")
-      .eq("organization_id", organizationId)
-      .not("lead_id", "is", null),
-    admin
-      .from("pipelines")
-      .select("id, pipeline_stages(id, name, order)")
-      .eq("organization_id", organizationId)
-      .eq("is_default", true)
-      .maybeSingle(),
-  ]);
+  const [leadsResult, tasksResult, openConvsResult, allConvsResult, pipelinesResult] =
+    await Promise.all([
+      admin
+        .from("leads")
+        .select(
+          `id, source_id, stage_id, status, created_at, last_interaction_at,
+           source:lead_sources(name),
+           stage:pipeline_stages(id, name, order)`
+        )
+        .eq("organization_id", organizationId)
+        .order("created_at", { ascending: false }),
+      admin
+        .from("lead_tasks")
+        .select("id, due_at, completed_at, lead:leads!inner(id, organization_id)")
+        .eq("lead.organization_id", organizationId),
+      // Open conversations with leads (groups filtered in JS below)
+      admin
+        .from("conversations")
+        .select("id, remote_jid, unread_count")
+        .eq("organization_id", organizationId)
+        .eq("status", "open")
+        .not("lead_id", "is", null),
+      // All lead-linked conversations in the org. Response metrics filter messages by period.
+      admin
+        .from("conversations")
+        .select("id, remote_jid")
+        .eq("organization_id", organizationId)
+        .not("lead_id", "is", null),
+      admin
+        .from("pipelines")
+        .select("id, pipeline_stages(id, name, order)")
+        .eq("organization_id", organizationId)
+        .eq("is_default", true)
+        .maybeSingle(),
+    ]);
 
   if (leadsResult.error) {
     return (
@@ -301,7 +438,7 @@ export default async function DashboardPage({
     );
   }
 
-  // Filter out WhatsApp group JIDs in JS (avoids PostgREST LIKE syntax issues)
+  // Filter out WhatsApp group JIDs in JS (avoids PostgREST LIKE syntax complexity)
   const openConvs = (openConvsResult.data ?? []).filter((c) => !c.remote_jid.includes("@g.us"));
   const openConvIds = openConvs.map((c) => c.id);
   const allLeadConvs = (allConvsResult.data ?? []).filter((c) => !c.remote_jid.includes("@g.us"));
@@ -328,7 +465,7 @@ export default async function DashboardPage({
       : Promise.resolve(emptyMsgs),
   ]);
 
-  // ── Lead metrics ──────────────────────────────────────────────────────────────
+  // ── Lead metrics ────────────────────────────────────────────────────────────
   const leads = (leadsResult.data ?? []).map((lead) => ({
     ...lead,
     source: Array.isArray(lead.source) ? (lead.source[0] ?? null) : lead.source,
@@ -340,13 +477,13 @@ export default async function DashboardPage({
   );
 
   const currentLeads = leads.filter((lead) => inRange(lead.created_at, currentStart, currentEnd));
-  const previousLeads = leads.filter((lead) => inRange(lead.created_at, previousStart, currentStart));
+  const previousLeads = leads.filter((lead) =>
+    inRange(lead.created_at, previousStart, currentStart)
+  );
 
-  // Scheduled = reached scheduled stage or beyond
   const scheduledCurrent = currentLeads.filter((lead) => isScheduledStatus(lead.status)).length;
   const scheduledPrevious = previousLeads.filter((lead) => isScheduledStatus(lead.status)).length;
 
-  // Attended = showed up (includes closed outcomes which imply attendance)
   const attendedCurrent = currentLeads.filter((lead) =>
     ["attended", "closed_won", "closed_lost"].includes(lead.status)
   ).length;
@@ -354,37 +491,45 @@ export default async function DashboardPage({
     ["attended", "closed_won", "closed_lost"].includes(lead.status)
   ).length;
 
-  // ── Response time metrics ─────────────────────────────────────────────────────
+  // ── Response time metrics ───────────────────────────────────────────────────
   const { avgFirstResponse, avgResponseTime } = computeResponseTimes(
-    (periodMsgsResult.data ?? []) as MsgRow[]
+    (periodMsgsResult.data ?? []) as MsgRow[],
+    bhConfig
   );
 
-  // ── Follow-up 48h+ ────────────────────────────────────────────────────────────
-  // Independent of dashboard period — reflects current operational state
+  // ── Follow-up 48h+ ──────────────────────────────────────────────────────────
+  // Period-independent: reflects current operational state
   const noFollowupCount = computeNoFollowup(
     openConvIds,
     (recentMsgsResult.data ?? []) as MsgRow[],
     fortyEightHoursAgo
   );
 
-  // ── Alert banners ─────────────────────────────────────────────────────────────
+  // ── Alert banners ───────────────────────────────────────────────────────────
   const leadsWithoutResponse = openConvs.filter((c) => c.unread_count > 0).length;
   const leadsWithoutFollowup = (tasksResult.data ?? []).filter((task) => {
     if (task.completed_at || !task.due_at) return false;
     return new Date(task.due_at).getTime() < today.getTime();
   }).length;
 
-  // ── Chart data ────────────────────────────────────────────────────────────────
+  // ── Chart data ──────────────────────────────────────────────────────────────
   const dailyData = buildDailyData(currentLeads, currentStart, currentEnd);
   const sourceData = buildSourceData(currentLeads);
   const funnelData = buildFunnelData(currentLeads, stages);
 
-  const monthLabel = new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric" }).format(today);
+  const monthLabel = new Intl.DateTimeFormat("pt-BR", {
+    month: "long",
+    year: "numeric",
+  }).format(today);
   const subscriptionLabel =
-    organization?.subscription_status === "active" ? "Assessoria ativa" : "Periodo de implantacao";
+    organization?.subscription_status === "active"
+      ? "Assessoria ativa"
+      : "Periodo de implantacao";
 
+  // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="label-eyebrow text-text-muted">
@@ -392,12 +537,40 @@ export default async function DashboardPage({
           </p>
           <h1 className="mt-1 text-2xl font-black text-text-primary">Dashboard</h1>
         </div>
-        <div className="flex items-center gap-1.5 rounded-lg border border-brand-green/30 bg-brand-green-soft px-3 py-1.5">
-          <div className="h-1.5 w-1.5 rounded-full bg-brand-green" />
-          <span className="text-xs font-semibold text-brand-green-deep">{subscriptionLabel}</span>
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Response mode toggle — affects only the two response-time cards */}
+          <div className="flex items-center gap-0.5 rounded-lg border border-border bg-white p-0.5 text-[11px] font-semibold shadow-card">
+            <Link
+              href={businessHoursUrl}
+              className={cn(
+                "rounded-md px-2.5 py-1 transition-colors",
+                responseMode === "business_hours"
+                  ? "bg-brand-green text-white"
+                  : "text-text-muted hover:text-text-secondary"
+              )}
+            >
+              Horario util
+            </Link>
+            <Link
+              href={realTimeUrl}
+              className={cn(
+                "rounded-md px-2.5 py-1 transition-colors",
+                responseMode === "real_time"
+                  ? "bg-brand-green text-white"
+                  : "text-text-muted hover:text-text-secondary"
+              )}
+            >
+              Tempo real
+            </Link>
+          </div>
+          <div className="flex items-center gap-1.5 rounded-lg border border-brand-green/30 bg-brand-green-soft px-3 py-1.5">
+            <div className="h-1.5 w-1.5 rounded-full bg-brand-green" />
+            <span className="text-xs font-semibold text-brand-green-deep">{subscriptionLabel}</span>
+          </div>
         </div>
       </div>
 
+      {/* Alert banners */}
       {(leadsWithoutResponse > 0 || leadsWithoutFollowup > 0) && (
         <div className="flex flex-wrap gap-3">
           {leadsWithoutResponse > 0 && (
@@ -419,6 +592,7 @@ export default async function DashboardPage({
         </div>
       )}
 
+      {/* 6 metric cards — 3 columns on desktop */}
       <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
         <MetricCard
           label="Total de Leads"
@@ -444,6 +618,7 @@ export default async function DashboardPage({
           )}
           icon={UserCheck}
         />
+        {/* Response-time cards — affected by the business hours toggle */}
         <MetricCard
           label="Tempo Medio 1a Resposta"
           value={formatDuration(avgFirstResponse)}
@@ -463,6 +638,7 @@ export default async function DashboardPage({
         />
       </div>
 
+      {/* Charts */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <CardHeader className="pb-2">
@@ -493,7 +669,9 @@ export default async function DashboardPage({
             <LeadsBySourceChart data={sourceData} />
             <div className="mt-1 w-full space-y-1.5">
               {sourceData.length === 0 && (
-                <p className="py-4 text-center text-xs text-text-muted">Nenhum lead no periodo selecionado.</p>
+                <p className="py-4 text-center text-xs text-text-muted">
+                  Nenhum lead no periodo selecionado.
+                </p>
               )}
               {sourceData.map((item, index) => (
                 <div key={item.source} className="flex items-center justify-between text-[11px]">
