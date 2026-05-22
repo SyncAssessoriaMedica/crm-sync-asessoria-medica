@@ -1027,6 +1027,186 @@ export async function fetchWhatsappChatsAction(instanceName: string): Promise<Ac
   }
 }
 
+// ─── Message history import helpers ─────────────────────────────────────────
+
+const ALLOWED_IMPORT_MSG_TYPES = new Set(["text", "image", "audio", "video", "document", "sticker", "location"]);
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function recordsFromUnknown(value: unknown): Record<string, unknown>[] {
+  if (Array.isArray(value)) return value.filter((item): item is Record<string, unknown> => Boolean(asRecord(item)));
+
+  const obj = asRecord(value);
+  if (!obj) return [];
+
+  for (const key of ["records", "messages", "data", "items", "rows", "response"]) {
+    const records = recordsFromUnknown(obj[key]);
+    if (records.length > 0) return records;
+  }
+
+  return [];
+}
+
+function nestedTextMsg(source: Record<string, unknown> | undefined, keys: string[]): string | undefined {
+  if (!source) return undefined;
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function extractMsgContent(msgData: Record<string, unknown>): {
+  type: string;
+  content?: string;
+  mediaUrl?: string;
+  mediaMimetype?: string;
+  mediaFilename?: string;
+  mediaDuration?: number | null;
+} {
+  const rawMessage = msgData.message;
+  const parsedMessage = typeof rawMessage === "string"
+    ? (() => {
+        try {
+          return JSON.parse(rawMessage) as unknown;
+        } catch {
+          return {};
+        }
+      })()
+    : rawMessage;
+  const message = asRecord(parsedMessage) ?? {};
+  const messageType = (msgData.messageType ?? "text") as string;
+
+  if (typeof message.conversation === "string") return { type: "text", content: message.conversation };
+
+  const extendedText = message.extendedTextMessage as Record<string, unknown> | undefined;
+  if (extendedText) return { type: "text", content: nestedTextMsg(extendedText, ["text", "caption"]) };
+
+  const image = message.imageMessage as Record<string, unknown> | undefined;
+  if (image) return { type: "image", content: nestedTextMsg(image, ["caption"]), mediaUrl: nestedTextMsg(image, ["url", "mediaUrl"]), mediaMimetype: nestedTextMsg(image, ["mimetype"]) };
+
+  const audio = message.audioMessage as Record<string, unknown> | undefined;
+  if (audio) return { type: "audio", mediaUrl: nestedTextMsg(audio, ["url", "mediaUrl"]), mediaMimetype: nestedTextMsg(audio, ["mimetype"]), mediaDuration: Number(audio.seconds ?? audio.duration) || null };
+
+  const video = message.videoMessage as Record<string, unknown> | undefined;
+  if (video) return { type: "video", content: nestedTextMsg(video, ["caption"]), mediaUrl: nestedTextMsg(video, ["url", "mediaUrl"]), mediaMimetype: nestedTextMsg(video, ["mimetype"]), mediaDuration: Number(video.seconds ?? video.duration) || null };
+
+  const document = message.documentMessage as Record<string, unknown> | undefined;
+  if (document) return { type: "document", content: nestedTextMsg(document, ["caption", "title"]), mediaUrl: nestedTextMsg(document, ["url", "mediaUrl"]), mediaMimetype: nestedTextMsg(document, ["mimetype"]), mediaFilename: nestedTextMsg(document, ["fileName", "filename", "title"]) };
+
+  const sticker = message.stickerMessage as Record<string, unknown> | undefined;
+  if (sticker) return { type: "sticker", mediaUrl: nestedTextMsg(sticker, ["url", "mediaUrl"]), mediaMimetype: nestedTextMsg(sticker, ["mimetype"]) };
+
+  const location = message.locationMessage as Record<string, unknown> | undefined;
+  if (location) {
+    const lat = location.degreesLatitude ?? location.latitude;
+    const lon = location.degreesLongitude ?? location.longitude;
+    return { type: "location", content: [nestedTextMsg(location, ["name", "address"]), lat != null && lon != null ? `${lat}, ${lon}` : null].filter(Boolean).join("\n") };
+  }
+
+  const normalizedType = messageType.toLowerCase().replace("message", "");
+  return { type: ALLOWED_IMPORT_MSG_TYPES.has(normalizedType) ? normalizedType : "text", content: nestedTextMsg(message, ["text", "caption"]) ?? `[${messageType}]` };
+}
+
+function extractMsgTimestamp(msgData: Record<string, unknown>): string {
+  const raw = msgData.messageTimestamp ?? msgData.timestamp;
+  if (!raw) return new Date().toISOString();
+  const numeric = Number(raw);
+  if (!Number.isFinite(numeric)) return new Date().toISOString();
+  return new Date(numeric > 10_000_000_000 ? numeric : numeric * 1000).toISOString();
+}
+
+function timestampNumber(msgData: Record<string, unknown>): number {
+  const raw = msgData.messageTimestamp ?? msgData.timestamp;
+  const numeric = Number(raw);
+  if (!Number.isFinite(numeric)) return 0;
+  return numeric > 10_000_000_000 ? numeric : numeric * 1000;
+}
+
+async function fetchAndInsertMessages(
+  admin: ReturnType<typeof createAdminClient>,
+  evolutionApiUrl: string,
+  apiKey: string,
+  instanceName: string,
+  remoteJid: string,
+  conversationId: string
+): Promise<{ imported: number; failed: boolean }> {
+  const endpoint = `${evolutionApiUrl}/chat/findMessages/${encodeURIComponent(instanceName)}`;
+
+  let response: Response;
+  try {
+    response = await evolutionFetch(endpoint, apiKey, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        where: { key: { remoteJid } },
+        limit: 10,
+        order: { messageTimestamp: "desc" },
+      }),
+    });
+  } catch {
+    return { imported: 0, failed: true };
+  }
+
+  if (!response.ok) return { imported: 0, failed: true };
+
+  const rawData = await response.json().catch(() => null) as unknown;
+  if (!rawData) return { imported: 0, failed: false };
+
+  const messagesArray = recordsFromUnknown(rawData);
+
+  const toProcess = messagesArray
+    .slice(0, 10)
+    .sort((a, b) => timestampNumber(a) - timestampNumber(b));
+  let imported = 0;
+  let failed = false;
+
+  for (const msg of toProcess) {
+    const key = msg.key as Record<string, unknown> | undefined;
+    if (!key) continue;
+    const evolutionMsgId = key.id as string | undefined;
+    if (!evolutionMsgId) continue;
+    if (typeof key.remoteJid === "string" && key.remoteJid.includes("@g.us")) continue;
+
+    const inbound = key.fromMe !== true;
+    const content = extractMsgContent(msg);
+    if (!ALLOWED_IMPORT_MSG_TYPES.has(content.type)) continue;
+
+    const { data: insertedMsg, error: insertError } = await admin
+      .from("messages")
+      .upsert(
+        {
+          conversation_id: conversationId,
+          evolution_msg_id: evolutionMsgId,
+          direction: inbound ? "inbound" : "outbound",
+          message_type: content.type,
+          content: content.content ?? null,
+          media_url: content.mediaUrl ?? null,
+          media_mimetype: content.mediaMimetype ?? null,
+          media_filename: content.mediaFilename ?? null,
+          media_duration: content.mediaDuration ?? null,
+          created_at: extractMsgTimestamp(msg),
+        },
+        { onConflict: "evolution_msg_id", ignoreDuplicates: true }
+      )
+      .select("id")
+      .maybeSingle();
+
+    if (insertError) {
+      failed = true;
+      continue;
+    }
+
+    if (insertedMsg?.id) imported++;
+  }
+
+  return { imported, failed };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export async function importWhatsappConversationsAction(
   instanceName: string,
   contacts: { remoteJid: string; name?: string | null }[]
@@ -1050,6 +1230,11 @@ export async function importWhatsappConversationsAction(
 
     const orgId = instance.organization_id as string;
 
+    const evolutionBaseUrl = process.env.EVOLUTION_API_URL;
+    const evolutionApiKey = process.env.EVOLUTION_API_KEY;
+    const evolutionApiUrl = evolutionBaseUrl ? normalizeEvolutionApiUrl(evolutionBaseUrl) : null;
+    const canFetchMessages = Boolean(evolutionApiUrl && evolutionApiKey);
+
     let sourceId: string | null = null;
     const { data: waSource } = await admin
       .from("lead_sources")
@@ -1070,6 +1255,8 @@ export async function importWhatsappConversationsAction(
 
     let leadsCreated = 0;
     let conversationsCreated = 0;
+    let messagesImported = 0;
+    let messagesFailed = 0;
 
     for (const contact of contacts) {
       const { remoteJid, name: contactName } = contact;
@@ -1087,7 +1274,6 @@ export async function importWhatsappConversationsAction(
       let leadId: string;
       if (existingLead?.id) {
         leadId = existingLead.id as string;
-        // Update name if we now have a real name and lead currently only has phone as name
         if (contactName && (!existingLead.name || existingLead.name === phone)) {
           await admin.from("leads").update({ name: contactName }).eq("id", leadId);
         }
@@ -1116,8 +1302,9 @@ export async function importWhatsappConversationsAction(
         .eq("remote_jid", remoteJid)
         .maybeSingle();
 
+      let conversationId: string;
       if (!existingConv?.id) {
-        const { error: convError } = await admin
+        const { data: newConv, error: convError } = await admin
           .from("conversations")
           .insert({
             organization_id: orgId,
@@ -1126,14 +1313,32 @@ export async function importWhatsappConversationsAction(
             remote_jid: remoteJid,
             unread_count: 0,
             status: "open",
-          });
-        if (!convError) conversationsCreated++;
+          })
+          .select("id")
+          .single();
+        if (convError || !newConv?.id) continue;
+        conversationId = newConv.id as string;
+        conversationsCreated++;
       } else {
+        conversationId = existingConv.id as string;
         await admin
           .from("conversations")
           .update({ lead_id: leadId })
-          .eq("id", existingConv.id)
+          .eq("id", conversationId)
           .is("lead_id", null);
+      }
+
+      if (canFetchMessages) {
+        const msgResult = await fetchAndInsertMessages(
+          admin,
+          evolutionApiUrl!,
+          evolutionApiKey!,
+          instanceName,
+          remoteJid,
+          conversationId
+        );
+        messagesImported += msgResult.imported;
+        if (msgResult.failed) messagesFailed++;
       }
     }
 
@@ -1141,10 +1346,18 @@ export async function importWhatsappConversationsAction(
     revalidatePath("/inbox");
     revalidatePath("/leads");
 
-    return {
-      ok: true,
-      message: `Importacao concluida: ${leadsCreated} lead(s) criado(s), ${conversationsCreated} conversa(s) nova(s).`,
-    };
+    const parts: string[] = [];
+    if (leadsCreated > 0) parts.push(`${leadsCreated} lead(s) criado(s)`);
+    if (conversationsCreated > 0) parts.push(`${conversationsCreated} conversa(s) nova(s)`);
+    if (messagesImported > 0) parts.push(`${messagesImported} mensagem(ns) importada(s)`);
+    const summary = parts.length > 0
+      ? `Importacao concluida: ${parts.join(", ")}.`
+      : "Importacao concluida: nenhum registro novo.";
+    const failureNote = messagesFailed > 0
+      ? ` (${messagesFailed} conversa(s) sem historico importado)`
+      : "";
+
+    return { ok: true, message: summary + failureNote };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "Erro ao importar conversas." };
   }
