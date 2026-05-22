@@ -1150,6 +1150,60 @@ export async function importWhatsappConversationsAction(
   }
 }
 
+export async function disconnectWhatsappInstanceAction(instanceName: string): Promise<ActionResult> {
+  try {
+    const { admin, organizationId, isSyncAdmin } = await getContext();
+    const baseUrl = process.env.EVOLUTION_API_URL;
+    const apiKey = process.env.EVOLUTION_API_KEY;
+    if (!baseUrl || !apiKey) {
+      return { ok: false, message: "Evolution API nao configurada neste deploy." };
+    }
+    const evolutionApiUrl = normalizeEvolutionApiUrl(baseUrl);
+
+    const { data: instance } = await admin
+      .from("whatsapp_instances")
+      .select("id, organization_id, instance_name")
+      .eq("instance_name", instanceName)
+      .maybeSingle();
+
+    if (!instance?.id) return { ok: false, message: "Instancia nao encontrada no CRM." };
+    if (!isSyncAdmin && instance.organization_id !== organizationId) {
+      return { ok: false, message: "Sem permissao para desconectar esta instancia." };
+    }
+
+    const response = await evolutionFetch(
+      `${evolutionApiUrl}/instance/logout/${encodeURIComponent(instanceName)}`,
+      apiKey,
+      { method: "DELETE" }
+    );
+
+    // 404 = already logged out on Evolution side — treat as success
+    if (!response.ok && response.status !== 404) {
+      const errData = await response.json().catch(() => ({})) as Record<string, unknown>;
+      const msg = (errData?.message ?? errData?.error ?? `HTTP ${response.status}`) as string;
+      return { ok: false, message: `Evolution ${response.status}: ${msg}` };
+    }
+
+    const { error: updateError } = await admin
+      .from("whatsapp_instances")
+      .update({ status: "disconnected", phone_number: null })
+      .eq("id", instance.id);
+    if (updateError) return { ok: false, message: updateError.message };
+
+    revalidatePath("/admin");
+    revalidatePath("/inbox");
+    revalidatePath("/dashboard");
+
+    return {
+      ok: true,
+      message: "WhatsApp desconectado. Voce pode conectar outro numero agora.",
+      data: { instanceName },
+    };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao desconectar WhatsApp." };
+  }
+}
+
 export async function deactivateInboundWebhookAction(token: string): Promise<ActionResult> {
   try {
     const { admin, organizationId } = await getContext();

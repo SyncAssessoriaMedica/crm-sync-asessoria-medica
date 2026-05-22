@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useTransition } from "react";
 import Image from "next/image";
+import { useRouter } from "next/navigation";
 import {
   ArrowDown,
   ArrowUp,
@@ -12,6 +13,7 @@ import {
   Globe,
   Layers,
   Loader2,
+  LogOut,
   QrCode,
   RefreshCw,
   Settings2,
@@ -49,6 +51,7 @@ import {
   deletePipelineStageAction,
   deleteSourceAction,
   deleteTagAction,
+  disconnectWhatsappInstanceAction,
   fetchWhatsappChatsAction,
   generatePasswordAction,
   importWhatsappConversationsAction,
@@ -196,6 +199,7 @@ const FIELD_TYPES = [
 ];
 
 export function AdminClient({ data }: { data: AdminData }) {
+  const router = useRouter();
   const sections = useMemo(
     () => [
       ...(data.isSyncAdmin ? [{ id: "clinics", label: "Clinicas", icon: Building2, count: data.organizations.length }] : []),
@@ -445,6 +449,30 @@ export function AdminClient({ data }: { data: AdminData }) {
                         <QrCode className="h-3.5 w-3.5" />
                         {isConnected ? "Conectado" : "Conectar"}
                       </Button>
+                      {isConnected && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="gap-1.5 border-danger-red/30 text-danger-red hover:bg-danger-red/5 hover:text-danger-red"
+                          disabled={isPending}
+                          onClick={() => {
+                            if (!window.confirm("Desconectar este WhatsApp? Voce podera conectar outro numero depois.")) return;
+                            startTransition(async () => {
+                              const result = await disconnectWhatsappInstanceAction(instance.instance_name);
+                              setMessage(result.message);
+                              if (result.ok) {
+                                setInstanceStatuses((current) => ({ ...current, [instance.instance_name]: "disconnected" }));
+                                if (qrPayload?.instanceName === instance.instance_name) setQrPayload(null);
+                                router.refresh();
+                              }
+                            });
+                          }}
+                        >
+                          <LogOut className="h-3.5 w-3.5" />
+                          {isPending ? "Desconectando..." : "Desconectar"}
+                        </Button>
+                      )}
                       <Button
                         type="button"
                         variant="ghost"
