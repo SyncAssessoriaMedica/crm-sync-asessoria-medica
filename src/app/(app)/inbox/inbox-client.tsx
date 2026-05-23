@@ -27,6 +27,7 @@ import { Separator } from "@/components/ui/separator";
 import { createClient } from "@/lib/supabase/client";
 import { cn, formatCurrency, formatDateTime, formatPhone, formatTimeAgo, getInitials } from "@/lib/utils";
 import { markConversationReadAction, updateConversationStatusAction } from "./actions";
+import { markLeadScheduledAction } from "../leads/actions";
 import type { InboxConversation, InboxMessage } from "./types";
 
 const STATUS_LABELS: Record<string, string> = {
@@ -319,6 +320,15 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
     });
   }
 
+  function markScheduled() {
+    if (!lead) return;
+    startTransition(async () => {
+      const result = await markLeadScheduledAction(lead.id);
+      setMessage(result.message);
+      if (result.ok) router.refresh();
+    });
+  }
+
   return (
     <div className="-m-6 flex h-[calc(100vh-3.5rem)] overflow-hidden">
       <div className="flex w-72 shrink-0 flex-col border-r border-border bg-white">
@@ -503,9 +513,15 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
               )}
 
               <div className="space-y-2 pt-2">
-                <Button size="sm" className="w-full gap-1.5 text-xs" variant="default" disabled>
+                <Button
+                  size="sm"
+                  className="w-full gap-1.5 text-xs"
+                  variant={lead.status === "scheduled" ? "secondary" : "default"}
+                  disabled={isPending || lead.status === "scheduled"}
+                  onClick={markScheduled}
+                >
                   <CalendarCheck className="h-3.5 w-3.5" />
-                  Agendar Consulta
+                  {lead.status === "scheduled" ? "Consulta agendada" : "Marcar consulta agendada"}
                 </Button>
                 <Button size="sm" className="w-full text-xs" variant="secondary" asChild>
                   <Link href={`/leads/${lead.id}`}>Ver ficha completa</Link>

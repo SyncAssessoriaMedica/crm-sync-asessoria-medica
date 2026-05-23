@@ -2,8 +2,10 @@
 
 import { useState, useTransition } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
+  CalendarCheck,
   CheckSquare,
   Clock,
   Copy,
@@ -53,6 +55,7 @@ import {
   deleteLeadAction,
   removeTagFromLeadAction,
   toggleTaskAction,
+  markLeadScheduledAction,
   updateLeadAction,
   updateLeadStageAction,
 } from "../actions";
@@ -79,6 +82,7 @@ type LeadDetailClientProps = {
 };
 
 export function LeadDetailClient({ lead, options, leadTags: initialLeadTags, notes, events, tasks, customValues }: LeadDetailClientProps) {
+  const router = useRouter();
   const [leadTags, setLeadTags] = useState<TagItem[]>(initialLeadTags);
   const [editOpen, setEditOpen] = useState(false);
   const [noteContent, setNoteContent] = useState("");
@@ -148,6 +152,14 @@ export function LeadDetailClient({ lead, options, leadTags: initialLeadTags, not
     });
   }
 
+  function markScheduled() {
+    startTransition(async () => {
+      const result = await markLeadScheduledAction(lead.id);
+      setMessage(result.message);
+      if (result.ok) router.refresh();
+    });
+  }
+
   return (
     <div className="mx-auto max-w-6xl space-y-5">
       <div className="flex items-start gap-4">
@@ -166,6 +178,16 @@ export function LeadDetailClient({ lead, options, leadTags: initialLeadTags, not
           <h1 className="text-xl font-black text-text-primary">{lead.name}</h1>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant={lead.status === "scheduled" ? "secondary" : "default"}
+            size="sm"
+            className="gap-1.5"
+            disabled={isPending || lead.status === "scheduled"}
+            onClick={markScheduled}
+          >
+            <CalendarCheck className="h-3.5 w-3.5" />
+            {lead.status === "scheduled" ? "Consulta agendada" : "Marcar consulta agendada"}
+          </Button>
           <Button variant="secondary" size="sm" className="gap-1.5" onClick={() => setEditOpen(true)}>
             <Edit2 className="h-3.5 w-3.5" />
             Editar

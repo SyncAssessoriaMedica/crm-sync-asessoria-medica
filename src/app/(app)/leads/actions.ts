@@ -59,8 +59,15 @@ function optionalDate(value: unknown) {
   return str.length > 0 ? new Date(str).toISOString() : null;
 }
 
+function normalizeStageName(value?: string | null) {
+  return (value ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
 function statusFromStageName(stageName?: string | null): LeadStatus {
-  const normalized = (stageName ?? "").toLowerCase();
+  const normalized = normalizeStageName(stageName);
   if (normalized.includes("contact")) return "contacted";
   if (normalized.includes("qualific")) return "qualified";
   if (normalized.includes("agend")) return "scheduled";
@@ -75,6 +82,22 @@ async function getStatusForStage(admin: ReturnType<typeof createAdminClient>, st
   if (!stageId) return "new";
   const { data } = await admin.from("pipeline_stages").select("name").eq("id", stageId).maybeSingle();
   return statusFromStageName(data?.name);
+}
+
+async function findScheduledStageId(admin: ReturnType<typeof createAdminClient>, organizationId: string) {
+  const { data: pipeline } = await admin
+    .from("pipelines")
+    .select("id, pipeline_stages(id, name, order)")
+    .eq("organization_id", organizationId)
+    .eq("is_default", true)
+    .maybeSingle();
+
+  const stages = (pipeline?.pipeline_stages ?? []) as { id: string; name: string | null; order: number }[];
+  const scheduledStage = stages
+    .sort((a, b) => a.order - b.order)
+    .find((stage) => normalizeStageName(stage.name).includes("agend"));
+
+  return scheduledStage?.id ?? null;
 }
 
 async function saveCustomFieldValues(
@@ -162,6 +185,7 @@ export async function createLeadAction(formData: FormData): Promise<ActionResult
     await saveCustomFieldValues(admin, organizationId, data.id as string, formData);
 
     revalidatePath("/leads");
+    revalidatePath("/dashboard");
     return { ok: true, message: "Lead criado com sucesso.", id: data.id as string };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "Erro ao criar lead." };
@@ -186,6 +210,8 @@ export async function updateLeadAction(leadId: string, formData: FormData): Prom
     await saveCustomFieldValues(admin, organizationId, leadId, formData);
 
     revalidatePath("/leads");
+    revalidatePath("/dashboard");
+    revalidatePath("/inbox");
     revalidatePath(`/leads/${leadId}`);
     return { ok: true, message: "Lead atualizado." };
   } catch (error) {
@@ -354,6 +380,8 @@ export async function updateLeadStageAction(leadId: string, stageId: string): Pr
     if (error) return { ok: false, message: error.message };
 
     revalidatePath("/leads");
+    revalidatePath("/dashboard");
+    revalidatePath("/inbox");
     revalidatePath(`/leads/${leadId}`);
     return { ok: true, message: "Etapa atualizada." };
   } catch (error) {
@@ -362,6 +390,51 @@ export async function updateLeadStageAction(leadId: string, stageId: string): Pr
 }
 
 // ─── Bulk actions ─────────────────────────────────────────────────────────────
+
+export async function markLeadScheduledAction(leadId: string): Promise<ActionResult> {
+  try {
+    const { admin, organizationId } = await getCurrentContext();
+
+    const { data: lead, error: leadError } = await admin
+      .from("leads")
+      .select("id")
+      .eq("id", leadId)
+      .eq("organization_id", organizationId)
+      .maybeSingle();
+
+    if (leadError) return { ok: false, message: leadError.message };
+    if (!lead?.id) return { ok: false, message: "Lead nao encontrado." };
+
+    const scheduledStageId = await findScheduledStageId(admin, organizationId);
+    const payload: Record<string, unknown> = {
+      status: "scheduled",
+      updated_at: new Date().toISOString(),
+    };
+    if (scheduledStageId) payload.stage_id = scheduledStageId;
+
+    const { error } = await admin
+      .from("leads")
+      .update(payload)
+      .eq("id", leadId)
+      .eq("organization_id", organizationId);
+
+    if (error) return { ok: false, message: error.message };
+
+    revalidatePath("/dashboard");
+    revalidatePath("/inbox");
+    revalidatePath("/leads");
+    revalidatePath(`/leads/${leadId}`);
+
+    return {
+      ok: true,
+      message: scheduledStageId
+        ? "Consulta marcada como agendada."
+        : "Consulta marcada como agendada. Nenhuma etapa de agendamento foi encontrada no funil.",
+    };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao marcar consulta agendada." };
+  }
+}
 
 const BULK_DELETE_ROLES = ["super_admin", "gestor_sync", "admin_clinica"];
 
