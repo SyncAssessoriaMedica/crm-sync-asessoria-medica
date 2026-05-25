@@ -197,6 +197,21 @@ export async function createLeadAction(formData: FormData): Promise<ActionResult
     if ("error" in result) return { ok: false, message: result.error ?? "Dados invalidos." };
     const status = await getStatusForStage(admin, result.payload.stage_id);
 
+    const { data: existingLead } = await admin
+      .from("leads")
+      .select("id")
+      .eq("organization_id", organizationId)
+      .eq("phone", result.payload.phone)
+      .limit(1)
+      .maybeSingle();
+
+    if (existingLead?.id) {
+      return {
+        ok: false,
+        message: "Ja existe um lead com este telefone nesta clinica.",
+      };
+    }
+
     const { data, error } = await admin
       .from("leads")
       .insert({ ...result.payload, status, organization_id: organizationId })
@@ -221,6 +236,22 @@ export async function updateLeadAction(leadId: string, formData: FormData): Prom
     const result = formToLeadPayload(formData);
     if ("error" in result) return { ok: false, message: result.error ?? "Dados invalidos." };
     const status = await getStatusForStage(admin, result.payload.stage_id);
+
+    const { data: existingLead } = await admin
+      .from("leads")
+      .select("id")
+      .eq("organization_id", organizationId)
+      .eq("phone", result.payload.phone)
+      .neq("id", leadId)
+      .limit(1)
+      .maybeSingle();
+
+    if (existingLead?.id) {
+      return {
+        ok: false,
+        message: "Ja existe outro lead com este telefone nesta clinica.",
+      };
+    }
 
     const { error } = await admin
       .from("leads")

@@ -5,6 +5,7 @@ import QRCode from "qrcode";
 import { z } from "zod";
 import { createAdminClient } from "@/lib/supabase/server";
 import { canManageActiveOrganization, getOrganizationContext } from "@/lib/organization-context";
+import { createOrUpdateLeadByPhone } from "@/lib/lead-upsert";
 import { slugify } from "@/lib/utils";
 
 type ActionResult = { ok: true; message: string; data?: unknown } | { ok: false; message: string };
@@ -1372,36 +1373,21 @@ export async function importWhatsappConversationsAction(
       const phone = remoteJid.split("@")[0].replace(/\D/g, "");
       if (!phone) continue;
 
-      const { data: existingLead } = await admin
-        .from("leads")
-        .select("id, name")
-        .eq("organization_id", orgId)
-        .eq("phone", phone)
-        .maybeSingle();
-
-      let leadId: string;
-      if (existingLead?.id) {
-        leadId = existingLead.id as string;
-        if (contactName && (!existingLead.name || existingLead.name === phone)) {
-          await admin.from("leads").update({ name: contactName }).eq("id", leadId);
-        }
-      } else {
-        const { data: newLead, error: leadError } = await admin
-          .from("leads")
-          .insert({
-            organization_id: orgId,
-            name: contactName || phone,
-            phone,
-            source_id: sourceId,
-            status: "new",
-            last_interaction_at: new Date().toISOString(),
-          })
-          .select("id")
-          .single();
-        if (leadError || !newLead?.id) continue;
-        leadId = newLead.id as string;
-        leadsCreated++;
-      }
+      const lead = await createOrUpdateLeadByPhone(
+        admin,
+        {
+          organizationId: orgId,
+          name: contactName || phone,
+          phone,
+          sourceId,
+          status: "new",
+          lastInteractionAt: new Date().toISOString(),
+        },
+        { nameMode: "fill_if_blank_or_phone" }
+      );
+      if (!lead.id) continue;
+      const leadId = lead.id;
+      if (lead.created) leadsCreated++;
 
       const { data: existingConv } = await admin
         .from("conversations")

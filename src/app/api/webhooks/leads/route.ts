@@ -3,6 +3,7 @@ import { z } from "zod";
 import { createAdminClient } from "@/lib/supabase/server";
 import { checkRateLimit, getRateLimitKey } from "@/lib/rate-limit";
 import { sanitizePayload, sanitizeLeadEventMeta } from "@/lib/sanitize";
+import { createOrUpdateLeadByPhone } from "@/lib/lead-upsert";
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
@@ -178,38 +179,27 @@ export async function POST(request: NextRequest) {
   const sourceId = await resolveSource(admin, organizationId, payload.source);
 
   try {
-    const { data: existingLead } = await admin
-      .from("leads")
-      .select("id")
-      .eq("organization_id", organizationId)
-      .eq("phone", normalizedPhone)
-      .maybeSingle();
-
-    const leadPayload = {
-      organization_id: organizationId,
+    const leadResult = await createOrUpdateLeadByPhone(admin, {
+      organizationId,
       name: payload.name,
       phone: normalizedPhone,
       email: payload.email ?? null,
-      source_id: sourceId ?? null,
+      sourceId: sourceId ?? null,
       procedure: payload.procedure ?? null,
-      potential_value: payload.potential_value ?? null,
-      last_interaction_at: new Date().toISOString(),
-    };
+      potentialValue: payload.potential_value ?? null,
+      status: "new",
+      lastInteractionAt: new Date().toISOString(),
+    });
 
-    const leadResult = existingLead?.id
-      ? await admin.from("leads").update(leadPayload).eq("id", existingLead.id).select("id").single()
-      : await admin.from("leads").insert({ ...leadPayload, status: "new" }).select("id").single();
-
-    if (leadResult.error || !leadResult.data) throw leadResult.error;
-
-    const leadId = leadResult.data.id as string;
+    if (!leadResult.id) throw new Error("Lead nao foi criado ou atualizado.");
+    const leadId = leadResult.id;
     await saveCustomFields(admin, organizationId, leadId, payload.custom_fields);
 
     // Store sanitized metadata — no phone/email in the event timeline.
     await admin.from("lead_events").insert({
       lead_id: leadId,
-      event_type: existingLead?.id ? "updated" : "created",
-      description: existingLead?.id ? "Lead atualizado via webhook." : "Lead criado via webhook.",
+      event_type: leadResult.created ? "created" : "updated",
+      description: leadResult.created ? "Lead criado via webhook." : "Lead atualizado via webhook.",
       metadata: sanitizeLeadEventMeta(payload),
     });
 
@@ -217,7 +207,7 @@ export async function POST(request: NextRequest) {
     await admin.from("webhook_events").insert({
       organization_id: organizationId,
       source: "leads_endpoint",
-      event_type: existingLead?.id ? "lead.updated" : "lead.created",
+      event_type: leadResult.created ? "lead.created" : "lead.updated",
       payload: sanitizePayload(payload),
       processed: true,
     });
@@ -225,11 +215,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         success: true,
-        action: existingLead?.id ? "updated" : "created",
+        action: leadResult.created ? "created" : "updated",
         lead_id: leadId,
-        message: existingLead?.id ? "Lead atualizado com sucesso" : "Lead criado com sucesso",
+        message: leadResult.created ? "Lead criado com sucesso" : "Lead atualizado com sucesso",
       },
-      { status: existingLead?.id ? 200 : 201 }
+      { status: leadResult.created ? 201 : 200 }
     );
   } catch (error) {
     // Log error without echoing the payload (which contains PII).

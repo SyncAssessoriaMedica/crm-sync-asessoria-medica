@@ -3,6 +3,7 @@ import { z } from "zod";
 import { createAdminClient } from "@/lib/supabase/server";
 import { checkRateLimit, getRateLimitKey } from "@/lib/rate-limit";
 import { sanitizePayload } from "@/lib/sanitize";
+import { createOrUpdateLeadByPhone } from "@/lib/lead-upsert";
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
@@ -247,38 +248,22 @@ async function resolveWhatsappSource(admin: SupabaseAdmin, organizationId: strin
 }
 
 async function resolveLead(admin: SupabaseAdmin, organizationId: string, phone: string, name: string | undefined, inbound: boolean) {
-  const { data: existing } = await admin
-    .from("leads")
-    .select("id, name")
-    .eq("organization_id", organizationId)
-    .eq("phone", phone)
-    .maybeSingle();
-
-  if (existing?.id) {
-    const updates: Record<string, unknown> = { last_interaction_at: new Date().toISOString() };
-    if (name && (!existing.name || existing.name === phone)) updates.name = name;
-    await admin.from("leads").update(updates).eq("id", existing.id);
-    return { id: existing.id as string, created: false };
-  }
-
-  if (!inbound) return { id: null, created: false };
-
   const sourceId = await resolveWhatsappSource(admin, organizationId);
-  const { data, error } = await admin
-    .from("leads")
-    .insert({
-      organization_id: organizationId,
-      name: name || phone,
+  return createOrUpdateLeadByPhone(
+    admin,
+    {
+      organizationId,
       phone,
-      source_id: sourceId ?? null,
+      name,
+      sourceId: sourceId ?? null,
       status: "new",
-      last_interaction_at: new Date().toISOString(),
-    })
-    .select("id")
-    .single();
-
-  if (error) throw error;
-  return { id: data.id as string, created: true };
+      lastInteractionAt: new Date().toISOString(),
+    },
+    {
+      createIfMissing: inbound,
+      nameMode: "fill_if_blank_or_phone",
+    }
+  );
 }
 
 async function resolveConversation(

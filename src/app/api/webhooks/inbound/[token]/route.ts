@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/server";
 import { checkRateLimit, getRateLimitKey } from "@/lib/rate-limit";
 import { sanitizePayload } from "@/lib/sanitize";
+import { createOrUpdateLeadByPhone } from "@/lib/lead-upsert";
 
 type WebhookConfigPayload = {
   token?: string;
@@ -156,45 +157,35 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
   try {
     const sourceId = await resolveSource(admin, organizationId, getByPath(body, config.mappings?.source));
-    const { data: existingLead } = await admin
-      .from("leads")
-      .select("id")
-      .eq("organization_id", organizationId)
-      .eq("phone", phone)
-      .maybeSingle();
-
     const potential = Number(getByPath(body, config.mappings?.potential_value));
-    const leadPayload = {
-      organization_id: organizationId,
+    const leadResult = await createOrUpdateLeadByPhone(admin, {
+      organizationId,
       name,
       phone,
       email: toText(getByPath(body, config.mappings?.email)) || null,
-      source_id: sourceId ?? null,
+      sourceId: sourceId ?? null,
       procedure: toText(getByPath(body, config.mappings?.procedure)) || null,
-      potential_value: Number.isFinite(potential) && potential > 0 ? potential : null,
-      last_interaction_at: new Date().toISOString(),
-    };
+      potentialValue: Number.isFinite(potential) && potential > 0 ? potential : null,
+      status: "new",
+      lastInteractionAt: new Date().toISOString(),
+    });
 
-    const leadResult = existingLead?.id
-      ? await admin.from("leads").update(leadPayload).eq("id", existingLead.id).select("id").single()
-      : await admin.from("leads").insert({ ...leadPayload, status: "new" }).select("id").single();
-
-    if (leadResult.error || !leadResult.data) throw leadResult.error;
-    const leadId = leadResult.data.id as string;
+    if (!leadResult.id) throw new Error("Lead nao foi criado ou atualizado.");
+    const leadId = leadResult.id;
     await saveCustomFields(admin, organizationId, leadId, body, config.mappings?.custom);
 
     // Lead event: minimal metadata, no raw PII
     await admin.from("lead_events").insert({
       lead_id: leadId,
-      event_type: existingLead?.id ? "updated" : "created",
-      description: existingLead?.id ? "Lead atualizado via webhook configurado." : "Lead criado via webhook configurado.",
+      event_type: leadResult.created ? "created" : "updated",
+      description: leadResult.created ? "Lead criado via webhook configurado." : "Lead atualizado via webhook configurado.",
       metadata: { webhook_name: config.name ?? "Webhook" },
     });
 
     await admin.from("webhook_events").insert({
       organization_id: organizationId,
       source: "inbound_webhook_incoming",
-      event_type: existingLead?.id ? "lead.updated" : "lead.created",
+      event_type: leadResult.created ? "lead.created" : "lead.updated",
       payload: { ...eventPayload, lead_id: leadId },
       processed: true,
     });
