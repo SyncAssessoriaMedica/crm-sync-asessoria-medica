@@ -399,7 +399,7 @@ O módulo envia mensagens de acompanhamento via WhatsApp de forma automática, e
 
 1. **Ciclo:** Cada mensagem manual (outbound) enviada por um atendente inicia ou reinicia o ciclo de follow-up para aquela conversa.
 2. **Sequência:** Cada passo define quantos dias após o início do ciclo a mensagem deve ser enviada (ex.: passo 1 = dia 2, passo 2 = dia 5, passo 3 = dia 10).
-3. **Cron:** O endpoint `/api/cron/followups` roda a cada 15 minutos (agendado pela Vercel).
+3. **Cron:** O endpoint `/api/cron/followups` está agendado na Vercel com frequência diária para manter compatibilidade com o plano Hobby. Para execução a cada 15 minutos, use Vercel Pro ou um cron externo chamando o endpoint autenticado.
 4. **Fase 1 — Scheduler:** O cron detecta conversas elegíveis e cria itens na fila com `status = pending`.
 5. **Fase 2 — Sender:** O cron pega até 20 itens pendentes (1 por instância WhatsApp), verifica horário comercial e envia via Evolution API.
 
