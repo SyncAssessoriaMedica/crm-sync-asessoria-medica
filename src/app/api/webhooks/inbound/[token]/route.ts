@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/server";
+import { checkRateLimit, getRateLimitKey } from "@/lib/rate-limit";
+import { sanitizePayload } from "@/lib/sanitize";
 
 type WebhookConfigPayload = {
   token?: string;
@@ -86,7 +88,25 @@ async function saveCustomFields(
   }
 }
 
+// ─── Rate limit config ────────────────────────────────────────────────────────
+
+// 60 per minute per IP. These tokens are per-org so legitimate use is low.
+const RATE_LIMIT = 60;
+const RATE_WINDOW_MS = 60_000;
+
+// ─── Route handlers ───────────────────────────────────────────────────────────
+
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
+  // 1. Rate limit — before DB lookup to protect against token enumeration
+  const rlKey = getRateLimitKey(request, "inbound");
+  const rl = checkRateLimit(rlKey, RATE_LIMIT, RATE_WINDOW_MS);
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: "Too Many Requests", retryAfterSeconds: Math.ceil(rl.retryAfterMs / 1000) },
+      { status: 429, headers: { "Retry-After": String(Math.ceil(rl.retryAfterMs / 1000)) } }
+    );
+  }
+
   const { token } = await params;
   const admin = createAdminClient();
   let body: unknown;
@@ -113,10 +133,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: "Webhook not found or inactive" }, { status: 404 });
   }
 
+  // Event payload for logging — sanitized: strip token from stored record.
   const eventPayload = {
-    token,
     webhook_name: config.name ?? "Webhook",
-    body,
+    body: sanitizePayload(body),
   };
 
   const name = toText(getByPath(body, config.mappings?.name));
@@ -162,12 +182,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (leadResult.error || !leadResult.data) throw leadResult.error;
     const leadId = leadResult.data.id as string;
     await saveCustomFields(admin, organizationId, leadId, body, config.mappings?.custom);
+
+    // Lead event: minimal metadata, no raw PII
     await admin.from("lead_events").insert({
       lead_id: leadId,
       event_type: existingLead?.id ? "updated" : "created",
       description: existingLead?.id ? "Lead atualizado via webhook configurado." : "Lead criado via webhook configurado.",
-      metadata: eventPayload,
+      metadata: { webhook_name: config.name ?? "Webhook" },
     });
+
     await admin.from("webhook_events").insert({
       organization_id: organizationId,
       source: "inbound_webhook_incoming",

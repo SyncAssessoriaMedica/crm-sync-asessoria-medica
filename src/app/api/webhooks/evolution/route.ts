@@ -1,10 +1,45 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createAdminClient } from "@/lib/supabase/server";
+import { checkRateLimit, getRateLimitKey } from "@/lib/rate-limit";
+import { sanitizePayload } from "@/lib/sanitize";
+
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Return the effective webhook secret.
+ *
+ * EVOLUTION_WEBHOOK_SECRET — dedicated secret for incoming webhooks.
+ *
+ * In production this must be configured. Local development may temporarily
+ * fall back to EVOLUTION_API_KEY so older local setups keep working, but
+ * production never exposes the server-to-server Evolution key as a webhook
+ * URL token.
+ */
+function getWebhookSecret(): string | null {
+  if (process.env.EVOLUTION_WEBHOOK_SECRET) return process.env.EVOLUTION_WEBHOOK_SECRET;
+  if (process.env.NODE_ENV !== "production") return process.env.EVOLUTION_API_KEY ?? null;
+  return null;
+}
+
+function verifyEvolutionSignature(request: NextRequest): boolean {
+  const secret = getWebhookSecret();
+  // Fail closed: no secret configured → reject every request.
+  if (!secret) return false;
+
+  // Primary: Evolution sends the API key in the "apikey" header.
+  if (request.headers.get("apikey") === secret) return true;
+
+  // Fallback: webhook URL contains ?token=<secret> (used when Evolution
+  // doesn't support custom headers on delivery).
+  const url = new URL(request.url);
+  return url.searchParams.get("token") === secret;
+}
+
+// ─── Schema ───────────────────────────────────────────────────────────────────
 
 const EvolutionWebhookSchema = z.object({
   event: z.string(),
-  // Evolution v2 always sends "instance"; some forks use "instanceName"
   instance: z.string().optional(),
   instanceName: z.string().optional(),
   data: z
@@ -39,15 +74,7 @@ const CONNECTION_EVENTS = new Set(["connection.update", "CONNECTION_UPDATE"]);
 const QRCODE_EVENTS = new Set(["qrcode.updated", "QRCODE_UPDATED"]);
 const ALLOWED_MESSAGE_TYPES = new Set(["text", "image", "audio", "video", "document", "sticker", "location"]);
 
-function verifyEvolutionSignature(request: NextRequest): boolean {
-  const apiKey = process.env.EVOLUTION_API_KEY;
-  if (!apiKey) return true;
-  // Primary: apikey header (Evolution sends this when delivering webhooks)
-  if (request.headers.get("apikey") === apiKey) return true;
-  // Fallback: ?token query param (used when webhook URL includes token)
-  const url = new URL(request.url);
-  return url.searchParams.get("token") === apiKey;
-}
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function isGroupMessage(remoteJid: string) {
   return remoteJid.includes("@g.us");
@@ -58,7 +85,6 @@ function normalizePhone(value: string) {
 }
 
 function getTimestamp(value: EvolutionPayload["data"]) {
-  // Evolution v2 uses messageTimestamp; v1 used timestamp
   const raw = (value as Record<string, unknown> | undefined)?.messageTimestamp ?? value?.timestamp;
   if (!raw) return new Date().toISOString();
   const numeric = Number(raw);
@@ -80,6 +106,30 @@ function nestedText(source: Record<string, unknown> | undefined, keys: string[])
   }
   return undefined;
 }
+
+// ─── Log helper ───────────────────────────────────────────────────────────────
+
+async function logWebhook(
+  admin: SupabaseAdmin,
+  organizationId: string | null,
+  eventType: string,
+  payload: unknown,
+  processed: boolean,
+  error?: string
+) {
+  // Sanitize before storing: remove secrets, truncate QR base64 blobs, etc.
+  const safePayload = sanitizePayload(payload);
+  await admin.from("webhook_events").insert({
+    organization_id: organizationId,
+    source: "evolution",
+    event_type: eventType,
+    payload: safePayload,
+    processed,
+    error: error ?? null,
+  });
+}
+
+// ─── Message content extraction ───────────────────────────────────────────────
 
 function getMessageContent(data: NonNullable<EvolutionPayload["data"]>) {
   const message = (data.message ?? {}) as Record<string, unknown>;
@@ -164,23 +214,7 @@ function getMessageContent(data: NonNullable<EvolutionPayload["data"]>) {
   };
 }
 
-async function logWebhook(
-  admin: SupabaseAdmin,
-  organizationId: string | null,
-  eventType: string,
-  payload: unknown,
-  processed: boolean,
-  error?: string
-) {
-  await admin.from("webhook_events").insert({
-    organization_id: organizationId,
-    source: "evolution",
-    event_type: eventType,
-    payload,
-    processed,
-    error: error ?? null,
-  });
-}
+// ─── Event handlers ───────────────────────────────────────────────────────────
 
 async function resolveWhatsAppInstance(admin: SupabaseAdmin, instanceName: string) {
   const { data, error } = await admin
@@ -306,7 +340,15 @@ async function handleConnectionEvent(admin: SupabaseAdmin, payload: NormalizedPa
 
 async function handleQrCodeEvent(admin: SupabaseAdmin, payload: NormalizedPayload) {
   const instance = await resolveWhatsAppInstance(admin, payload.instance);
-  await logWebhook(admin, instance?.organization_id ?? null, payload.event, payload, Boolean(instance), instance ? undefined : `Instancia desconhecida: ${payload.instance}`);
+  // Strip QR base64 before logging (sanitizePayload in logWebhook handles this)
+  await logWebhook(
+    admin,
+    instance?.organization_id ?? null,
+    payload.event,
+    payload,
+    Boolean(instance),
+    instance ? undefined : `Instancia desconhecida: ${payload.instance}`
+  );
   if (instance) await admin.from("whatsapp_instances").update({ status: "connecting" }).eq("id", instance.id);
   return NextResponse.json({ success: true, processed: Boolean(instance), event: payload.event });
 }
@@ -321,7 +363,7 @@ async function handleMessageEvent(admin: SupabaseAdmin, payload: NormalizedPaylo
   }
 
   if (isGroupMessage(remoteJid)) {
-    await logWebhook(admin, null, payload.event, payload, false, "Mensagem de grupo ignorada.");
+    await logWebhook(admin, null, payload.event, { event: payload.event, instance: payload.instance }, false, "Mensagem de grupo ignorada.");
     return NextResponse.json({ received: true, processed: false, reason: "Group ignored" });
   }
 
@@ -377,12 +419,19 @@ async function handleMessageEvent(admin: SupabaseAdmin, payload: NormalizedPaylo
           remote_jid: remoteJid,
           message_type: messageContent.type,
           evolution_msg_id: evolutionMessageId,
+          // Never log media_url or actual message content here
         },
       });
     }
   }
 
-  await logWebhook(admin, instance.organization_id, payload.event, { ...payload, lead_id: lead.id, conversation_id: conversation.id }, true);
+  await logWebhook(
+    admin,
+    instance.organization_id,
+    payload.event,
+    { event: payload.event, instance: payload.instance, lead_id: lead.id, conversation_id: conversation.id },
+    true
+  );
 
   return NextResponse.json({
     success: true,
@@ -395,29 +444,62 @@ async function handleMessageEvent(admin: SupabaseAdmin, payload: NormalizedPaylo
   });
 }
 
+// ─── Rate limit config ────────────────────────────────────────────────────────
+
+// 120 requests per minute per IP — well above normal Evolution delivery rates
+// (~1–5 messages/s burst in busy deployments) but blocks flooding.
+const RATE_LIMIT = 120;
+const RATE_WINDOW_MS = 60_000;
+
+// ─── Route handlers ───────────────────────────────────────────────────────────
+
 export async function POST(request: NextRequest) {
-  // Parse body before auth so every failure path can be logged
+  // 1. Rate limit — before any other work to protect DB from flooding
+  const rlKey = getRateLimitKey(request, "evolution");
+  const rl = checkRateLimit(rlKey, RATE_LIMIT, RATE_WINDOW_MS);
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: "Too Many Requests", retryAfterSeconds: Math.ceil(rl.retryAfterMs / 1000) },
+      { status: 429, headers: { "Retry-After": String(Math.ceil(rl.retryAfterMs / 1000)) } }
+    );
+  }
+
+  // 2. Auth — fail closed: if EVOLUTION_WEBHOOK_SECRET (or EVOLUTION_API_KEY)
+  //    is not configured, reject the request rather than accepting it blindly.
+  if (!verifyEvolutionSignature(request)) {
+    // Best-effort log — do not expose the secret in the log payload.
+    try {
+      const admin = createAdminClient();
+      await logWebhook(
+        admin,
+        null,
+        "AUTH_FAILURE",
+        { apikeyPresent: request.headers.get("apikey") !== null },
+        false,
+        process.env.EVOLUTION_WEBHOOK_SECRET || process.env.EVOLUTION_API_KEY
+          ? "Unauthorized: apikey header or token mismatch"
+          : "Service misconfigured: EVOLUTION_WEBHOOK_SECRET not set"
+      );
+    } catch { /* best-effort */ }
+
+    if (!getWebhookSecret()) {
+      return NextResponse.json(
+        { error: "Service Unavailable", code: "WEBHOOK_NOT_CONFIGURED" },
+        { status: 503 }
+      );
+    }
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // 3. Parse body
   let body: unknown;
   let rawBodySnippet: string | undefined;
   try {
     const text = await request.text();
-    rawBodySnippet = text.slice(0, 1000);
+    rawBodySnippet = text.slice(0, 500); // keep snippet for debug, not full payload
     body = text ? JSON.parse(text) : undefined;
   } catch {
     // body stays undefined; handled below
-  }
-
-  if (!verifyEvolutionSignature(request)) {
-    try {
-      const admin = createAdminClient();
-      await logWebhook(
-        admin, null, "AUTH_FAILURE",
-        { apikeyPresent: request.headers.get("apikey") !== null, body },
-        false,
-        "Unauthorized: apikey header or token mismatch"
-      );
-    } catch { /* best-effort */ }
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const admin = createAdminClient();
@@ -429,15 +511,14 @@ export async function POST(request: NextRequest) {
 
   const parsed = EvolutionWebhookSchema.safeParse(body);
   if (!parsed.success) {
-    await logWebhook(admin, null, "SCHEMA_FAILURE", body, false, `Schema validation failed: ${parsed.error.message}`);
+    await logWebhook(admin, null, "SCHEMA_FAILURE", { eventHint: (body as Record<string, unknown>)?.event }, false, `Schema validation failed: ${parsed.error.message}`);
     return NextResponse.json({ received: true, processed: false, reason: "Unsupported payload" });
   }
 
   const rawPayload = parsed.data;
-  // Normalise: some Evolution forks send instanceName instead of instance
   const instanceName = rawPayload.instance ?? rawPayload.instanceName ?? "";
   if (!instanceName) {
-    await logWebhook(admin, null, rawPayload.event ?? "UNKNOWN", body, false, "Missing instance identifier");
+    await logWebhook(admin, null, rawPayload.event ?? "UNKNOWN", {}, false, "Missing instance identifier");
     return NextResponse.json({ received: true, processed: false, reason: "Missing instance identifier" });
   }
   const payload = { ...rawPayload, instance: instanceName };
@@ -446,16 +527,16 @@ export async function POST(request: NextRequest) {
     if (MESSAGE_EVENTS.has(payload.event)) return handleMessageEvent(admin, payload);
     if (CONNECTION_EVENTS.has(payload.event)) return handleConnectionEvent(admin, payload);
     if (QRCODE_EVENTS.has(payload.event)) return handleQrCodeEvent(admin, payload);
-    // MESSAGES_UPDATE: status updates (delivered/read) — log and acknowledge
+
     if (payload.event === "MESSAGES_UPDATE" || payload.event === "messages.update") {
-      await logWebhook(admin, null, payload.event, payload, true);
+      await logWebhook(admin, null, payload.event, { event: payload.event, instance: payload.instance }, true);
       return NextResponse.json({ received: true, processed: true, reason: "Status update logged" });
     }
 
-    await logWebhook(admin, null, payload.event, payload, false, "Evento ignorado pelo CRM.");
+    await logWebhook(admin, null, payload.event, { event: payload.event, instance: payload.instance }, false, "Evento ignorado pelo CRM.");
     return NextResponse.json({ received: true, processed: false, reason: "Event not handled" });
   } catch (error) {
-    await logWebhook(admin, null, payload.event, payload, false, error instanceof Error ? error.message : "Internal server error");
+    await logWebhook(admin, null, payload.event, { event: payload.event, instance: payload.instance }, false, error instanceof Error ? error.message : "Internal server error");
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
@@ -465,6 +546,6 @@ export async function GET() {
     status: "ok",
     endpoint: "POST /api/webhooks/evolution",
     handled_events: ["MESSAGES_UPSERT", "CONNECTION_UPDATE", "QRCODE_UPDATED", "SEND_MESSAGE"],
-    auth: "Header: apikey",
+    auth: "Header: apikey (EVOLUTION_WEBHOOK_SECRET)",
   });
 }

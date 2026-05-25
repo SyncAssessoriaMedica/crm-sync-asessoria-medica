@@ -47,6 +47,12 @@ function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function getEvolutionWebhookSecret() {
+  if (process.env.EVOLUTION_WEBHOOK_SECRET) return process.env.EVOLUTION_WEBHOOK_SECRET;
+  if (process.env.NODE_ENV !== "production") return process.env.EVOLUTION_API_KEY ?? null;
+  return null;
+}
+
 async function evolutionFetch(url: string, apiKey: string, init: RequestInit = {}): Promise<Response> {
   const { headers: extra, ...rest } = init;
   return fetch(url, {
@@ -56,6 +62,33 @@ async function evolutionFetch(url: string, apiKey: string, init: RequestInit = {
     signal: AbortSignal.timeout(12000),
   });
 }
+
+// ─── Audit log helper ────────────────────────────────────────────────────────
+
+async function insertAuditLog(
+  admin: ReturnType<typeof createAdminClient>,
+  actorId: string,
+  organizationId: string | null,
+  action: string,
+  resourceType: string,
+  resourceId: string | null,
+  metadata?: Record<string, unknown>
+) {
+  try {
+    await admin.from("audit_logs").insert({
+      organization_id: organizationId,
+      actor_id: actorId,
+      action,
+      resource_type: resourceType,
+      resource_id: resourceId ?? null,
+      metadata: metadata ?? null,
+    });
+  } catch {
+    // Audit log failure must never break the primary action.
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 async function tryConfigureWebhook(
   evolutionApiUrl: string,
@@ -133,7 +166,7 @@ export async function createOrganizationAction(formData: FormData): Promise<Acti
 
 export async function deleteOrganizationAction(organizationId: string): Promise<ActionResult> {
   try {
-    const { admin, isSyncAdmin } = await getContext();
+    const { admin, user, isSyncAdmin } = await getContext();
     if (!isSyncAdmin) return { ok: false, message: "Apenas admin Sync pode apagar clinicas." };
 
     const { data: org, error: fetchError } = await admin
@@ -158,6 +191,11 @@ export async function deleteOrganizationAction(organizationId: string): Promise<
     const { error } = await admin.from("organizations").delete().eq("id", organizationId);
     if (error) return { ok: false, message: error.message };
 
+    await insertAuditLog(admin, user.id, null, "delete_organization", "organization", organizationId, {
+      name: org.name,
+      slug: org.slug,
+    });
+
     revalidatePath("/admin");
     revalidatePath("/dashboard");
     revalidatePath("/leads");
@@ -171,7 +209,7 @@ export async function deleteOrganizationAction(organizationId: string): Promise<
 
 export async function createUserAction(formData: FormData): Promise<ActionResult> {
   try {
-    const { admin, organizationId, isSyncAdmin } = await getContext();
+    const { admin, user, organizationId, isSyncAdmin } = await getContext();
     const parsed = z
       .object({
         email: z.string().email(),
@@ -211,8 +249,14 @@ export async function createUserAction(formData: FormData): Promise<ActionResult
       role: parsed.data.role,
     });
     if (error) return { ok: false, message: error.message };
+    await insertAuditLog(admin, user.id, targetOrg, "create_user", "profile", userId, {
+      email: parsed.data.email,
+      role: parsed.data.role,
+    });
     revalidatePath("/admin");
-    return { ok: true, message: `Usuario criado. Senha temporaria: ${password}` };
+    // Temporary password returned to the admin who created the user.
+    // Advise changing it on first login. Never log this value to console or DB.
+    return { ok: true, message: `Usuario criado. Senha temporaria: ${password} (oriente o usuario a alterar no primeiro acesso)` };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "Erro ao criar usuario." };
   }
@@ -345,7 +389,7 @@ export async function movePipelineStageAction(stageId: string, direction: "up" |
 
 export async function deletePipelineStageAction(stageId: string): Promise<ActionResult> {
   try {
-    const { admin, organizationId } = await getContext();
+    const { admin, user, organizationId } = await getContext();
     const pipelineId = await getOrCreateDefaultPipeline(admin, organizationId);
     const { error } = await admin
       .from("pipeline_stages")
@@ -354,6 +398,7 @@ export async function deletePipelineStageAction(stageId: string): Promise<Action
       .eq("pipeline_id", pipelineId);
 
     if (error) return { ok: false, message: error.message };
+    await insertAuditLog(admin, user.id, organizationId, "delete_pipeline_stage", "pipeline_stage", stageId);
     revalidatePath("/admin");
     revalidatePath("/leads");
     revalidatePath("/dashboard");
@@ -455,10 +500,18 @@ export async function connectWhatsappInstanceAction(instanceName: string): Promi
       };
     }
 
-    // Attempt webhook configuration — non-blocking so QR Code still shows on failure
+    // Attempt webhook configuration — non-blocking so QR Code still shows on failure.
+    // In production, EVOLUTION_WEBHOOK_SECRET is mandatory so the API key is
+    // never exposed in webhook URLs or provider logs.
+    const webhookSecret = getEvolutionWebhookSecret();
+    const missingWebhookSecretWarning = webhookSecret
+      ? null
+      : "Configure EVOLUTION_WEBHOOK_SECRET na Vercel para registrar o webhook automaticamente.";
     const publicWebhookUrl = `${appUrl}/api/webhooks/evolution`;
-    const webhookUrl = `${publicWebhookUrl}?token=${encodeURIComponent(apiKey)}`;
-    const webhookWarning = await tryConfigureWebhook(evolutionApiUrl, instanceName, apiKey, webhookUrl, publicWebhookUrl);
+    const webhookUrl = webhookSecret ? `${publicWebhookUrl}?token=${encodeURIComponent(webhookSecret)}` : publicWebhookUrl;
+    const webhookWarning = webhookSecret
+      ? await tryConfigureWebhook(evolutionApiUrl, instanceName, apiKey, webhookUrl, publicWebhookUrl)
+      : missingWebhookSecretWarning;
 
     try {
       const stateResponse = await fetch(`${evolutionApiUrl}/instance/connectionState/${encodeURIComponent(instanceName)}`, {
@@ -651,7 +704,7 @@ export async function updateInboundWebhookAction(formData: FormData): Promise<Ac
 
 export async function updateUserAction(formData: FormData): Promise<ActionResult> {
   try {
-    const { admin, organizationId, isSyncAdmin } = await getContext();
+    const { admin, user, organizationId, isSyncAdmin } = await getContext();
     const userId = asText(formData.get("user_id"));
     const fullName = asText(formData.get("full_name"));
     const role = asText(formData.get("role")) as typeof roles[number];
@@ -688,6 +741,7 @@ export async function updateUserAction(formData: FormData): Promise<ActionResult
       .eq("user_id", userId)
       .eq("organization_id", userCurrentOrgId);
 
+    await insertAuditLog(admin, user.id, targetOrgId, "update_user", "profile", userId, { role });
     revalidatePath("/admin");
     return { ok: true, message: "Usuario atualizado." };
   } catch (error) {
@@ -697,11 +751,18 @@ export async function updateUserAction(formData: FormData): Promise<ActionResult
 
 export async function generatePasswordAction(userId: string): Promise<ActionResult> {
   try {
-    const { admin } = await getContext();
+    const { admin, user, isSyncAdmin } = await getContext();
+    // Only sync admins may reset passwords for other users.
+    if (!isSyncAdmin) return { ok: false, message: "Apenas admin Sync pode gerar nova senha." };
     const password = `Sync@${Math.floor(100000 + Math.random() * 900000)}`;
     const { error } = await admin.auth.admin.updateUserById(userId, { password });
     if (error) return { ok: false, message: error.message };
-    return { ok: true, message: `Nova senha gerada: ${password}` };
+    // Audit without logging the password itself.
+    await insertAuditLog(admin, user.id, null, "generate_password", "profile", userId, {
+      note: "Temporary password generated by sync admin",
+    });
+    // Password returned to the admin — never stored in DB or console.
+    return { ok: true, message: `Nova senha gerada: ${password} (oriente o usuario a alterar no primeiro acesso)` };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "Erro ao gerar senha." };
   }
@@ -709,12 +770,13 @@ export async function generatePasswordAction(userId: string): Promise<ActionResu
 
 export async function toggleUserBanAction(userId: string, ban: boolean): Promise<ActionResult> {
   try {
-    const { admin, isSyncAdmin } = await getContext();
+    const { admin, user, isSyncAdmin } = await getContext();
     if (!isSyncAdmin) return { ok: false, message: "Apenas admin Sync pode desativar usuarios." };
     const { error } = await admin.auth.admin.updateUserById(userId, {
       ban_duration: ban ? "876600h" : "none",
     });
     if (error) return { ok: false, message: error.message };
+    await insertAuditLog(admin, user.id, null, ban ? "ban_user" : "unban_user", "profile", userId);
     revalidatePath("/admin");
     return { ok: true, message: ban ? "Usuario desativado." : "Usuario reativado." };
   } catch (error) {
@@ -744,9 +806,10 @@ export async function updateTagAction(formData: FormData): Promise<ActionResult>
 
 export async function deleteTagAction(tagId: string): Promise<ActionResult> {
   try {
-    const { admin, organizationId } = await getContext();
+    const { admin, user, organizationId } = await getContext();
     const { error } = await admin.from("tags").delete().eq("id", tagId).eq("organization_id", organizationId);
     if (error) return { ok: false, message: error.message };
+    await insertAuditLog(admin, user.id, organizationId, "delete_tag", "tag", tagId);
     revalidatePath("/admin");
     revalidatePath("/leads");
     return { ok: true, message: "Tag removida." };
@@ -777,7 +840,7 @@ export async function updateSourceAction(formData: FormData): Promise<ActionResu
 
 export async function deleteSourceAction(sourceId: string): Promise<ActionResult> {
   try {
-    const { admin, organizationId } = await getContext();
+    const { admin, user, organizationId } = await getContext();
     const { count } = await admin
       .from("leads")
       .select("id", { count: "exact", head: true })
@@ -790,6 +853,7 @@ export async function deleteSourceAction(sourceId: string): Promise<ActionResult
 
     const { error } = await admin.from("lead_sources").delete().eq("id", sourceId).eq("organization_id", organizationId);
     if (error) return { ok: false, message: error.message };
+    await insertAuditLog(admin, user.id, organizationId, "delete_source", "lead_source", sourceId);
     revalidatePath("/admin");
     revalidatePath("/leads");
     return { ok: true, message: "Origem removida." };
@@ -827,9 +891,10 @@ export async function updateCustomFieldAction(formData: FormData): Promise<Actio
 
 export async function deleteCustomFieldAction(fieldId: string): Promise<ActionResult> {
   try {
-    const { admin, organizationId } = await getContext();
+    const { admin, user, organizationId } = await getContext();
     const { error } = await admin.from("custom_fields").delete().eq("id", fieldId).eq("organization_id", organizationId);
     if (error) return { ok: false, message: error.message };
+    await insertAuditLog(admin, user.id, organizationId, "delete_custom_field", "custom_field", fieldId);
     revalidatePath("/admin");
     revalidatePath("/leads");
     return { ok: true, message: "Campo removido." };
@@ -864,9 +929,14 @@ export async function setWebhookForInstanceAction(instanceName: string): Promise
       return { ok: false, message: "Configure NEXT_PUBLIC_APP_URL no projeto da Vercel." };
     }
 
-    // Include ?token so Evolution can authenticate — route.ts checks this as fallback
+    // In production, EVOLUTION_WEBHOOK_SECRET is mandatory so the API key is
+    // never exposed in webhook URLs or provider logs.
+    const webhookSecret = getEvolutionWebhookSecret();
+    if (!webhookSecret) {
+      return { ok: false, message: "Configure EVOLUTION_WEBHOOK_SECRET na Vercel antes de registrar o webhook." };
+    }
     const publicWebhookUrl = `${appUrl}/api/webhooks/evolution`;
-    const webhookUrl = `${publicWebhookUrl}?token=${encodeURIComponent(apiKey)}`;
+    const webhookUrl = `${publicWebhookUrl}?token=${encodeURIComponent(webhookSecret)}`;
     const warning = await tryConfigureWebhook(evolutionApiUrl, instanceName, apiKey, webhookUrl, publicWebhookUrl);
     if (warning) return { ok: false, message: warning };
     return { ok: true, message: `Webhook configurado com sucesso: ${publicWebhookUrl}` };
@@ -1403,7 +1473,7 @@ export async function importWhatsappConversationsAction(
 
 export async function disconnectWhatsappInstanceAction(instanceName: string): Promise<ActionResult> {
   try {
-    const { admin, organizationId, isSyncAdmin } = await getContext();
+    const { admin, user, organizationId, isSyncAdmin } = await getContext();
     const baseUrl = process.env.EVOLUTION_API_URL;
     const apiKey = process.env.EVOLUTION_API_KEY;
     if (!baseUrl || !apiKey) {
@@ -1440,6 +1510,10 @@ export async function disconnectWhatsappInstanceAction(instanceName: string): Pr
       .update({ status: "disconnected", phone_number: null })
       .eq("id", instance.id);
     if (updateError) return { ok: false, message: updateError.message };
+
+    await insertAuditLog(admin, user.id, instance.organization_id as string, "disconnect_whatsapp", "whatsapp_instance", instance.id as string, {
+      instance_name: instanceName,
+    });
 
     revalidatePath("/admin");
     revalidatePath("/inbox");

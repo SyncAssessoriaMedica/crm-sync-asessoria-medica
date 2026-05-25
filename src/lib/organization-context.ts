@@ -52,8 +52,12 @@ export async function getOrganizationContext() {
     throw new Error("Usuario sem organizacao configurada.");
   }
 
-  const effectiveRole = (profile?.role ?? primaryMembership.role ?? "leitura") as string;
-  const isSyncAdmin = SYNC_ROLES.has(effectiveRole);
+  // isSyncAdmin is derived from profiles.role — a global, system-level attribute.
+  // This is intentional: sync staff have cross-org access regardless of which
+  // org is active.
+  const profileRole = (profile?.role ?? primaryMembership.role ?? "leitura") as string;
+  const isSyncAdmin = SYNC_ROLES.has(profileRole);
+
   const availableOrganizations = isSyncAdmin
     ? ((organizationsResult.data ?? []) as OrganizationRow[])
     : memberships.map((membership) => firstRelation(membership.organizations)).filter(Boolean) as OrganizationRow[];
@@ -70,6 +74,20 @@ export async function getOrganizationContext() {
 
   if (!organization?.id) {
     throw new Error("Organizacao ativa nao encontrada.");
+  }
+
+  // Effective role for the ACTIVE organization:
+  // - Sync staff keep their global profile role (cross-org access).
+  // - Clinic users use their membership role in the currently active org,
+  //   so switching from org A (admin_clinica) to org B (atendente) correctly
+  //   reduces permissions without requiring a profile update.
+  let effectiveRole: string;
+  if (isSyncAdmin) {
+    effectiveRole = profileRole;
+  } else {
+    const activeMembership =
+      memberships.find((m) => m.organization_id === organization.id) ?? primaryMembership;
+    effectiveRole = (activeMembership.role as string) ?? profileRole;
   }
 
   return {

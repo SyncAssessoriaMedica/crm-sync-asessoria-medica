@@ -86,6 +86,7 @@ npm start
 | `SUPABASE_SERVICE_ROLE_KEY` | Fase 2 | Service role key (server-side only) |
 | `EVOLUTION_API_URL` | Fase 2 | URL da Evolution API auto-hospedada |
 | `EVOLUTION_API_KEY` | Fase 2 | API key da Evolution API |
+| `EVOLUTION_WEBHOOK_SECRET` | Producao | Secret dedicado para autenticar webhooks recebidos da Evolution; nao use a API key na URL |
 | `WEBHOOK_SECRET` | Produção | Secret para autenticar webhooks externos |
 | `NEXT_PUBLIC_APP_URL` | Produção | URL pública do app |
 
@@ -337,6 +338,7 @@ Antes de clicar em **Deploy**, clique em **"Environment Variables"** e adicione:
 | `SUPABASE_SERVICE_ROLE_KEY` | Production | Service role key — nunca expor no frontend |
 | `EVOLUTION_API_URL` | Production | URL da Evolution API auto-hospedada |
 | `EVOLUTION_API_KEY` | Production | API key da Evolution API |
+| `EVOLUTION_WEBHOOK_SECRET` | Production | Secret dedicado para autenticar webhooks recebidos da Evolution; obrigatorio em producao |
 | `WEBHOOK_SECRET` | Production | Secret para autenticar webhooks externos |
 | `NEXT_PUBLIC_APP_URL` | Production | URL final do app na Vercel (preencher após primeiro deploy) |
 

@@ -59,6 +59,29 @@ function optionalDate(value: unknown) {
   return str.length > 0 ? new Date(str).toISOString() : null;
 }
 
+async function insertAuditLog(
+  admin: ReturnType<typeof createAdminClient>,
+  actorId: string,
+  organizationId: string,
+  action: string,
+  resourceType: string,
+  resourceId: string | null,
+  metadata?: Record<string, unknown>
+) {
+  try {
+    await admin.from("audit_logs").insert({
+      organization_id: organizationId,
+      actor_id: actorId,
+      action,
+      resource_type: resourceType,
+      resource_id: resourceId,
+      metadata: metadata ?? null,
+    });
+  } catch {
+    // Audit log failure should not block the user action.
+  }
+}
+
 function normalizeStageName(value?: string | null) {
   return (value ?? "")
     .toLowerCase()
@@ -221,7 +244,16 @@ export async function updateLeadAction(leadId: string, formData: FormData): Prom
 
 export async function deleteLeadAction(leadId: string): Promise<ActionResult> {
   try {
-    const { admin, organizationId } = await getCurrentContext();
+    const { admin, user, organizationId } = await getCurrentContext();
+    const { data: lead } = await admin
+      .from("leads")
+      .select("id")
+      .eq("id", leadId)
+      .eq("organization_id", organizationId)
+      .maybeSingle();
+
+    if (!lead?.id) return { ok: false, message: "Lead nao encontrado." };
+
     const { error } = await admin
       .from("leads")
       .delete()
@@ -230,7 +262,10 @@ export async function deleteLeadAction(leadId: string): Promise<ActionResult> {
 
     if (error) return { ok: false, message: error.message };
 
+    await insertAuditLog(admin, user.id, organizationId, "delete_lead", "lead", leadId);
     revalidatePath("/leads");
+    revalidatePath("/dashboard");
+    revalidatePath("/inbox");
     return { ok: true, message: "Lead excluido." };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "Erro ao excluir lead." };
@@ -440,7 +475,7 @@ const BULK_DELETE_ROLES = ["super_admin", "gestor_sync", "admin_clinica"];
 
 export async function deleteLeadsBulkAction(leadIds: string[]): Promise<ActionResult> {
   try {
-    const { admin, organizationId, role } = await getCurrentContext();
+    const { admin, user, organizationId, role } = await getCurrentContext();
 
     if (!BULK_DELETE_ROLES.includes(role)) {
       return { ok: false, message: "Sem permissao para apagar leads em massa." };
@@ -485,6 +520,10 @@ export async function deleteLeadsBulkAction(leadIds: string[]): Promise<ActionRe
     const { error } = await admin.from("leads").delete().in("id", ownedIds);
     if (error) return { ok: false, message: error.message };
 
+    await insertAuditLog(admin, user.id, organizationId, "delete_leads_bulk", "lead", null, {
+      count: ownedIds.length,
+      lead_ids: ownedIds,
+    });
     revalidatePath("/leads");
     revalidatePath("/dashboard");
     revalidatePath("/inbox");

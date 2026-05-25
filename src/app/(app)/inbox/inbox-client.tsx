@@ -3,32 +3,26 @@
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import {
-  CalendarCheck,
-  CheckCheck,
-  ChevronDown,
-  DollarSign,
-  FileText,
-  Filter,
-  ImageIcon,
-  Inbox,
-  MessageCircle,
-  Mic,
-  Phone,
-  Search,
-  Tag,
-  User,
-  Video,
-} from "lucide-react";
+import { CalendarCheck, ChevronDown, DollarSign, Filter, Inbox, Phone, Search, Tag, User } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { createClient } from "@/lib/supabase/client";
-import { cn, formatCurrency, formatDateTime, formatPhone, formatTimeAgo, getInitials } from "@/lib/utils";
+import { cn, formatCurrency, formatPhone, formatTimeAgo, getInitials } from "@/lib/utils";
 import { markConversationReadAction, updateConversationStatusAction } from "./actions";
 import { markLeadScheduledAction } from "../leads/actions";
+import { MessageBubble } from "./message-media";
 import type { InboxConversation, InboxMessage } from "./types";
+
+const MEDIA_LABELS: Record<string, string> = {
+  image: "Imagem",
+  audio: "Audio",
+  video: "Video",
+  document: "Documento",
+  sticker: "Figurinha",
+  location: "Localizacao",
+};
 
 const STATUS_LABELS: Record<string, string> = {
   new: "Novo",
@@ -39,15 +33,6 @@ const STATUS_LABELS: Record<string, string> = {
   closed_won: "Fechado",
   closed_lost: "Perdido",
   no_show: "Nao compareceu",
-};
-
-const MEDIA_LABELS: Record<string, string> = {
-  image: "Imagem",
-  audio: "Audio",
-  video: "Video",
-  document: "Documento",
-  sticker: "Figurinha",
-  location: "Localizacao",
 };
 
 type InboxClientProps = {
@@ -83,57 +68,10 @@ function cleanJid(remoteJid: string) {
   return remoteJid.replace("@s.whatsapp.net", "").replace("@c.us", "");
 }
 
-function MessageTypeIcon({ type }: { type: string }) {
-  const cls = "h-3 w-3";
-  if (type === "image") return <ImageIcon className={cls} />;
-  if (type === "audio") return <Mic className={cls} />;
-  if (type === "video") return <Video className={cls} />;
-  if (type === "document") return <FileText className={cls} />;
-  return <MessageCircle className={cls} />;
-}
-
 function lastMessagePreview(message: InboxMessage | null) {
   if (!message) return "Conversa iniciada";
   if (message.message_type !== "text") return MEDIA_LABELS[message.message_type] ?? message.message_type;
   return message.content ?? "Mensagem";
-}
-
-function MessageBubble({ message }: { message: InboxMessage }) {
-  const isSent = message.direction === "outbound";
-  return (
-    <div className={cn("flex", isSent ? "justify-end" : "justify-start")}>
-      <div
-        className={cn(
-          "max-w-[75%] px-3 py-2 text-xs leading-relaxed",
-          isSent ? "bubble-sent text-text-primary" : "bubble-received text-text-primary"
-        )}
-      >
-        {message.message_type !== "text" && (
-          <div className="mb-1 flex items-center gap-1.5 text-text-muted">
-            <MessageTypeIcon type={message.message_type} />
-            {message.media_url ? (
-              <a href={message.media_url} target="_blank" rel="noreferrer" className="font-medium text-brand-green-dark hover:underline">
-                {MEDIA_LABELS[message.message_type] ?? message.message_type}
-              </a>
-            ) : (
-              <span>{MEDIA_LABELS[message.message_type] ?? message.message_type}</span>
-            )}
-          </div>
-        )}
-        {message.content && <p className="whitespace-pre-wrap">{message.content}</p>}
-        {message.media_filename && <p className="mt-1 text-[11px] text-text-muted">{message.media_filename}</p>}
-        <div
-          className={cn(
-            "mt-1 flex items-center gap-1 text-[10px]",
-            isSent ? "justify-end text-brand-green-deep/60" : "text-text-muted"
-          )}
-        >
-          <span>{formatDateTime(message.created_at).split(", ")[1] ?? formatDateTime(message.created_at)}</span>
-          {isSent && <CheckCheck className="h-2.5 w-2.5 text-brand-green" />}
-        </div>
-      </div>
-    </div>
-  );
 }
 
 function ConversationItem({
