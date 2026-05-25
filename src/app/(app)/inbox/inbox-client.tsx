@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { CalendarCheck, ChevronDown, DollarSign, Filter, Inbox, Phone, Search, Tag, User } from "lucide-react";
+import { CalendarCheck, ChevronDown, Clock, DollarSign, Filter, Inbox, Phone, Search, Tag, User } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -467,6 +467,12 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
                 <Button size="sm" className="w-full text-xs" variant="outline" onClick={toggleClosed} disabled={isPending}>
                   {activeConv?.status === "closed" ? "Reabrir conversa" : "Fechar conversa"}
                 </Button>
+                {lead.followup_paused && (
+                  <div className="flex items-center gap-1.5 rounded-lg bg-yellow-50 px-2.5 py-2 text-[10px] font-semibold text-yellow-700">
+                    <Clock className="h-3 w-3 shrink-0" />
+                    Follow-up pausado
+                  </div>
+                )}
               </div>
             </>
           ) : (

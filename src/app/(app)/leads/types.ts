@@ -31,6 +31,7 @@ export type LeadListItem = {
   closed_value: number | null;
   observations: string | null;
   last_interaction_at: string | null;
+  followup_paused: boolean;
   created_at: string;
   updated_at: string;
   lead_tags: LeadTagRelation[];

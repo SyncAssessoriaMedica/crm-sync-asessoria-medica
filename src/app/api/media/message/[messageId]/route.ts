@@ -181,7 +181,37 @@ export async function GET(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  // 5. SSRF guard
+  // 5. Supabase Storage path — no SSRF guard needed, served via admin client
+  if (message.media_url.startsWith("supabase://media/")) {
+    const storagePath = message.media_url.slice("supabase://media/".length);
+
+    const { data: fileData, error: storageErr } = await admin.storage
+      .from("media")
+      .download(storagePath);
+
+    if (storageErr || !fileData) {
+      console.error("[proxy] storage download failed:", storageErr?.message ?? "no data", "msgId:", messageId);
+      return NextResponse.json({ error: "Media unavailable" }, { status: 502 });
+    }
+
+    const contentType  = message.media_mimetype ?? "audio/ogg; codecs=opus";
+    const rawFilename  = message.media_filename ?? `audio.${storagePath.split(".").pop() ?? "ogg"}`;
+    const disposition  = buildContentDisposition("inline", rawFilename);
+
+    return new NextResponse(fileData, {
+      status: 200,
+      headers: new Headers({
+        "Content-Type": contentType,
+        "Content-Length": String(fileData.size),
+        "Cache-Control": "private, max-age=3600",
+        "Content-Disposition": disposition,
+        "X-Content-Type-Options": "nosniff",
+        "Accept-Ranges": "none",
+      }),
+    });
+  }
+
+  // 5b. SSRF guard for external URLs
   const ssrf = await guardSsrf(message.media_url);
   if (!ssrf.ok) {
     return NextResponse.json({ error: "Invalid media URL" }, { status: 422 });
@@ -200,11 +230,15 @@ export async function GET(
   let upstream: Response;
   try {
     upstream = await fetch(message.media_url, { headers: fetchHeaders });
-  } catch {
+  } catch (err) {
+    const urlHost = (() => { try { return new URL(message.media_url).hostname; } catch { return "unknown"; } })();
+    console.error("[proxy] fetch error:", err instanceof Error ? err.message : String(err), "host:", urlHost, "msgId:", messageId);
     return NextResponse.json({ error: "Media unavailable" }, { status: 502 });
   }
 
   if (!upstream.ok) {
+    const urlHost = (() => { try { return new URL(message.media_url).hostname; } catch { return "unknown"; } })();
+    console.error("[proxy] upstream HTTP", upstream.status, "host:", urlHost, "msgId:", messageId, "type:", message.message_type);
     return NextResponse.json({ error: "Media unavailable" }, { status: 502 });
   }
 

@@ -17,7 +17,9 @@ import {
   MessageCircle,
   MessageSquare,
   MoreHorizontal,
+  PauseCircle,
   Phone,
+  PlayCircle,
   Plus,
   Tag,
   Trash2,
@@ -59,6 +61,7 @@ import {
   updateLeadAction,
   updateLeadStageAction,
 } from "../actions";
+import { toggleLeadFollowupPausedAction } from "../../follow-up/actions";
 import { LeadForm } from "../lead-form";
 
 const EVENT_ICONS: Record<string, { icon: React.ElementType; color: string }> = {
@@ -90,6 +93,7 @@ export function LeadDetailClient({ lead, options, leadTags: initialLeadTags, not
   const [taskDueAt, setTaskDueAt] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+  const [followupPaused, setFollowupPaused] = useState(lead.followup_paused);
 
   function exportLead() {
     const row = [
@@ -347,6 +351,33 @@ export function LeadDetailClient({ lead, options, leadTags: initialLeadTags, not
                   </div>
                 </>
               )}
+              <Separator />
+              <div>
+                <p className="label-eyebrow mb-1.5">Follow-up Automatico</p>
+                <button
+                  type="button"
+                  disabled={isPending}
+                  onClick={() => {
+                    startTransition(async () => {
+                      const result = await toggleLeadFollowupPausedAction(lead.id, !followupPaused);
+                      setMessage(result.message);
+                      if (result.ok) setFollowupPaused((p) => !p);
+                    });
+                  }}
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-60",
+                    followupPaused
+                      ? "border-brand-green/40 bg-brand-green-soft text-brand-green-deep hover:bg-brand-green/20"
+                      : "border-yellow-300 bg-yellow-50 text-yellow-700 hover:bg-yellow-100"
+                  )}
+                >
+                  {followupPaused ? (
+                    <><PlayCircle className="h-3.5 w-3.5" /> Retomar follow-up</>
+                  ) : (
+                    <><PauseCircle className="h-3.5 w-3.5" /> Pausar follow-up</>
+                  )}
+                </button>
+              </div>
               <Separator />
               <Meta label="Entrada" value={formatDate(lead.created_at)} />
               {lead.last_interaction_at && <Meta label="Ultima Interacao" value={formatDate(lead.last_interaction_at)} />}

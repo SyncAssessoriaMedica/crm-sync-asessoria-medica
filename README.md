@@ -341,6 +341,7 @@ Antes de clicar em **Deploy**, clique em **"Environment Variables"** e adicione:
 | `EVOLUTION_WEBHOOK_SECRET` | Production | Secret dedicado para autenticar webhooks recebidos da Evolution; obrigatorio em producao |
 | `WEBHOOK_SECRET` | Production | Secret para autenticar webhooks externos |
 | `NEXT_PUBLIC_APP_URL` | Production | URL final do app na Vercel (preencher após primeiro deploy) |
+| `CRON_SECRET` | Production | Secret para autenticar o cron de follow-up; gerado com `openssl rand -hex 32` |
 
 > `SUPABASE_SERVICE_ROLE_KEY` deve ser adicionada apenas em **Production** — nunca em Preview/Development.
 
@@ -390,6 +391,69 @@ Com o app no ar e Redirect URL configurado:
 
 ---
 
+## Follow-up Automático
+
+O módulo envia mensagens de acompanhamento via WhatsApp de forma automática, em sequência configurável, respeitando horários comerciais.
+
+### Como funciona
+
+1. **Ciclo:** Cada mensagem manual (outbound) enviada por um atendente inicia ou reinicia o ciclo de follow-up para aquela conversa.
+2. **Sequência:** Cada passo define quantos dias após o início do ciclo a mensagem deve ser enviada (ex.: passo 1 = dia 2, passo 2 = dia 5, passo 3 = dia 10).
+3. **Cron:** O endpoint `/api/cron/followups` roda a cada 15 minutos (agendado pela Vercel).
+4. **Fase 1 — Scheduler:** O cron detecta conversas elegíveis e cria itens na fila com `status = pending`.
+5. **Fase 2 — Sender:** O cron pega até 20 itens pendentes (1 por instância WhatsApp), verifica horário comercial e envia via Evolution API.
+
+### Condições de bloqueio (não envia se)
+
+- Lead tem `followup_paused = true` (pausado manualmente na ficha do lead)
+- Etapa do funil do lead está na lista de etapas bloqueadas
+- Lead possui alguma tag bloqueada
+- Instância WhatsApp está desconectada
+- Horário atual fora da janela configurada (→ adiado para próxima janela)
+
+### Configuração
+
+Acesse **Follow-up Auto** no menu lateral (roles: `super_admin`, `gestor_sync`, `admin_clinica`):
+
+1. **Status** — Ativar/desativar por organização e definir fuso horário
+2. **Sequência** — Criar passos com ordem, delay em dias e texto da mensagem (suporte a `{nome}`)
+3. **Horário de Envio** — Configurar janela de envio por dia da semana
+4. **Etapas Bloqueadas** — Marcar etapas que pausam o follow-up
+5. **Tags Bloqueadas** — Marcar tags que pausam o follow-up
+6. **Fila** — Ver e cancelar itens pendentes
+7. **Histórico** — Auditoria dos últimos 100 eventos
+
+### Variáveis necessárias na Vercel
+
+```
+CRON_SECRET=<openssl rand -hex 32>
+EVOLUTION_API_URL=https://sua-evolution-api.com
+EVOLUTION_API_KEY=sua-api-key
+```
+
+### Rodar migration
+
+No Supabase SQL Editor, execute:
+
+```
+supabase/migrations/010_automatic_followups.sql
+```
+
+### Testar manualmente
+
+```bash
+curl -H "Authorization: Bearer $CRON_SECRET" \
+  https://seu-app.vercel.app/api/cron/followups
+```
+
+Em desenvolvimento (com `CRON_SECRET` no `.env.local`):
+
+```bash
+curl "http://localhost:3000/api/cron/followups?secret=$CRON_SECRET"
+```
+
+---
+
 ## Roadmap
 
 ### Fase 1 — Fundação (atual)
@@ -405,11 +469,12 @@ Com o app no ar e Redirect URL configurado:
 - [x] Admin básico
 
 ### Fase 2 — WhatsApp
-- [ ] Conectar Evolution API real
-- [ ] Recebimento de webhooks
-- [ ] Inbox com mensagens reais
-- [ ] Criação automática de leads por WhatsApp
-- [ ] Suporte a mídia (imagem, áudio, vídeo, documento)
+- [x] Conectar Evolution API real
+- [x] Recebimento de webhooks
+- [x] Inbox com mensagens reais
+- [x] Criação automática de leads por WhatsApp
+- [x] Suporte a mídia (imagem, áudio, vídeo, documento)
+- [x] **Follow-up Automático** — sequência de mensagens com delay, horários comerciais, bloqueios por etapa/tag
 
 ### Fase 3 — Inteligência Comercial
 - [ ] Relatórios de reunião

@@ -1,4 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
+
+export const maxDuration = 30;
 import { z } from "zod";
 import { createAdminClient } from "@/lib/supabase/server";
 import { checkRateLimit, getRateLimitKey } from "@/lib/rate-limit";
@@ -160,7 +162,7 @@ function getMessageContent(data: NonNullable<EvolutionPayload["data"]>) {
     return {
       type: "audio",
       mediaUrl: nestedText(audio, ["url", "mediaUrl"]),
-      mediaMimetype: nestedText(audio, ["mimetype"]),
+      mediaMimetype: nestedText(audio, ["mimetype"]) ?? "audio/ogg; codecs=opus",
       mediaDuration: Number(audio.seconds ?? audio.duration) || null,
     };
   }
@@ -213,6 +215,70 @@ function getMessageContent(data: NonNullable<EvolutionPayload["data"]>) {
     type: ALLOWED_MESSAGE_TYPES.has(normalizedType) ? normalizedType : "text",
     content: nestedText(message, ["text", "caption"]) ?? `[${messageType}]`,
   };
+}
+
+// ─── Media storage ────────────────────────────────────────────────────────────
+
+// Downloads audio via Evolution's decryption endpoint and uploads to Supabase Storage.
+// WhatsApp audio is AES-CBC encrypted on their CDN; a raw fetch returns unusable bytes.
+// Evolution's getBase64FromMediaMessage uses the active Baileys session to decrypt.
+// Returns a "supabase://media/<path>" URI on success, null on any failure.
+async function fetchAndStoreAudio(
+  admin: SupabaseAdmin,
+  instanceName: string,
+  data: NonNullable<EvolutionPayload["data"]>,
+  organizationId: string,
+  evolutionMsgId: string
+): Promise<string | null> {
+  const baseUrl = process.env.EVOLUTION_API_URL;
+  const apiKey  = process.env.EVOLUTION_API_KEY;
+  if (!baseUrl || !apiKey) return null;
+
+  try {
+    const res = await fetch(
+      `${baseUrl}/chat/getBase64FromMediaMessage/${encodeURIComponent(instanceName)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: apiKey },
+        body: JSON.stringify({
+          message: { key: data.key ?? {}, message: data.message ?? {}, messageType: data.messageType },
+          convertToMp4: false,
+        }),
+        signal: AbortSignal.timeout(15_000),
+      }
+    );
+
+    if (!res.ok) {
+      console.error("[media] getBase64 HTTP", res.status, "msgId:", evolutionMsgId);
+      return null;
+    }
+
+    const json = await res.json() as { base64?: string; mimetype?: string };
+    if (!json.base64) {
+      console.error("[media] getBase64 empty response msgId:", evolutionMsgId);
+      return null;
+    }
+
+    const mimeRaw   = json.mimetype ?? "audio/ogg; codecs=opus";
+    const ext       = mimeRaw.split("/")[1]?.split(";")[0]?.trim() ?? "ogg";
+    const storagePath = `${organizationId}/${evolutionMsgId}.${ext}`;
+
+    const buffer = Buffer.from(json.base64, "base64");
+    const { error: uploadErr } = await admin.storage
+      .from("media")
+      .upload(storagePath, buffer, { contentType: mimeRaw, upsert: false });
+
+    if (uploadErr) {
+      if (uploadErr.message?.includes("already exists")) return `supabase://media/${storagePath}`;
+      console.error("[media] Storage upload error:", uploadErr.message, "msgId:", evolutionMsgId);
+      return null;
+    }
+
+    return `supabase://media/${storagePath}`;
+  } catch (err) {
+    console.error("[media] fetchAndStoreAudio error:", err instanceof Error ? err.message : String(err), "msgId:", evolutionMsgId);
+    return null;
+  }
 }
 
 // ─── Event handlers ───────────────────────────────────────────────────────────
@@ -406,6 +472,24 @@ async function handleMessageEvent(admin: SupabaseAdmin, payload: NormalizedPaylo
           evolution_msg_id: evolutionMessageId,
           // Never log media_url or actual message content here
         },
+      });
+    }
+
+    // Audio is AES-CBC encrypted on WhatsApp's CDN — fetch after the response so
+    // Evolution doesn't retry the webhook while we wait for decryption + upload.
+    if (messageContent.type === "audio") {
+      const msgId = insertedMessage.id;
+      after(async () => {
+        const stored = await fetchAndStoreAudio(
+          admin,
+          payload.instance,
+          data,
+          instance.organization_id,
+          evolutionMessageId
+        );
+        if (stored) {
+          await admin.from("messages").update({ media_url: stored }).eq("id", msgId);
+        }
       });
     }
   }

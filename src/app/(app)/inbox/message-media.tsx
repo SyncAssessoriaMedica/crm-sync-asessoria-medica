@@ -86,15 +86,27 @@ function ImageContent({ message }: { message: InboxMessage }) {
 
 function AudioContent({ message }: { message: InboxMessage }) {
   const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const url = proxyUrl(message.id);
 
   if (failed) {
-    return <p className="px-3 py-2 text-xs italic text-text-muted">Áudio indisponível</p>;
+    return (
+      <div className="px-3 py-2">
+        <p className="text-xs italic text-text-muted">Áudio indisponível</p>
+        <button
+          onClick={() => { setFailed(false); setAttempt((n) => n + 1); }}
+          className="mt-1 text-[10px] font-medium text-brand-green-dark underline underline-offset-2 hover:no-underline"
+        >
+          Tentar novamente
+        </button>
+      </div>
+    );
   }
 
   return (
     <div className="px-3 py-2">
       <audio
+        key={attempt}
         src={url}
         controls
         preload="none"

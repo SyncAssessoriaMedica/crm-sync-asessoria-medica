@@ -46,6 +46,7 @@ export default async function InboxPage({
           procedure,
           status,
           potential_value,
+          followup_paused,
           source:lead_sources(name),
           stage:pipeline_stages(name)
         ),

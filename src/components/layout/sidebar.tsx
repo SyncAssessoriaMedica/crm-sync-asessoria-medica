@@ -7,6 +7,7 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import {
   Building2,
   ChevronDown,
+  Clock,
   LayoutDashboard,
   Loader2,
   MessageSquare,
@@ -36,6 +37,12 @@ const navItems = [
     href: "/inbox",
     icon: MessageSquare,
     roles: ["super_admin", "gestor_sync", "admin_clinica", "atendente"],
+  },
+  {
+    label: "Follow-up Auto",
+    href: "/follow-up",
+    icon: Clock,
+    roles: ["super_admin", "gestor_sync", "admin_clinica"],
   },
   {
     label: "Administrador",

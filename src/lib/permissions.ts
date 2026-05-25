@@ -1,12 +1,13 @@
 import type { UserRole } from "./types";
 
 const ROUTE_RULES: [string, UserRole[]][] = [
-  ["/dashboard", ["super_admin", "gestor_sync", "admin_clinica", "atendente", "leitura"]],
-  ["/profile",   ["super_admin", "gestor_sync", "admin_clinica", "atendente", "leitura"]],
-  ["/leads",     ["super_admin", "gestor_sync", "admin_clinica", "atendente"]],
-  ["/inbox",     ["super_admin", "gestor_sync", "admin_clinica", "atendente"]],
-  ["/admin",     ["super_admin", "gestor_sync", "admin_clinica"]],
-  ["/settings",  ["super_admin", "gestor_sync", "admin_clinica"]],
+  ["/dashboard",   ["super_admin", "gestor_sync", "admin_clinica", "atendente", "leitura"]],
+  ["/profile",     ["super_admin", "gestor_sync", "admin_clinica", "atendente", "leitura"]],
+  ["/leads",       ["super_admin", "gestor_sync", "admin_clinica", "atendente"]],
+  ["/inbox",       ["super_admin", "gestor_sync", "admin_clinica", "atendente"]],
+  ["/follow-up",   ["super_admin", "gestor_sync", "admin_clinica"]],
+  ["/admin",       ["super_admin", "gestor_sync", "admin_clinica"]],
+  ["/settings",    ["super_admin", "gestor_sync", "admin_clinica"]],
 ];
 
 // Paths that the middleware already marks as public or that live outside the
