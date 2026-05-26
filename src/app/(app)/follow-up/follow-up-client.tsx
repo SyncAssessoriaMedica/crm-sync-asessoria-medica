@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { AlertCircle, CheckCircle2, Clock, Edit2, Plus, Trash2, X } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { AlertCircle, CheckCircle2, Clock, Edit2, Plus, Trash2, WifiOff, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { cn, formatDateTime } from "@/lib/utils";
@@ -78,6 +79,7 @@ type Props = {
   tags: Tag[];
   queue: QueueItem[];
   events: FollowupEvent[];
+  instances: { id: string; instance_name: string; status: string }[];
 };
 
 const DAYS = ["Domingo", "Segunda", "Terca", "Quarta", "Quinta", "Sexta", "Sabado"];
@@ -96,13 +98,15 @@ const TIMEZONES = [
 ];
 
 const EVENT_LABELS: Record<string, string> = {
-  queued: "Agendado",
-  sent: "Enviado",
-  skipped: "Ignorado",
-  cancelled: "Cancelado",
-  deferred: "Adiado",
-  failed: "Falhou",
-  cycle_reset: "Ciclo reiniciado",
+  queued:                   "Agendado",
+  sent:                     "Enviado",
+  skipped:                  "Ignorado",
+  cancelled:                "Cancelado",
+  deferred:                 "Adiado",
+  failed:                   "Falhou",
+  cycle_reset:              "Ciclo reiniciado",
+  cancelled_due_to_inbound: "Cancelado por resposta",
+  skipped_due_to_inbound:   "Ignorado por resposta",
 };
 
 // ─── Main Component ───────────────────────────────────────────────────────────
@@ -117,7 +121,9 @@ export function FollowUpClient({
   tags,
   queue,
   events,
+  instances,
 }: Props) {
+  const router = useRouter();
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
   const [isPending, startTransition] = useTransition();
 
@@ -139,8 +145,20 @@ export function FollowUpClient({
   // ─── Settings actions ──────────────────────────────────────────────────────
 
   function toggleEnabled() {
+    const enabling = !settings?.enabled;
+    if (enabling) {
+      const activeHours = hours.filter((h) => h.enabled);
+      if (steps.length === 0) {
+        notify({ ok: false, message: "Adicione ao menos uma mensagem antes de ativar o follow-up." });
+        return;
+      }
+      if (activeHours.length === 0) {
+        notify({ ok: false, message: "Configure ao menos um horario de funcionamento antes de ativar." });
+        return;
+      }
+    }
     const fd = new FormData();
-    fd.set("enabled", settings?.enabled ? "false" : "true");
+    fd.set("enabled", enabling ? "true" : "false");
     fd.set("timezone", settings?.timezone ?? "America/Sao_Paulo");
     startTransition(async () => {
       const result = await saveFollowupSettingsAction(fd);
@@ -173,6 +191,7 @@ export function FollowUpClient({
       if (result.ok) {
         setEditingStep(null);
         setAddingStep(false);
+        router.refresh(); // pull fresh step list from server
       }
     });
   }
@@ -268,6 +287,20 @@ export function FollowUpClient({
         >
           {message.ok ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <AlertCircle className="h-3.5 w-3.5 shrink-0" />}
           {message.text}
+        </div>
+      )}
+
+      {/* Warnings */}
+      {instances.every((i) => i.status !== "connected") && (
+        <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-700">
+          <WifiOff className="h-3.5 w-3.5 shrink-0" />
+          Nenhuma instancia WhatsApp conectada. O follow-up nao conseguira enviar mensagens ate que uma instancia esteja ativa.
+        </div>
+      )}
+      {steps.length === 0 && (
+        <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-700">
+          <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+          Nenhuma mensagem de follow-up configurada. Adicione ao menos uma na secao &quot;Sequencia de Mensagens&quot; abaixo.
         </div>
       )}
 
@@ -717,13 +750,15 @@ function StatusBadge({ status }: { status: string }) {
 
 function EventDot({ type }: { type: string }) {
   const colors: Record<string, string> = {
-    sent:         "bg-brand-green",
-    queued:       "bg-blue-400",
-    deferred:     "bg-yellow-400",
-    skipped:      "bg-gray-300",
-    failed:       "bg-danger-red",
-    cancelled:    "bg-gray-300",
-    cycle_reset:  "bg-purple-400",
+    sent:                     "bg-brand-green",
+    queued:                   "bg-blue-400",
+    deferred:                 "bg-yellow-400",
+    skipped:                  "bg-gray-300",
+    failed:                   "bg-danger-red",
+    cancelled:                "bg-gray-300",
+    cycle_reset:              "bg-purple-400",
+    cancelled_due_to_inbound: "bg-gray-400",
+    skipped_due_to_inbound:   "bg-gray-400",
   };
   return (
     <div className={cn("mt-1.5 h-2 w-2 shrink-0 rounded-full", colors[type] ?? "bg-gray-300")} />

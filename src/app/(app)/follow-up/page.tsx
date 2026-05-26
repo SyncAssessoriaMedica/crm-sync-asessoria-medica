@@ -21,6 +21,7 @@ export default async function FollowUpPage() {
     tagsResult,
     queueResult,
     eventsResult,
+    instancesResult,
   ] = await Promise.all([
     admin.from("followup_settings").select("*").eq("organization_id", orgId).single(),
     admin.from("followup_steps").select("*").eq("organization_id", orgId).order("step_order"),
@@ -56,6 +57,10 @@ export default async function FollowUpPage() {
       .eq("organization_id", orgId)
       .order("created_at", { ascending: false })
       .limit(100),
+    admin
+      .from("whatsapp_instances")
+      .select("id, instance_name, status")
+      .eq("organization_id", orgId),
   ]);
 
   return (
@@ -69,6 +74,7 @@ export default async function FollowUpPage() {
       tags={tagsResult.data ?? []}
       queue={(queueResult.data ?? []) as unknown as Parameters<typeof FollowUpClient>[0]["queue"]}
       events={(eventsResult.data ?? []) as unknown as Parameters<typeof FollowUpClient>[0]["events"]}
+      instances={(instancesResult.data ?? []) as { id: string; instance_name: string; status: string }[]}
     />
   );
 }

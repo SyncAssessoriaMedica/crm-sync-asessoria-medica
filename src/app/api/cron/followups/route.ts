@@ -179,13 +179,15 @@ export async function GET(request: NextRequest) {
         const instance = conv.instance as unknown as { id: string; instance_name: string; status: string } | null;
         if (!instance || instance.status !== "connected") continue;
 
-        // Find cycle_started_at: most recent manual outbound message
+        // Find cycle_started_at: most recent manual, non-imported outbound message.
+        // Imported historical messages are excluded so they don't trigger follow-up.
         const { data: lastManual } = await admin
           .from("messages")
           .select("created_at")
           .eq("conversation_id", conv.id)
           .eq("direction", "outbound")
           .eq("is_automatic", false)
+          .eq("is_imported", false)
           .order("created_at", { ascending: false })
           .limit(1)
           .single();
@@ -193,6 +195,18 @@ export async function GET(request: NextRequest) {
         if (!lastManual) continue;
 
         const cycleStartedAt = lastManual.created_at;
+
+        // Guard: if the lead replied after the last manual message, do not queue.
+        const { data: inboundAfterManual } = await admin
+          .from("messages")
+          .select("id")
+          .eq("conversation_id", conv.id)
+          .eq("direction", "inbound")
+          .gt("created_at", cycleStartedAt)
+          .limit(1)
+          .maybeSingle();
+
+        if (inboundAfterManual) continue; // lead replied — cycle is over
 
         // Count how many steps have been sent in this cycle
         const { data: sentItems } = await admin
@@ -374,6 +388,33 @@ export async function GET(request: NextRequest) {
 
       if (lockErr) {
         // Another process grabbed it
+        continue;
+      }
+
+      // Final guard: lead may have replied between queue creation and now.
+      const { data: lateInbound } = await admin
+        .from("messages")
+        .select("id")
+        .eq("conversation_id", item.conversation_id)
+        .eq("direction", "inbound")
+        .gt("created_at", item.cycle_started_at)
+        .limit(1)
+        .maybeSingle();
+
+      if (lateInbound) {
+        await admin
+          .from("followup_queue")
+          .update({ status: "cancelled", updated_at: now.toISOString() })
+          .eq("id", item.id);
+        await admin.from("followup_events").insert({
+          organization_id: orgId,
+          queue_item_id: item.id,
+          conversation_id: item.conversation_id,
+          lead_id: item.lead_id,
+          event_type: "cancelled_due_to_inbound",
+          metadata: { reason: "lead_replied_after_queue_creation" },
+        });
+        stats.cancelled++;
         continue;
       }
 

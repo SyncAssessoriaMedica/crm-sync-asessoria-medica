@@ -1,11 +1,12 @@
 import { after, NextRequest, NextResponse } from "next/server";
-
-export const maxDuration = 30;
 import { z } from "zod";
 import { createAdminClient } from "@/lib/supabase/server";
 import { checkRateLimit, getRateLimitKey } from "@/lib/rate-limit";
 import { sanitizePayload } from "@/lib/sanitize";
 import { createOrUpdateLeadByPhone } from "@/lib/lead-upsert";
+import { fetchAndStoreWhatsAppMedia } from "@/lib/media-storage";
+
+export const maxDuration = 30;
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
@@ -217,67 +218,52 @@ function getMessageContent(data: NonNullable<EvolutionPayload["data"]>) {
   };
 }
 
-// ─── Media storage ────────────────────────────────────────────────────────────
+// ─── Follow-up: cancel on inbound ────────────────────────────────────────────
 
-// Downloads audio via Evolution's decryption endpoint and uploads to Supabase Storage.
-// WhatsApp audio is AES-CBC encrypted on their CDN; a raw fetch returns unusable bytes.
-// Evolution's getBase64FromMediaMessage uses the active Baileys session to decrypt.
-// Returns a "supabase://media/<path>" URI on success, null on any failure.
-async function fetchAndStoreAudio(
+// When a lead replies, any pending follow-up items for that conversation become
+// irrelevant. Cancel them and log an audit event. Best-effort: errors are logged
+// but must never block the webhook response.
+async function cancelPendingFollowups(
   admin: SupabaseAdmin,
-  instanceName: string,
-  data: NonNullable<EvolutionPayload["data"]>,
-  organizationId: string,
-  evolutionMsgId: string
-): Promise<string | null> {
-  const baseUrl = process.env.EVOLUTION_API_URL;
-  const apiKey  = process.env.EVOLUTION_API_KEY;
-  if (!baseUrl || !apiKey) return null;
-
+  conversationId: string,
+  leadId: string | null,
+  organizationId: string
+): Promise<void> {
   try {
-    const res = await fetch(
-      `${baseUrl}/chat/getBase64FromMediaMessage/${encodeURIComponent(instanceName)}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json", apikey: apiKey },
-        body: JSON.stringify({
-          message: { key: data.key ?? {}, message: data.message ?? {}, messageType: data.messageType },
-          convertToMp4: false,
-        }),
-        signal: AbortSignal.timeout(15_000),
-      }
-    );
+    const { data: pendingItems } = await admin
+      .from("followup_queue")
+      .select("id")
+      .eq("conversation_id", conversationId)
+      .in("status", ["pending", "sending"]);
 
-    if (!res.ok) {
-      console.error("[media] getBase64 HTTP", res.status, "msgId:", evolutionMsgId);
-      return null;
+    if (!pendingItems?.length) return;
+
+    const itemIds = pendingItems.map((r) => r.id as string);
+    const now = new Date().toISOString();
+
+    await admin
+      .from("followup_queue")
+      .update({ status: "cancelled", updated_at: now })
+      .in("id", itemIds);
+
+    if (leadId) {
+      await admin.from("followup_events").insert(
+        itemIds.map((queueItemId) => ({
+          organization_id: organizationId,
+          queue_item_id: queueItemId,
+          conversation_id: conversationId,
+          lead_id: leadId,
+          event_type: "cancelled_due_to_inbound",
+          metadata: { reason: "lead_replied" },
+        }))
+      );
     }
-
-    const json = await res.json() as { base64?: string; mimetype?: string };
-    if (!json.base64) {
-      console.error("[media] getBase64 empty response msgId:", evolutionMsgId);
-      return null;
-    }
-
-    const mimeRaw   = json.mimetype ?? "audio/ogg; codecs=opus";
-    const ext       = mimeRaw.split("/")[1]?.split(";")[0]?.trim() ?? "ogg";
-    const storagePath = `${organizationId}/${evolutionMsgId}.${ext}`;
-
-    const buffer = Buffer.from(json.base64, "base64");
-    const { error: uploadErr } = await admin.storage
-      .from("media")
-      .upload(storagePath, buffer, { contentType: mimeRaw, upsert: false });
-
-    if (uploadErr) {
-      if (uploadErr.message?.includes("already exists")) return `supabase://media/${storagePath}`;
-      console.error("[media] Storage upload error:", uploadErr.message, "msgId:", evolutionMsgId);
-      return null;
-    }
-
-    return `supabase://media/${storagePath}`;
   } catch (err) {
-    console.error("[media] fetchAndStoreAudio error:", err instanceof Error ? err.message : String(err), "msgId:", evolutionMsgId);
-    return null;
+    console.error(
+      "[followup] cancelPendingFollowups error:",
+      err instanceof Error ? err.message : String(err),
+      "convId:", conversationId
+    );
   }
 }
 
@@ -475,21 +461,40 @@ async function handleMessageEvent(admin: SupabaseAdmin, payload: NormalizedPaylo
       });
     }
 
-    // Audio is AES-CBC encrypted on WhatsApp's CDN — fetch after the response so
-    // Evolution doesn't retry the webhook while we wait for decryption + upload.
-    if (messageContent.type === "audio") {
-      const msgId = insertedMessage.id;
+    // All WhatsApp media is AES-CBC encrypted. Fetch + decrypt via Evolution after
+    // the response so Evolution doesn't retry the webhook while we wait.
+    const STORABLE_TYPES = new Set(["audio", "image", "video", "document", "sticker"]);
+    if (STORABLE_TYPES.has(messageContent.type)) {
+      const msgId    = insertedMessage.id;
+      const mediaType = messageContent.type;
       after(async () => {
-        const stored = await fetchAndStoreAudio(
+        const stored = await fetchAndStoreWhatsAppMedia(
           admin,
           payload.instance,
-          data,
+          { key: data.key, message: data.message, messageType: data.messageType },
           instance.organization_id,
-          evolutionMessageId
+          evolutionMessageId,
+          mediaType
         );
         if (stored) {
-          await admin.from("messages").update({ media_url: stored }).eq("id", msgId);
+          await admin
+            .from("messages")
+            .update({ media_url: stored.url, media_mimetype: stored.mimetype })
+            .eq("id", msgId);
         }
+      });
+    }
+
+    // Inbound reply: cancel any pending follow-ups for this conversation.
+    // Runs after response to avoid delaying Evolution's ACK.
+    if (inbound) {
+      after(async () => {
+        await cancelPendingFollowups(
+          admin,
+          conversation.id,
+          lead.id ?? null,
+          instance.organization_id
+        );
       });
     }
   }

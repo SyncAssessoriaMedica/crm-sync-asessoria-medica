@@ -1,5 +1,6 @@
 "use server";
 
+import { after } from "next/server";
 import { revalidatePath } from "next/cache";
 import QRCode from "qrcode";
 import { z } from "zod";
@@ -7,6 +8,7 @@ import { createAdminClient } from "@/lib/supabase/server";
 import { canManageActiveOrganization, getOrganizationContext } from "@/lib/organization-context";
 import { createOrUpdateLeadByPhone } from "@/lib/lead-upsert";
 import { slugify } from "@/lib/utils";
+import { fetchAndStoreWhatsAppMedia } from "@/lib/media-storage";
 
 type ActionResult = { ok: true; message: string; data?: unknown } | { ok: false; message: string };
 
@@ -1240,7 +1242,8 @@ async function fetchAndInsertMessages(
   apiKey: string,
   instanceName: string,
   remoteJid: string,
-  conversationId: string
+  conversationId: string,
+  organizationId: string
 ): Promise<{ imported: number; failed: boolean }> {
   const endpoint = `${evolutionApiUrl}/chat/findMessages/${encodeURIComponent(instanceName)}`;
 
@@ -1292,11 +1295,14 @@ async function fetchAndInsertMessages(
           direction: inbound ? "inbound" : "outbound",
           message_type: content.type,
           content: content.content ?? null,
-          media_url: content.mediaUrl ?? null,
+          // Historical CDN URLs are expired/encrypted — leave null; media storage
+          // runs via after() for recently importable messages (< ~60 days old).
+          media_url: null,
           media_mimetype: content.mediaMimetype ?? null,
           media_filename: content.mediaFilename ?? null,
           media_duration: content.mediaDuration ?? null,
           created_at: extractMsgTimestamp(msg),
+          is_imported: true,  // prevents follow-up cycle from using these as trigger
         },
         { onConflict: "evolution_msg_id", ignoreDuplicates: true }
       )
@@ -1308,7 +1314,32 @@ async function fetchAndInsertMessages(
       continue;
     }
 
-    if (insertedMsg?.id) imported++;
+    if (insertedMsg?.id) {
+      imported++;
+      // Try to decrypt + store media in Supabase Storage after the action responds.
+      // WhatsApp keeps messages ~60 days; older ones will fail gracefully.
+      const STORABLE_TYPES = new Set(["audio", "image", "video", "document", "sticker"]);
+      if (STORABLE_TYPES.has(content.type)) {
+        const msgId     = insertedMsg.id;
+        const mediaType = content.type;
+        after(async () => {
+          const stored = await fetchAndStoreWhatsAppMedia(
+            admin,
+            instanceName,
+            { key: msg.key, message: msg.message, messageType: msg.messageType as string | undefined },
+            organizationId,
+            evolutionMsgId,
+            mediaType
+          );
+          if (stored) {
+            await admin
+              .from("messages")
+              .update({ media_url: stored.url, media_mimetype: stored.mimetype })
+              .eq("id", msgId);
+          }
+        });
+      }
+    }
   }
 
   return { imported, failed };
@@ -1429,7 +1460,8 @@ export async function importWhatsappConversationsAction(
           evolutionApiKey!,
           instanceName,
           remoteJid,
-          conversationId
+          conversationId,
+          orgId
         );
         messagesImported += msgResult.imported;
         if (msgResult.failed) messagesFailed++;
