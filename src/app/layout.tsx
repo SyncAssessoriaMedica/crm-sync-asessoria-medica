@@ -14,7 +14,7 @@ export const metadata: Metadata = {
   description:
     "CRM proprietário da Sync Marketing para assessorias de marketing médico.",
   icons: {
-    icon: [{ url: "/sync-favicon.png", type: "image/png", sizes: "96x96" }],
+    icon: [{ url: "/sync-favicon.png", type: "image/png", sizes: "192x192" }],
     shortcut: "/sync-favicon.png",
     apple: "/sync-favicon.png",
   },
