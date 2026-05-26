@@ -139,6 +139,7 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
   const [filter, setFilter] = useState<"all" | "unread" | "open" | "closed">("all");
   const [locallyReadIds, setLocallyReadIds] = useState<Set<string>>(new Set());
   const [cancelledBhIds, setCancelledBhIds] = useState<Set<string>>(new Set());
+  const [localLeadSources, setLocalLeadSources] = useState<Record<string, string | null>>({});
   const [message, setMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
@@ -174,6 +175,9 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
     null;
   const messages = activeConv ? messagesByConversation[activeConv.id] ?? [] : [];
   const lead = activeConv?.lead ?? null;
+  const leadSourceValue = lead
+    ? (localLeadSources[lead.id] !== undefined ? localLeadSources[lead.id] : lead.source_id) ?? "none"
+    : "none";
   const activeInstance = activeConv?.instance ?? instances[0] ?? null;
   const conversationIdsKey = useMemo(
     () => conversations.map((conversation) => conversation.id).sort().join(","),
@@ -277,12 +281,21 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
     });
   }
 
-  function changeLeadSource(sourceId: string) {
-    if (!lead) return;
+  function changeLeadSource(leadId: string, sourceId: string) {
+    const nextSourceId = sourceId === "none" ? null : sourceId;
+    setLocalLeadSources((prev) => ({ ...prev, [leadId]: nextSourceId }));
     startTransition(async () => {
-      const result = await updateLeadSourceAction(lead.id, sourceId === "none" ? "" : sourceId);
+      const result = await updateLeadSourceAction(leadId, nextSourceId ?? "");
       setMessage(result.message);
-      if (result.ok) router.refresh();
+      if (result.ok) {
+        router.refresh();
+      } else {
+        setLocalLeadSources((prev) => {
+          const next = { ...prev };
+          delete next[leadId];
+          return next;
+        });
+      }
     });
   }
 
@@ -460,8 +473,9 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
                     <span className="font-semibold uppercase tracking-wide">Origem</span>
                   </div>
                   <Select
-                    defaultValue={lead.source_id ?? "none"}
-                    onValueChange={changeLeadSource}
+                    key={lead.id}
+                    value={leadSourceValue}
+                    onValueChange={(sourceId) => changeLeadSource(lead.id, sourceId)}
                     disabled={isPending}
                   >
                     <SelectTrigger className="h-8 text-xs">
