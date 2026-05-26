@@ -50,7 +50,7 @@ export default async function InboxPage({
           source:lead_sources(name),
           stage:pipeline_stages(name)
         ),
-        instance:whatsapp_instances(id, instance_name, phone_number, status)
+        instance:whatsapp_instances(id, instance_name, phone_number, status, deleted_at)
       `
       )
       .eq("organization_id", organizationId)
@@ -61,6 +61,7 @@ export default async function InboxPage({
       .from("whatsapp_instances")
       .select("id, instance_name, phone_number, status")
       .eq("organization_id", organizationId)
+      .is("deleted_at", null)
       .order("created_at", { ascending: false }),
   ]);
 
@@ -74,7 +75,10 @@ export default async function InboxPage({
     );
   }
 
-  const rows = (conversationsResult.data ?? []) as unknown as ConversationRow[];
+  const rows = ((conversationsResult.data ?? []) as unknown as ConversationRow[]).filter((conversation) => {
+    const instance = firstRelation(conversation.instance);
+    return !instance?.deleted_at;
+  });
   const conversationIds = rows.map((conversation) => conversation.id);
   const { data: messagesData } =
     conversationIds.length > 0

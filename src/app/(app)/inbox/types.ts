@@ -17,6 +17,7 @@ export type InboxInstance = {
   instance_name: string;
   phone_number: string | null;
   status: "connected" | "disconnected" | "connecting";
+  deleted_at?: string | null;
 };
 
 export type InboxMessage = {

@@ -23,6 +23,7 @@ import {
   Users,
   Webhook,
   XCircle,
+  Zap,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -44,6 +45,7 @@ import {
   createOrganizationAction,
   createPipelineStageAction,
   createSourceAction,
+  createSourceRuleAction,
   createTagAction,
   createUserAction,
   createWhatsappInstanceAction,
@@ -52,7 +54,9 @@ import {
   deleteOrganizationAction,
   deletePipelineStageAction,
   deleteSourceAction,
+  deleteSourceRuleAction,
   deleteTagAction,
+  deleteWhatsappInstanceAction,
   disconnectWhatsappInstanceAction,
   fetchWhatsappChatsAction,
   generatePasswordAction,
@@ -60,11 +64,13 @@ import {
   setWebhookForInstanceAction,
   movePipelineStageAction,
   syncWhatsappInstanceStatusAction,
+  toggleSourceRuleActiveAction,
   toggleUserBanAction,
   updateCustomFieldAction,
   updateInboundWebhookAction,
   updatePipelineStageAction,
   updateSourceAction,
+  updateSourceRuleAction,
   updateTagAction,
   updateUserAction,
 } from "./actions";
@@ -154,6 +160,20 @@ type SourceRow = {
   created_at: string;
 };
 
+type SourceRuleRow = {
+  id: string;
+  source_id: string;
+  name: string;
+  match_type: string;
+  pattern: string;
+  case_sensitive: boolean;
+  normalize_whitespace: boolean;
+  overwrite_existing: boolean;
+  active: boolean;
+  priority: number;
+  created_at: string;
+};
+
 type ChatPreview = {
   remoteJid: string;
   phone: string;
@@ -179,6 +199,7 @@ export type AdminData = {
   pipelineStages: PipelineStageRow[];
   tags: TagRow[];
   sources: SourceRow[];
+  sourceRules: SourceRuleRow[];
 };
 
 const ROLE_LABELS: Record<string, string> = {
@@ -212,6 +233,7 @@ export function AdminClient({ data }: { data: AdminData }) {
       { id: "stages", label: "Etapas do funil", icon: Layers, count: data.pipelineStages.length },
       { id: "tags", label: "Tags", icon: Tag, count: data.tags.length },
       { id: "sources", label: "Origens", icon: Globe, count: data.sources.length },
+      { id: "source_rules", label: "Origem automatica", icon: Zap, count: data.sourceRules.length },
     ],
     [data]
   );
@@ -227,6 +249,7 @@ export function AdminClient({ data }: { data: AdminData }) {
     Object.fromEntries(data.whatsappInstances.map((instance) => [instance.instance_name, instance.status]))
   );
   const [isPending, startTransition] = useTransition();
+  const [deletedInstanceIds, setDeletedInstanceIds] = useState<Set<string>>(new Set());
   const [chatsByInstance, setChatsByInstance] = useState<
     Record<string, { chats: ChatPreview[]; instanceId: string } | "loading">
   >({});
@@ -392,7 +415,7 @@ export function AdminClient({ data }: { data: AdminData }) {
                 <Button className="self-end" disabled={isPending}>Cadastrar</Button>
               </form>
               <div className="grid gap-3">
-                {data.whatsappInstances.map((instance) => {
+                {data.whatsappInstances.filter((i) => !deletedInstanceIds.has(i.id)).map((instance) => {
                   const organization = Array.isArray(instance.organizations) ? instance.organizations[0] ?? null : instance.organizations;
                   const status = instanceStatuses[instance.instance_name] ?? instance.status;
                   const isConnected = status === "connected";
@@ -500,6 +523,37 @@ export function AdminClient({ data }: { data: AdminData }) {
                           {isPending ? "Desconectando..." : "Desconectar"}
                         </Button>
                       )}
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="gap-1.5 text-danger-red hover:bg-danger-red/5 hover:text-danger-red"
+                        title="Remover instancia do CRM"
+                        disabled={isPending}
+                        onClick={() => {
+                          if (!window.confirm(
+                            `Remover a instancia "${instance.instance_name}"?\n\n` +
+                            "• A instancia sera removida do CRM.\n" +
+                            "• Historico de conversas e mensagens sera preservado.\n" +
+                            "• Se configurada na Evolution, o sistema tentara remover de la tambem.\n\n" +
+                            "Esta acao nao pode ser desfeita."
+                          )) return;
+                          startTransition(async () => {
+                            const result = await deleteWhatsappInstanceAction(instance.id);
+                            setMessage(result.message);
+                            if (result.ok) {
+                              setDeletedInstanceIds((prev) => new Set([...prev, instance.id]));
+                              const name = instance.instance_name;
+                              setChatsByInstance((prev) => { const next = { ...prev }; delete next[name]; return next; });
+                              setSelectedJids((prev) => { const next = { ...prev }; delete next[name]; return next; });
+                              if (qrPayload?.instanceName === name) setQrPayload(null);
+                            }
+                          });
+                        }}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        Remover
+                      </Button>
                       <Button
                         type="button"
                         variant="ghost"
@@ -880,8 +934,291 @@ export function AdminClient({ data }: { data: AdminData }) {
               )}
             </Section>
           )}
+
+          {activeSection === "source_rules" && (
+            <Section
+              title="Origem automatica"
+              description="Regras que detectam a origem do lead pela primeira mensagem recebida no WhatsApp. A regra de menor prioridade (numero menor) e aplicada primeiro."
+            >
+              {data.sources.length === 0 ? (
+                <p className="rounded-xl border border-border bg-white p-6 text-center text-xs text-text-muted">
+                  Crie ao menos uma Origem antes de configurar regras.
+                </p>
+              ) : (
+                <form
+                  action={runAction(createSourceRuleAction)}
+                  className="grid gap-3 rounded-xl border border-border bg-background-subtle/50 p-4"
+                >
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <Field label="Nome da regra" name="name" placeholder="Google Ads — palavra-chave" required />
+                    <div className="space-y-1.5">
+                      <Label>Origem</Label>
+                      <Select name="source_id" defaultValue={data.sources[0]?.id ?? ""}>
+                        <SelectTrigger><SelectValue placeholder="Selecione uma origem" /></SelectTrigger>
+                        <SelectContent>
+                          {data.sources.map((s) => (
+                            <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Tipo de correspondencia</Label>
+                      <Select name="match_type" defaultValue="contains">
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="exact">Exata</SelectItem>
+                          <SelectItem value="contains">Contem</SelectItem>
+                          <SelectItem value="starts_with">Comeca com</SelectItem>
+                          <SelectItem value="regex">Regex</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <Field label="Padrao / mensagem" name="pattern" placeholder="vim pelo anuncio do Google" required />
+                    <Field label="Prioridade" name="priority" type="number" min="1" max="9999" defaultValue="100" />
+                    <div className="flex flex-wrap gap-4 text-sm text-text-secondary">
+                      <label className="flex items-center gap-2">
+                        <input type="checkbox" name="case_sensitive" className="h-4 w-4 accent-brand-green" />
+                        Diferenciar maiusculas
+                      </label>
+                      <label className="flex items-center gap-2">
+                        <input type="checkbox" name="normalize_whitespace" defaultChecked className="h-4 w-4 accent-brand-green" />
+                        Normalizar espacos
+                      </label>
+                      <label className="flex items-center gap-2">
+                        <input type="checkbox" name="overwrite_existing" className="h-4 w-4 accent-brand-green" />
+                        Sobrescrever origem ja definida
+                      </label>
+                    </div>
+                  </div>
+                  <Button className="w-fit" disabled={isPending}>Criar regra</Button>
+                </form>
+              )}
+
+              {data.sourceRules.length > 0 && (
+                <SourceRuleTester rules={data.sourceRules} sources={data.sources} />
+              )}
+
+              {data.sourceRules.length === 0 ? (
+                <p className="rounded-xl border border-border bg-white p-6 text-center text-xs text-text-muted">
+                  Nenhuma regra configurada. Crie uma acima para comecar.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {data.sourceRules.map((rule) => (
+                    <SourceRuleRow
+                      key={rule.id}
+                      rule={rule}
+                      sources={data.sources}
+                      isPending={isPending}
+                      onRun={runAction}
+                      onMessage={setMessage}
+                      onTransition={startTransition}
+                    />
+                  ))}
+                </div>
+              )}
+            </Section>
+          )}
         </div>
       </div>
+    </div>
+  );
+}
+
+const MATCH_TYPE_LABELS: Record<string, string> = {
+  exact: "Exata",
+  contains: "Contem",
+  starts_with: "Comeca com",
+  regex: "Regex",
+};
+
+function normalizeRuleText(value: string, normalizeWhitespace: boolean, caseSensitive: boolean) {
+  const trimmed = normalizeWhitespace ? value.replace(/\s+/g, " ").trim() : value.trim();
+  return caseSensitive ? trimmed : trimmed.toLowerCase();
+}
+
+function sourceRuleMatches(rule: SourceRuleRow, message: string) {
+  try {
+    const text = normalizeRuleText(message, rule.normalize_whitespace, rule.case_sensitive);
+    const pattern = normalizeRuleText(rule.pattern, rule.normalize_whitespace, rule.case_sensitive);
+    if (!text || !pattern) return false;
+    if (rule.match_type === "exact") return text === pattern;
+    if (rule.match_type === "contains") return text.includes(pattern);
+    if (rule.match_type === "starts_with") return text.startsWith(pattern);
+    if (rule.match_type === "regex") {
+      const flags = rule.case_sensitive ? "" : "i";
+      return new RegExp(rule.pattern, flags).test(message);
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function SourceRuleTester({ rules, sources }: { rules: SourceRuleRow[]; sources: SourceRow[] }) {
+  const [sample, setSample] = useState("");
+  const activeRules = useMemo(
+    () => [...rules].filter((rule) => rule.active).sort((a, b) => a.priority - b.priority || a.created_at.localeCompare(b.created_at)),
+    [rules]
+  );
+  const matched = useMemo(
+    () => activeRules.find((rule) => sourceRuleMatches(rule, sample)) ?? null,
+    [activeRules, sample]
+  );
+  const sourceName = matched ? sources.find((source) => source.id === matched.source_id)?.name ?? "Origem encontrada" : null;
+
+  return (
+    <div className="rounded-xl border border-border bg-white p-4">
+      <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
+        <div className="space-y-1.5">
+          <Label>Testar mensagem</Label>
+          <Input
+            value={sample}
+            onChange={(event) => setSample(event.target.value)}
+            placeholder="Cole aqui a primeira mensagem enviada pelo lead"
+          />
+        </div>
+        <Badge variant={matched ? "green" : "secondary"} className="h-9 justify-center px-3">
+          {matched ? `${sourceName} via ${matched.name}` : "Nenhuma regra ativa encontrada"}
+        </Badge>
+      </div>
+    </div>
+  );
+}
+
+function SourceRuleRow({
+  rule,
+  sources,
+  isPending,
+  onRun,
+  onMessage,
+  onTransition,
+}: {
+  rule: SourceRuleRow;
+  sources: SourceRow[];
+  isPending: boolean;
+  onRun: (action: (formData: FormData) => Promise<{ ok: boolean; message: string; data?: unknown }>) => (formData: FormData) => void;
+  onMessage: (message: string | null) => void;
+  onTransition: React.TransitionStartFunction;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const sourceName = sources.find((s) => s.id === rule.source_id)?.name ?? rule.source_id;
+
+  return (
+    <div className={cn("rounded-xl border border-border bg-white", !rule.active && "opacity-60")}>
+      <div className="flex flex-wrap items-center gap-3 px-4 py-3">
+        <Zap className={cn("h-3.5 w-3.5 shrink-0", rule.active ? "text-brand-green" : "text-text-muted")} />
+        <div className="flex-1 min-w-0">
+          <p className="truncate text-sm font-semibold text-text-primary">{rule.name}</p>
+          <p className="text-xs text-text-muted">
+            {MATCH_TYPE_LABELS[rule.match_type] ?? rule.match_type}
+            {" · "}
+            <span className="font-mono">&ldquo;{rule.pattern.slice(0, 40)}{rule.pattern.length > 40 ? "…" : ""}&rdquo;</span>
+            {" → "}
+            {sourceName}
+            {" · Prioridade "}{rule.priority}
+          </p>
+        </div>
+        <Badge variant={rule.active ? "green" : "secondary"}>{rule.active ? "Ativa" : "Inativa"}</Badge>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="text-xs"
+          disabled={isPending}
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {expanded ? "Fechar" : "Editar"}
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="text-xs"
+          disabled={isPending}
+          onClick={() => {
+            onTransition(async () => {
+              const result = await toggleSourceRuleActiveAction(rule.id, !rule.active);
+              onMessage(result.message);
+            });
+          }}
+        >
+          {rule.active ? "Desativar" : "Ativar"}
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="gap-1 text-danger-red hover:bg-danger-red/5 hover:text-danger-red"
+          disabled={isPending}
+          onClick={() => {
+            if (!confirm(`Remover a regra "${rule.name}"?`)) return;
+            onTransition(async () => {
+              const result = await deleteSourceRuleAction(rule.id);
+              onMessage(result.message);
+            });
+          }}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+
+      {expanded && (
+        <form
+          action={onRun(updateSourceRuleAction)}
+          className="grid gap-3 border-t border-border p-4 md:grid-cols-2"
+        >
+          <input type="hidden" name="id" value={rule.id} />
+          <Field label="Nome" name="name" defaultValue={rule.name} required />
+          <div className="space-y-1.5">
+            <Label>Origem</Label>
+            <Select name="source_id" defaultValue={rule.source_id}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {sources.map((s) => (
+                  <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Tipo de correspondencia</Label>
+            <Select name="match_type" defaultValue={rule.match_type}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="exact">Exata</SelectItem>
+                <SelectItem value="contains">Contem</SelectItem>
+                <SelectItem value="starts_with">Comeca com</SelectItem>
+                <SelectItem value="regex">Regex</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <Field label="Padrao / mensagem" name="pattern" defaultValue={rule.pattern} required />
+          <Field label="Prioridade" name="priority" type="number" min="1" max="9999" defaultValue={rule.priority} />
+          <div className="flex flex-wrap gap-4 text-sm text-text-secondary md:col-span-2">
+            <label className="flex items-center gap-2">
+              <input type="checkbox" name="case_sensitive" defaultChecked={rule.case_sensitive} className="h-4 w-4 accent-brand-green" />
+              Diferenciar maiusculas
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" name="normalize_whitespace" defaultChecked={rule.normalize_whitespace} className="h-4 w-4 accent-brand-green" />
+              Normalizar espacos
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" name="overwrite_existing" defaultChecked={rule.overwrite_existing} className="h-4 w-4 accent-brand-green" />
+              Sobrescrever origem ja definida
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" name="active" defaultChecked={rule.active} className="h-4 w-4 accent-brand-green" />
+              Regra ativa
+            </label>
+          </div>
+          <div className="md:col-span-2">
+            <Button variant="secondary" disabled={isPending}>Salvar</Button>
+          </div>
+        </form>
+      )}
     </div>
   );
 }

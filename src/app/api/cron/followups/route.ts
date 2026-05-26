@@ -149,7 +149,7 @@ export async function GET(request: NextRequest) {
         .select(`
           id, lead_id,
           lead:leads(id, followup_paused, stage_id, lead_tags(tag_id)),
-          instance:whatsapp_instances(id, instance_name, status)
+          instance:whatsapp_instances(id, instance_name, status, deleted_at)
         `)
         .eq("organization_id", orgId)
         .eq("status", "open")
@@ -176,8 +176,8 @@ export async function GET(request: NextRequest) {
         if (leadTagIds.some((tid) => blockedTags.has(tid))) continue;
 
         // Skip if WhatsApp instance is not connected
-        const instance = conv.instance as unknown as { id: string; instance_name: string; status: string } | null;
-        if (!instance || instance.status !== "connected") continue;
+        const instance = conv.instance as unknown as { id: string; instance_name: string; status: string; deleted_at: string | null } | null;
+        if (!instance || instance.deleted_at || instance.status !== "connected") continue;
 
         // Find cycle_started_at: most recent manual, non-imported outbound message.
         // Imported historical messages are excluded so they don't trigger follow-up.
@@ -285,7 +285,7 @@ export async function GET(request: NextRequest) {
         conversation:conversations(
           remote_jid,
           lead:leads(name, phone, followup_paused, stage_id, lead_tags(tag_id)),
-          instance:whatsapp_instances(id, instance_name, status)
+          instance:whatsapp_instances(id, instance_name, status, deleted_at)
         )
       `)
       .eq("status", "pending")
@@ -305,12 +305,12 @@ export async function GET(request: NextRequest) {
       const conv = item.conversation as unknown as {
         remote_jid: string;
         lead: { name: string; phone: string; followup_paused: boolean; stage_id: string | null; lead_tags: { tag_id: string }[] } | null;
-        instance: { id: string; instance_name: string; status: string } | null;
+        instance: { id: string; instance_name: string; status: string; deleted_at: string | null } | null;
       } | null;
 
       const step = item.step as unknown as { message_template: string; step_order: number } | null;
 
-      if (!conv?.instance || !step) {
+      if (!conv?.instance || conv.instance.deleted_at || !step) {
         await admin
           .from("followup_queue")
           .update({ status: "skipped", updated_at: now.toISOString() })

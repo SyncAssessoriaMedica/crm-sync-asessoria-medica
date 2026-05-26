@@ -488,6 +488,7 @@ export async function connectWhatsappInstanceAction(instanceName: string): Promi
       .from("whatsapp_instances")
       .select("id, organization_id, instance_name")
       .eq("instance_name", instanceName)
+      .is("deleted_at", null)
       .maybeSingle();
 
     if (!instance?.id) return { ok: false, message: "Instancia nao encontrada no CRM." };
@@ -595,6 +596,7 @@ export async function syncWhatsappInstanceStatusAction(instanceName: string): Pr
       .from("whatsapp_instances")
       .select("id, organization_id, instance_name")
       .eq("instance_name", instanceName)
+      .is("deleted_at", null)
       .maybeSingle();
 
     if (!instance?.id) return { ok: false, message: "Instancia nao encontrada no CRM." };
@@ -920,6 +922,7 @@ export async function setWebhookForInstanceAction(instanceName: string): Promise
       .from("whatsapp_instances")
       .select("id, organization_id")
       .eq("instance_name", instanceName)
+      .is("deleted_at", null)
       .maybeSingle();
 
     if (!instance?.id) return { ok: false, message: "Instancia nao encontrada no CRM." };
@@ -991,6 +994,7 @@ export async function fetchWhatsappChatsAction(instanceName: string): Promise<Ac
       .from("whatsapp_instances")
       .select("id, organization_id")
       .eq("instance_name", instanceName)
+      .is("deleted_at", null)
       .maybeSingle();
 
     if (!instance?.id) return { ok: false, message: "Instancia nao encontrada no CRM." };
@@ -1361,6 +1365,7 @@ export async function importWhatsappConversationsAction(
       .from("whatsapp_instances")
       .select("id, organization_id")
       .eq("instance_name", instanceName)
+      .is("deleted_at", null)
       .maybeSingle();
 
     if (!instance?.id) return { ok: false, message: "Instancia nao encontrada no CRM." };
@@ -1503,6 +1508,7 @@ export async function disconnectWhatsappInstanceAction(instanceName: string): Pr
       .from("whatsapp_instances")
       .select("id, organization_id, instance_name")
       .eq("instance_name", instanceName)
+      .is("deleted_at", null)
       .maybeSingle();
 
     if (!instance?.id) return { ok: false, message: "Instancia nao encontrada no CRM." };
@@ -1544,6 +1550,270 @@ export async function disconnectWhatsappInstanceAction(instanceName: string): Pr
     };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "Erro ao desconectar WhatsApp." };
+  }
+}
+
+// ─── Delete WhatsApp instance (soft delete) ──────────────────────────────────
+
+export async function deleteWhatsappInstanceAction(instanceId: string): Promise<ActionResult> {
+  try {
+    const { admin, user, organizationId, isSyncAdmin } = await getContext();
+
+    const { data: instance } = await admin
+      .from("whatsapp_instances")
+      .select("id, organization_id, instance_name, status")
+      .eq("id", instanceId)
+      .is("deleted_at", null)
+      .maybeSingle();
+
+    if (!instance?.id) return { ok: false, message: "Instancia nao encontrada." };
+    if (!isSyncAdmin && instance.organization_id !== organizationId) {
+      return { ok: false, message: "Sem permissao para remover esta instancia." };
+    }
+
+    const instanceName = instance.instance_name as string;
+    let evolutionWarning: string | null = null;
+
+    const baseUrl = process.env.EVOLUTION_API_URL;
+    const apiKey = process.env.EVOLUTION_API_KEY;
+    if (baseUrl && apiKey) {
+      const evolutionApiUrl = normalizeEvolutionApiUrl(baseUrl);
+      // Logout first (best-effort)
+      try {
+        await evolutionFetch(
+          `${evolutionApiUrl}/instance/logout/${encodeURIComponent(instanceName)}`,
+          apiKey,
+          { method: "DELETE" }
+        );
+      } catch { /* best-effort */ }
+      // Delete from Evolution
+      try {
+        const deleteRes = await evolutionFetch(
+          `${evolutionApiUrl}/instance/delete/${encodeURIComponent(instanceName)}`,
+          apiKey,
+          { method: "DELETE" }
+        );
+        if (!deleteRes.ok && deleteRes.status !== 404) {
+          evolutionWarning = "Instancia removida do CRM, mas nao foi possivel remover na Evolution.";
+        }
+      } catch {
+        evolutionWarning = "Instancia removida do CRM, mas nao foi possivel remover na Evolution (erro de rede).";
+      }
+    }
+
+    const { error } = await admin
+      .from("whatsapp_instances")
+      .update({
+        deleted_at: new Date().toISOString(),
+        deleted_by: user.id,
+        status: "disconnected",
+      })
+      .eq("id", instanceId);
+
+    if (error) return { ok: false, message: error.message };
+
+    await insertAuditLog(admin, user.id, instance.organization_id as string, "delete_whatsapp_instance", "whatsapp_instance", instanceId, {
+      instance_name: instanceName,
+    });
+
+    revalidatePath("/admin");
+    revalidatePath("/inbox");
+    revalidatePath("/dashboard");
+
+    return {
+      ok: true,
+      message: evolutionWarning ?? "Instancia removida.",
+      data: { instanceId },
+    };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao remover instancia." };
+  }
+}
+
+// ─── Lead source rules ────────────────────────────────────────────────────────
+
+const matchTypes = ["exact", "contains", "starts_with", "regex"] as const;
+
+async function ensureSourceBelongsToOrg(
+  admin: ReturnType<typeof createAdminClient>,
+  organizationId: string,
+  sourceId: string
+) {
+  const { data, error } = await admin
+    .from("lead_sources")
+    .select("id")
+    .eq("id", sourceId)
+    .eq("organization_id", organizationId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return Boolean(data?.id);
+}
+
+export async function createSourceRuleAction(formData: FormData): Promise<ActionResult> {
+  try {
+    const { admin, organizationId } = await getContext();
+    const parsed = z
+      .object({
+        name: z.string().trim().min(2),
+        source_id: z.string().uuid(),
+        match_type: z.enum(matchTypes),
+        pattern: z.string().trim().min(1).max(500),
+        case_sensitive: z.boolean(),
+        normalize_whitespace: z.boolean(),
+        overwrite_existing: z.boolean(),
+        priority: z.coerce.number().int().min(1).max(9999).default(100),
+      })
+      .safeParse({
+        name: formData.get("name"),
+        source_id: formData.get("source_id"),
+        match_type: formData.get("match_type"),
+        pattern: formData.get("pattern"),
+        case_sensitive: formData.get("case_sensitive") === "on",
+        normalize_whitespace: formData.get("normalize_whitespace") === "on",
+        overwrite_existing: formData.get("overwrite_existing") === "on",
+        priority: formData.get("priority") || 100,
+      });
+
+    if (!parsed.success) return { ok: false, message: "Dados invalidos: " + parsed.error.issues[0]?.message };
+
+    const sourceAllowed = await ensureSourceBelongsToOrg(admin, organizationId, parsed.data.source_id);
+    if (!sourceAllowed) return { ok: false, message: "Origem nao pertence a organizacao atual." };
+
+    // Validate regex safety before saving
+    if (parsed.data.match_type === "regex") {
+      if (parsed.data.pattern.length > 200) {
+        return { ok: false, message: "Regex muito longa (max 200 caracteres)." };
+      }
+      try {
+        new RegExp(parsed.data.pattern);
+      } catch {
+        return { ok: false, message: "Expressao regular invalida." };
+      }
+    }
+
+    const { error } = await admin.from("lead_source_rules").insert({
+      organization_id: organizationId,
+      source_id: parsed.data.source_id,
+      name: parsed.data.name,
+      match_type: parsed.data.match_type,
+      pattern: parsed.data.pattern,
+      case_sensitive: parsed.data.case_sensitive,
+      normalize_whitespace: parsed.data.normalize_whitespace,
+      overwrite_existing: parsed.data.overwrite_existing,
+      priority: parsed.data.priority,
+      active: true,
+    });
+
+    if (error) return { ok: false, message: error.message };
+    revalidatePath("/admin");
+    return { ok: true, message: "Regra criada." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao criar regra." };
+  }
+}
+
+export async function updateSourceRuleAction(formData: FormData): Promise<ActionResult> {
+  try {
+    const { admin, organizationId } = await getContext();
+    const id = asText(formData.get("id"));
+    if (!id) return { ok: false, message: "Regra nao encontrada." };
+
+    const parsed = z
+      .object({
+        name: z.string().trim().min(2),
+        source_id: z.string().uuid(),
+        match_type: z.enum(matchTypes),
+        pattern: z.string().trim().min(1).max(500),
+        case_sensitive: z.boolean(),
+        normalize_whitespace: z.boolean(),
+        overwrite_existing: z.boolean(),
+        active: z.boolean(),
+        priority: z.coerce.number().int().min(1).max(9999).default(100),
+      })
+      .safeParse({
+        name: formData.get("name"),
+        source_id: formData.get("source_id"),
+        match_type: formData.get("match_type"),
+        pattern: formData.get("pattern"),
+        case_sensitive: formData.get("case_sensitive") === "on",
+        normalize_whitespace: formData.get("normalize_whitespace") === "on",
+        overwrite_existing: formData.get("overwrite_existing") === "on",
+        active: formData.get("active") === "on",
+        priority: formData.get("priority") || 100,
+      });
+
+    if (!parsed.success) return { ok: false, message: "Dados invalidos: " + parsed.error.issues[0]?.message };
+
+    const sourceAllowed = await ensureSourceBelongsToOrg(admin, organizationId, parsed.data.source_id);
+    if (!sourceAllowed) return { ok: false, message: "Origem nao pertence a organizacao atual." };
+
+    if (parsed.data.match_type === "regex") {
+      if (parsed.data.pattern.length > 200) {
+        return { ok: false, message: "Regex muito longa (max 200 caracteres)." };
+      }
+      try {
+        new RegExp(parsed.data.pattern);
+      } catch {
+        return { ok: false, message: "Expressao regular invalida." };
+      }
+    }
+
+    const { error } = await admin
+      .from("lead_source_rules")
+      .update({
+        source_id: parsed.data.source_id,
+        name: parsed.data.name,
+        match_type: parsed.data.match_type,
+        pattern: parsed.data.pattern,
+        case_sensitive: parsed.data.case_sensitive,
+        normalize_whitespace: parsed.data.normalize_whitespace,
+        overwrite_existing: parsed.data.overwrite_existing,
+        active: parsed.data.active,
+        priority: parsed.data.priority,
+      })
+      .eq("id", id)
+      .eq("organization_id", organizationId);
+
+    if (error) return { ok: false, message: error.message };
+    revalidatePath("/admin");
+    return { ok: true, message: "Regra atualizada." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao atualizar regra." };
+  }
+}
+
+export async function deleteSourceRuleAction(ruleId: string): Promise<ActionResult> {
+  try {
+    const { admin, organizationId } = await getContext();
+    const { error } = await admin
+      .from("lead_source_rules")
+      .delete()
+      .eq("id", ruleId)
+      .eq("organization_id", organizationId);
+
+    if (error) return { ok: false, message: error.message };
+    revalidatePath("/admin");
+    return { ok: true, message: "Regra removida." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao remover regra." };
+  }
+}
+
+export async function toggleSourceRuleActiveAction(ruleId: string, active: boolean): Promise<ActionResult> {
+  try {
+    const { admin, organizationId } = await getContext();
+    const { error } = await admin
+      .from("lead_source_rules")
+      .update({ active })
+      .eq("id", ruleId)
+      .eq("organization_id", organizationId);
+
+    if (error) return { ok: false, message: error.message };
+    revalidatePath("/admin");
+    return { ok: true, message: active ? "Regra ativada." : "Regra desativada." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao alterar regra." };
   }
 }
 

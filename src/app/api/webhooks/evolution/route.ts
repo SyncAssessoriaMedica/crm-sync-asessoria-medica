@@ -274,10 +274,113 @@ async function resolveWhatsAppInstance(admin: SupabaseAdmin, instanceName: strin
     .from("whatsapp_instances")
     .select("id, organization_id, instance_name, phone_number, status")
     .eq("instance_name", instanceName)
+    .is("deleted_at", null)
     .maybeSingle();
 
   if (error) throw error;
   return data as { id: string; organization_id: string; instance_name: string; phone_number: string | null; status: string } | null;
+}
+
+// ─── Lead source rule matching ────────────────────────────────────────────────
+
+type SourceRule = {
+  id: string;
+  source_id: string;
+  match_type: string;
+  pattern: string;
+  case_sensitive: boolean;
+  normalize_whitespace: boolean;
+  overwrite_existing: boolean;
+};
+
+function normalizeForMatch(text: string, caseSensitive: boolean, normalizeWs: boolean): string {
+  let result = text.trim();
+  if (normalizeWs) result = result.replace(/\s+/g, " ");
+  if (!caseSensitive) result = result.toLowerCase();
+  return result;
+}
+
+function ruleMatches(rule: SourceRule, messageText: string): boolean {
+  const normMsg = normalizeForMatch(messageText, rule.case_sensitive, rule.normalize_whitespace);
+  const normPat = normalizeForMatch(rule.pattern, rule.case_sensitive, rule.normalize_whitespace);
+
+  switch (rule.match_type) {
+    case "exact":       return normMsg === normPat;
+    case "contains":    return normMsg.includes(normPat);
+    case "starts_with": return normMsg.startsWith(normPat);
+    case "regex": {
+      if (rule.pattern.length > 200) return false;
+      try {
+        const flags = rule.case_sensitive ? "" : "i";
+        return new RegExp(rule.pattern, flags).test(messageText.trim());
+      } catch {
+        return false;
+      }
+    }
+    default: return false;
+  }
+}
+
+async function applyLeadSourceRule(
+  admin: SupabaseAdmin,
+  organizationId: string,
+  leadId: string,
+  conversationId: string,
+  messageId: string,
+  messageText: string | undefined
+): Promise<void> {
+  if (!messageText?.trim()) return;
+
+  // Only apply on first inbound message of the conversation
+  const { count } = await admin
+    .from("messages")
+    .select("id", { count: "exact", head: true })
+    .eq("conversation_id", conversationId)
+    .eq("direction", "inbound")
+    .neq("id", messageId);
+
+  if ((count ?? 0) > 0) return; // Not the first inbound message
+
+  // Fetch active rules ordered by priority
+  const { data: rules } = await admin
+    .from("lead_source_rules")
+    .select("id, source_id, match_type, pattern, case_sensitive, normalize_whitespace, overwrite_existing")
+    .eq("organization_id", organizationId)
+    .eq("active", true)
+    .order("priority", { ascending: true })
+    .order("created_at", { ascending: true });
+
+  if (!rules?.length) return;
+
+  const matched = (rules as SourceRule[]).find((rule) => ruleMatches(rule, messageText));
+  if (!matched) return;
+
+  // Check current lead source
+  const { data: lead } = await admin
+    .from("leads")
+    .select("id, source_id")
+    .eq("id", leadId)
+    .maybeSingle();
+
+  if (!lead) return;
+
+  const hasSource = Boolean(lead.source_id);
+  if (hasSource && !matched.overwrite_existing) return;
+
+  await admin.from("leads").update({ source_id: matched.source_id }).eq("id", leadId);
+
+  await admin.from("lead_events").insert({
+    lead_id: leadId,
+    event_type: "source_auto_detected",
+    description: "Origem identificada automaticamente pela primeira mensagem do WhatsApp.",
+    metadata: {
+      rule_id: matched.id,
+      match_type: matched.match_type,
+      source_id: matched.source_id,
+      message_id: messageId,
+      overwritten: hasSource,
+    },
+  });
 }
 
 async function resolveWhatsappSource(admin: SupabaseAdmin, organizationId: string) {
@@ -485,9 +588,11 @@ async function handleMessageEvent(admin: SupabaseAdmin, payload: NormalizedPaylo
       });
     }
 
-    // Inbound reply: cancel any pending follow-ups for this conversation.
-    // Runs after response to avoid delaying Evolution's ACK.
+    // Inbound: cancel pending follow-ups + try to auto-detect lead source.
+    // Both run after response so Evolution gets a fast ACK.
     if (inbound) {
+      const msgId = insertedMessage.id;
+      const msgText = messageContent.type === "text" ? (messageContent.content ?? undefined) : undefined;
       after(async () => {
         await cancelPendingFollowups(
           admin,
@@ -495,6 +600,18 @@ async function handleMessageEvent(admin: SupabaseAdmin, payload: NormalizedPaylo
           lead.id ?? null,
           instance.organization_id
         );
+        if (lead.id && msgText) {
+          try {
+            await applyLeadSourceRule(
+              admin,
+              instance.organization_id,
+              lead.id,
+              conversation.id,
+              msgId,
+              msgText
+            );
+          } catch { /* best-effort: never block the webhook */ }
+        }
       });
     }
   }

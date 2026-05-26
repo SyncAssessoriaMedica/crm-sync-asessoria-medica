@@ -159,7 +159,28 @@ export interface WhatsAppInstance {
   instance_name: string;
   phone_number: string;
   status: "connected" | "disconnected" | "connecting";
+  deleted_at?: string | null;
+  deleted_by?: string | null;
   created_at: string;
+}
+
+export type SourceRuleMatchType = "exact" | "contains" | "starts_with" | "regex";
+
+export interface LeadSourceRule {
+  id: string;
+  organization_id: string;
+  source_id: string;
+  source?: LeadSource;
+  name: string;
+  match_type: SourceRuleMatchType;
+  pattern: string;
+  case_sensitive: boolean;
+  normalize_whitespace: boolean;
+  overwrite_existing: boolean;
+  active: boolean;
+  priority: number;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Conversation {

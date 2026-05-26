@@ -60,7 +60,8 @@ export default async function FollowUpPage() {
     admin
       .from("whatsapp_instances")
       .select("id, instance_name, status")
-      .eq("organization_id", orgId),
+      .eq("organization_id", orgId)
+      .is("deleted_at", null),
   ]);
 
   return (
