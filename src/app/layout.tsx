@@ -13,6 +13,11 @@ export const metadata: Metadata = {
   title: "Sync CRM | Central de Inteligência Comercial",
   description:
     "CRM proprietário da Sync Marketing para assessorias de marketing médico.",
+  icons: {
+    icon: [{ url: "/logo_sync-marketing-cropped.png", type: "image/png" }],
+    shortcut: "/logo_sync-marketing-cropped.png",
+    apple: "/logo_sync-marketing-cropped.png",
+  },
 };
 
 export default function RootLayout({
