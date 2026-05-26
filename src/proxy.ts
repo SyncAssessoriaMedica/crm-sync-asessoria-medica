@@ -3,11 +3,11 @@ import { createServerClient, type CookieOptions } from "@supabase/ssr";
 
 type CookieEntry = { name: string; value: string; options?: CookieOptions };
 
-/** Rotas acessíveis sem autenticação */
+/** Routes that must reach their own handler without app-page auth redirects. */
 const PUBLIC_PATHS = [
   "/login",
   "/auth/callback",
-  "/api/webhooks/",
+  "/api/",
 ];
 
 function isPublicPath(pathname: string): boolean {
@@ -38,23 +38,22 @@ export async function proxy(request: NextRequest) {
     }
   );
 
-  // IMPORTANTE: Usar getUser() (não getSession()) para validar o token server-side.
-  // getSession() apenas lê o cookie sem verificar com o servidor Supabase.
+  // Use getUser(), not getSession(), so Supabase validates the token server-side.
   const {
     data: { user },
   } = await supabase.auth.getUser();
 
   const pathname = request.nextUrl.pathname;
 
-  // Usuário autenticado tentando acessar /login → redirecionar ao dashboard
+  // Authenticated users should not see the login page.
   if (user && pathname === "/login") {
     return NextResponse.redirect(new URL("/dashboard", request.url));
   }
 
-  // Usuário não autenticado em rota protegida → redirecionar ao login
+  // Unauthenticated users on protected app pages go to login.
   if (!user && !isPublicPath(pathname)) {
     const loginUrl = new URL("/login", request.url);
-    // Preservar o destino original para redirecionar após login (opcional)
+    // Optional: preserve the original target for post-login redirects.
     // loginUrl.searchParams.set("next", pathname);
     return NextResponse.redirect(loginUrl);
   }
@@ -65,11 +64,11 @@ export async function proxy(request: NextRequest) {
 export const config = {
   matcher: [
     /*
-     * Executar proxy em todas as rotas exceto:
-     * - _next/static (arquivos estáticos)
-     * - _next/image (otimização de imagem)
+     * Run proxy for every route except:
+     * - _next/static
+     * - _next/image
      * - favicon.ico
-     * - Imagens/assets estáticos
+     * - static image assets
      */
     "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
