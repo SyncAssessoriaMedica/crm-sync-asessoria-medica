@@ -2,7 +2,7 @@ import { canAccessRoute } from "@/lib/permissions";
 import { getOrganizationContext } from "@/lib/organization-context";
 import { AccessDenied } from "@/components/layout/access-denied";
 import { InboxClient } from "./inbox-client";
-import type { InboxConversation, InboxInstance, InboxLead, InboxMessage } from "./types";
+import type { BhAutoReplyQueueItem, InboxConversation, InboxInstance, InboxLead, InboxMessage, InboxSource } from "./types";
 
 type ConversationRow = Omit<InboxConversation, "lead" | "instance" | "last_message"> & {
   lead: InboxLead | InboxLead[] | null;
@@ -28,7 +28,7 @@ export default async function InboxPage({
     return <AccessDenied />;
   }
 
-  const [conversationsResult, instancesResult] = await Promise.all([
+  const [conversationsResult, instancesResult, sourcesResult] = await Promise.all([
     admin
       .from("conversations")
       .select(
@@ -47,7 +47,8 @@ export default async function InboxPage({
           status,
           potential_value,
           followup_paused,
-          source:lead_sources(name),
+          source_id,
+          source:lead_sources(id, name, active),
           stage:pipeline_stages(name)
         ),
         instance:whatsapp_instances(id, instance_name, phone_number, status, deleted_at)
@@ -63,6 +64,11 @@ export default async function InboxPage({
       .eq("organization_id", organizationId)
       .is("deleted_at", null)
       .order("created_at", { ascending: false }),
+    admin
+      .from("lead_sources")
+      .select("id, name, color, active")
+      .eq("organization_id", organizationId)
+      .order("name", { ascending: true }),
   ]);
 
   if (conversationsResult.error) {
@@ -80,16 +86,23 @@ export default async function InboxPage({
     return !instance?.deleted_at;
   });
   const conversationIds = rows.map((conversation) => conversation.id);
-  const { data: messagesData } =
+  const [{ data: messagesData }, { data: bhAutoReplyData }] =
     conversationIds.length > 0
-      ? await admin
-          .from("messages")
-          .select(
-            "id, conversation_id, direction, message_type, content, media_url, media_mimetype, media_filename, media_duration, created_at, delivered_at, read_at"
-          )
-          .in("conversation_id", conversationIds)
-          .order("created_at", { ascending: true })
-      : { data: [] as InboxMessage[] };
+      ? await Promise.all([
+          admin
+            .from("messages")
+            .select(
+              "id, conversation_id, direction, message_type, content, media_url, media_mimetype, media_filename, media_duration, created_at, delivered_at, read_at"
+            )
+            .in("conversation_id", conversationIds)
+            .order("created_at", { ascending: true }),
+          admin
+            .from("bh_auto_reply_queue")
+            .select("id, conversation_id, scheduled_for, status")
+            .in("conversation_id", conversationIds)
+            .in("status", ["pending", "sending"]),
+        ])
+      : [{ data: [] as InboxMessage[] }, { data: [] as BhAutoReplyQueueItem[] }];
 
   const messagesByConversation = ((messagesData ?? []) as InboxMessage[]).reduce<Record<string, InboxMessage[]>>(
     (acc, message) => {
@@ -99,6 +112,13 @@ export default async function InboxPage({
     },
     {}
   );
+
+  const bhAutoRepliesByConversation = ((bhAutoReplyData ?? []) as BhAutoReplyQueueItem[]).reduce<
+    Record<string, BhAutoReplyQueueItem>
+  >((acc, item) => {
+    acc[item.conversation_id] = item;
+    return acc;
+  }, {});
 
   const conversations = rows.map((conversation) => {
     const lead = firstRelation(conversation.lead);
@@ -124,7 +144,9 @@ export default async function InboxPage({
       organizationId={organizationId}
       conversations={conversations}
       messagesByConversation={messagesByConversation}
+      bhAutoRepliesByConversation={bhAutoRepliesByConversation}
       instances={(instancesResult.data ?? []) as InboxInstance[]}
+      sources={(sourcesResult.data ?? []) as InboxSource[]}
       initialSearch={params?.q ?? ""}
       period={params?.period ?? "30d"}
     />

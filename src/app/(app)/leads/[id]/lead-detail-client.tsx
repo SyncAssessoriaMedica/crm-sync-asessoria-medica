@@ -34,6 +34,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Separator } from "@/components/ui/separator";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   cn,
@@ -59,6 +66,7 @@ import {
   toggleTaskAction,
   markLeadScheduledAction,
   updateLeadAction,
+  updateLeadSourceAction,
   updateLeadStageAction,
 } from "../actions";
 import { toggleLeadFollowupPausedAction } from "../../follow-up/actions";
@@ -159,6 +167,14 @@ export function LeadDetailClient({ lead, options, leadTags: initialLeadTags, not
   function markScheduled() {
     startTransition(async () => {
       const result = await markLeadScheduledAction(lead.id);
+      setMessage(result.message);
+      if (result.ok) router.refresh();
+    });
+  }
+
+  function changeSource(sourceId: string) {
+    startTransition(async () => {
+      const result = await updateLeadSourceAction(lead.id, sourceId === "none" ? "" : sourceId);
       setMessage(result.message);
       if (result.ok) router.refresh();
     });
@@ -287,7 +303,28 @@ export function LeadDetailClient({ lead, options, leadTags: initialLeadTags, not
               </div>
               <Separator />
               <div className="grid grid-cols-2 gap-3">
-                <Meta label="Origem" value={lead.source?.name} />
+                <div className="space-y-1.5">
+                  <p className="label-eyebrow text-text-muted">Origem</p>
+                  <Select
+                    defaultValue={lead.source_id ?? "none"}
+                    onValueChange={changeSource}
+                    disabled={isPending}
+                  >
+                    <SelectTrigger className="h-8 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Sem origem</SelectItem>
+                      {options.sources
+                        .filter((source) => source.active !== false || source.id === lead.source_id)
+                        .map((source) => (
+                          <SelectItem key={source.id} value={source.id}>
+                            {source.name}{source.active === false ? " (inativa)" : ""}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                </div>
                 <Meta label="Valor Pot." value={lead.potential_value ? formatCurrency(lead.potential_value) : undefined} strong />
                 <Meta label="Valor Fechado" value={lead.closed_value ? formatCurrency(lead.closed_value) : undefined} strong />
               </div>

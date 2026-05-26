@@ -457,6 +457,57 @@ export async function updateLeadStageAction(leadId: string, stageId: string): Pr
 
 // ─── Bulk actions ─────────────────────────────────────────────────────────────
 
+export async function updateLeadSourceAction(leadId: string, sourceId: string): Promise<ActionResult> {
+  try {
+    const { admin, user, organizationId } = await getCurrentContext();
+    const nextSourceId = sourceId || null;
+
+    const { data: lead } = await admin
+      .from("leads")
+      .select("id, source_id")
+      .eq("id", leadId)
+      .eq("organization_id", organizationId)
+      .maybeSingle();
+
+    if (!lead?.id) return { ok: false, message: "Lead nao encontrado." };
+
+    if (nextSourceId) {
+      const { data: source, error: sourceError } = await admin
+        .from("lead_sources")
+        .select("id")
+        .eq("id", nextSourceId)
+        .eq("organization_id", organizationId)
+        .eq("active", true)
+        .maybeSingle();
+
+      if (sourceError) return { ok: false, message: sourceError.message };
+      if (!source?.id) return { ok: false, message: "Origem nao encontrada ou inativa." };
+    }
+
+    const { error } = await admin
+      .from("leads")
+      .update({ source_id: nextSourceId, updated_at: new Date().toISOString() })
+      .eq("id", leadId)
+      .eq("organization_id", organizationId);
+
+    if (error) return { ok: false, message: error.message };
+
+    await insertAuditLog(admin, user.id, organizationId, "update_lead_source", "lead", leadId, {
+      previous_source_id: lead.source_id,
+      next_source_id: nextSourceId,
+    });
+
+    revalidatePath("/leads");
+    revalidatePath("/dashboard");
+    revalidatePath("/inbox");
+    revalidatePath(`/leads/${leadId}`);
+
+    return { ok: true, message: nextSourceId ? "Origem do lead atualizada." : "Origem removida do lead." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao atualizar origem." };
+  }
+}
+
 export async function markLeadScheduledAction(leadId: string): Promise<ActionResult> {
   try {
     const { admin, organizationId } = await getCurrentContext();

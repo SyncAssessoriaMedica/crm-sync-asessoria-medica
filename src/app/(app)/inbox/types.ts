@@ -8,8 +8,16 @@ export type InboxLead = {
   status: LeadStatus;
   potential_value: number | null;
   followup_paused: boolean;
-  source: { name: string | null } | null;
+  source_id: string | null;
+  source: { id?: string | null; name: string | null; active?: boolean | null } | null;
   stage: { name: string | null } | null;
+};
+
+export type InboxSource = {
+  id: string;
+  name: string;
+  color: string | null;
+  active: boolean;
 };
 
 export type InboxInstance = {
@@ -45,4 +53,11 @@ export type InboxConversation = {
   lead: InboxLead | null;
   instance: InboxInstance | null;
   last_message: InboxMessage | null;
+};
+
+export type BhAutoReplyQueueItem = {
+  id: string;
+  conversation_id: string;
+  scheduled_for: string;
+  status: "pending" | "sending";
 };

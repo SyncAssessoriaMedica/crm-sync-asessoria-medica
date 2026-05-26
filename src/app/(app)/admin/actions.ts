@@ -265,14 +265,48 @@ export async function createUserAction(formData: FormData): Promise<ActionResult
   }
 }
 
+const sourceSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(2, "Informe o nome da origem (minimo 2 caracteres).")
+    .max(60, "Nome muito longo (maximo 60 caracteres).")
+    .transform((value) => value.replace(/\s+/g, " ")),
+  color: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/, "Cor invalida. Use formato hexadecimal (#RRGGBB).")
+    .default("#22c55e"),
+});
+
 export async function createSourceAction(formData: FormData): Promise<ActionResult> {
   try {
-    const { admin, organizationId } = await getContext();
-    const name = asText(formData.get("name"));
-    if (name.length < 2) return { ok: false, message: "Informe uma origem." };
-    const { error } = await admin.from("lead_sources").insert({ organization_id: organizationId, name, color: "#22c55e" });
+    const { admin, user, organizationId } = await getContext();
+    const parsed = sourceSchema.safeParse({
+      name: asText(formData.get("name")),
+      color: asText(formData.get("color")) || "#22c55e",
+    });
+    if (!parsed.success) return { ok: false, message: parsed.error.errors[0].message };
+    const { name, color } = parsed.data;
+
+    const { data: existing } = await admin
+      .from("lead_sources")
+      .select("id")
+      .eq("organization_id", organizationId)
+      .eq("active", true)
+      .ilike("name", name)
+      .maybeSingle();
+    if (existing) return { ok: false, message: `Ja existe uma origem ativa com o nome "${name}".` };
+
+    const { data, error } = await admin
+      .from("lead_sources")
+      .insert({ organization_id: organizationId, name, color })
+      .select("id")
+      .single();
     if (error) return { ok: false, message: error.message };
+    after(() => insertAuditLog(admin, user.id, organizationId, "create_source", "lead_source", data.id, { name, color }));
     revalidatePath("/admin");
+    revalidatePath("/leads");
+    revalidatePath("/dashboard");
     return { ok: true, message: "Origem criada." };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "Erro ao criar origem." };
@@ -827,17 +861,68 @@ export async function deleteTagAction(tagId: string): Promise<ActionResult> {
 
 export async function updateSourceAction(formData: FormData): Promise<ActionResult> {
   try {
-    const { admin, organizationId } = await getContext();
+    const { admin, user, organizationId } = await getContext();
     const id = asText(formData.get("id"));
-    const name = asText(formData.get("name"));
-    const color = asText(formData.get("color")) || "#22c55e";
     if (!id) return { ok: false, message: "Origem nao encontrada." };
-    if (name.length < 2) return { ok: false, message: "Informe o nome da origem." };
-    const { error } = await admin.from("lead_sources").update({ name, color }).eq("id", id).eq("organization_id", organizationId);
+
+    const parsed = sourceSchema.safeParse({
+      name: asText(formData.get("name")),
+      color: asText(formData.get("color")) || "#22c55e",
+    });
+    if (!parsed.success) return { ok: false, message: parsed.error.errors[0].message };
+    const { name, color } = parsed.data;
+
+    const { data: existing } = await admin
+      .from("lead_sources")
+      .select("id")
+      .eq("organization_id", organizationId)
+      .eq("active", true)
+      .ilike("name", name)
+      .neq("id", id)
+      .maybeSingle();
+    if (existing) return { ok: false, message: `Ja existe outra origem ativa com o nome "${name}".` };
+
+    const { error } = await admin
+      .from("lead_sources")
+      .update({ name, color })
+      .eq("id", id)
+      .eq("organization_id", organizationId);
     if (error) return { ok: false, message: error.message };
+    after(() => insertAuditLog(admin, user.id, organizationId, "update_source", "lead_source", id, { name, color }));
     revalidatePath("/admin");
     revalidatePath("/leads");
+    revalidatePath("/dashboard");
     return { ok: true, message: "Origem atualizada." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao atualizar origem." };
+  }
+}
+
+export async function toggleSourceActiveAction(sourceId: string, active: boolean): Promise<ActionResult> {
+  try {
+    const { admin, user, organizationId } = await getContext();
+    const { data: source } = await admin
+      .from("lead_sources")
+      .select("id, is_default")
+      .eq("id", sourceId)
+      .eq("organization_id", organizationId)
+      .maybeSingle();
+    if (!source) return { ok: false, message: "Origem nao encontrada." };
+    if (!active && source.is_default) {
+      return { ok: false, message: "Origens padrao nao podem ser desativadas." };
+    }
+
+    const { error } = await admin
+      .from("lead_sources")
+      .update({ active })
+      .eq("id", sourceId)
+      .eq("organization_id", organizationId);
+    if (error) return { ok: false, message: error.message };
+    after(() => insertAuditLog(admin, user.id, organizationId, active ? "activate_source" : "deactivate_source", "lead_source", sourceId));
+    revalidatePath("/admin");
+    revalidatePath("/leads");
+    revalidatePath("/dashboard");
+    return { ok: true, message: active ? "Origem ativada." : "Origem desativada." };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "Erro ao atualizar origem." };
   }
@@ -846,21 +931,49 @@ export async function updateSourceAction(formData: FormData): Promise<ActionResu
 export async function deleteSourceAction(sourceId: string): Promise<ActionResult> {
   try {
     const { admin, user, organizationId } = await getContext();
-    const { count } = await admin
-      .from("leads")
-      .select("id", { count: "exact", head: true })
-      .eq("source_id", sourceId)
-      .eq("organization_id", organizationId);
+    const { data: source } = await admin
+      .from("lead_sources")
+      .select("id, is_default")
+      .eq("id", sourceId)
+      .eq("organization_id", organizationId)
+      .maybeSingle();
+    if (!source) return { ok: false, message: "Origem nao encontrada." };
+    if (source.is_default) {
+      return { ok: false, message: "Origens padrao nao podem ser apagadas." };
+    }
 
-    if ((count ?? 0) > 0) {
-      return { ok: false, message: `Esta origem esta em uso por ${count} lead(s). Remova a origem dos leads antes de apagar.` };
+    const [{ count: leadCount }, { count: ruleCount }] = await Promise.all([
+      admin
+        .from("leads")
+        .select("id", { count: "exact", head: true })
+        .eq("source_id", sourceId)
+        .eq("organization_id", organizationId),
+      admin
+        .from("lead_source_rules")
+        .select("id", { count: "exact", head: true })
+        .eq("source_id", sourceId)
+        .eq("organization_id", organizationId),
+    ]);
+
+    if ((leadCount ?? 0) > 0) {
+      return {
+        ok: false,
+        message: `Nao e possivel apagar: ${leadCount} lead(s) usam esta origem. Desative a origem em vez de apagar.`,
+      };
+    }
+    if ((ruleCount ?? 0) > 0) {
+      return {
+        ok: false,
+        message: `Nao e possivel apagar: ${ruleCount} regra(s) automatica(s) usam esta origem. Remova as regras primeiro.`,
+      };
     }
 
     const { error } = await admin.from("lead_sources").delete().eq("id", sourceId).eq("organization_id", organizationId);
     if (error) return { ok: false, message: error.message };
-    await insertAuditLog(admin, user.id, organizationId, "delete_source", "lead_source", sourceId);
+    after(() => insertAuditLog(admin, user.id, organizationId, "delete_source", "lead_source", sourceId));
     revalidatePath("/admin");
     revalidatePath("/leads");
+    revalidatePath("/dashboard");
     return { ok: true, message: "Origem removida." };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "Erro ao remover origem." };
@@ -1637,14 +1750,17 @@ const matchTypes = ["exact", "contains", "starts_with", "regex"] as const;
 async function ensureSourceBelongsToOrg(
   admin: ReturnType<typeof createAdminClient>,
   organizationId: string,
-  sourceId: string
+  sourceId: string,
+  activeOnly = false
 ) {
-  const { data, error } = await admin
+  let query = admin
     .from("lead_sources")
-    .select("id")
+    .select("id, active")
     .eq("id", sourceId)
-    .eq("organization_id", organizationId)
-    .maybeSingle();
+    .eq("organization_id", organizationId);
+  if (activeOnly) query = query.eq("active", true);
+
+  const { data, error } = await query.maybeSingle();
 
   if (error) throw error;
   return Boolean(data?.id);
@@ -1677,8 +1793,8 @@ export async function createSourceRuleAction(formData: FormData): Promise<Action
 
     if (!parsed.success) return { ok: false, message: "Dados invalidos: " + parsed.error.issues[0]?.message };
 
-    const sourceAllowed = await ensureSourceBelongsToOrg(admin, organizationId, parsed.data.source_id);
-    if (!sourceAllowed) return { ok: false, message: "Origem nao pertence a organizacao atual." };
+    const sourceAllowed = await ensureSourceBelongsToOrg(admin, organizationId, parsed.data.source_id, true);
+    if (!sourceAllowed) return { ok: false, message: "Origem nao pertence a organizacao atual ou esta inativa." };
 
     // Validate regex safety before saving
     if (parsed.data.match_type === "regex") {
@@ -1745,8 +1861,8 @@ export async function updateSourceRuleAction(formData: FormData): Promise<Action
 
     if (!parsed.success) return { ok: false, message: "Dados invalidos: " + parsed.error.issues[0]?.message };
 
-    const sourceAllowed = await ensureSourceBelongsToOrg(admin, organizationId, parsed.data.source_id);
-    if (!sourceAllowed) return { ok: false, message: "Origem nao pertence a organizacao atual." };
+    const sourceAllowed = await ensureSourceBelongsToOrg(admin, organizationId, parsed.data.source_id, parsed.data.active);
+    if (!sourceAllowed) return { ok: false, message: "Origem nao pertence a organizacao atual ou esta inativa." };
 
     if (parsed.data.match_type === "regex") {
       if (parsed.data.pattern.length > 200) {
@@ -1803,6 +1919,18 @@ export async function deleteSourceRuleAction(ruleId: string): Promise<ActionResu
 export async function toggleSourceRuleActiveAction(ruleId: string, active: boolean): Promise<ActionResult> {
   try {
     const { admin, organizationId } = await getContext();
+    if (active) {
+      const { data: rule } = await admin
+        .from("lead_source_rules")
+        .select("source_id")
+        .eq("id", ruleId)
+        .eq("organization_id", organizationId)
+        .maybeSingle();
+      if (!rule) return { ok: false, message: "Regra nao encontrada." };
+      const sourceAllowed = await ensureSourceBelongsToOrg(admin, organizationId, rule.source_id as string, true);
+      if (!sourceAllowed) return { ok: false, message: "Nao e possivel ativar regra com origem inativa." };
+    }
+
     const { error } = await admin
       .from("lead_source_rules")
       .update({ active })
@@ -1814,6 +1942,76 @@ export async function toggleSourceRuleActiveAction(ruleId: string, active: boole
     return { ok: true, message: active ? "Regra ativada." : "Regra desativada." };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "Erro ao alterar regra." };
+  }
+}
+
+// ─── Business-hours auto-reply settings ──────────────────────────────────────
+
+export async function saveBhAutoReplySettingsAction(formData: FormData): Promise<ActionResult> {
+  try {
+    const { admin, organizationId } = await getContext();
+    const parsed = z
+      .object({
+        enabled: z.boolean(),
+        message_template: z.string().trim().min(5).max(2000),
+        delay_minutes: z.coerce.number().int().min(1).max(120),
+        cooldown_hours: z.coerce.number().int().min(1).max(168),
+        timezone: z.string().trim().min(3).max(80),
+      })
+      .safeParse({
+        enabled: formData.get("enabled") === "on",
+        message_template: formData.get("message_template"),
+        delay_minutes: formData.get("delay_minutes") || 15,
+        cooldown_hours: formData.get("cooldown_hours") || 12,
+        timezone: formData.get("timezone") || "America/Sao_Paulo",
+      });
+
+    if (!parsed.success) return { ok: false, message: "Dados invalidos: " + parsed.error.issues[0]?.message };
+
+    const { error } = await admin.from("bh_auto_reply_settings").upsert(
+      {
+        organization_id: organizationId,
+        enabled: parsed.data.enabled,
+        message_template: parsed.data.message_template,
+        delay_minutes: parsed.data.delay_minutes,
+        cooldown_hours: parsed.data.cooldown_hours,
+        timezone: parsed.data.timezone,
+      },
+      { onConflict: "organization_id" }
+    );
+
+    if (error) return { ok: false, message: error.message };
+    revalidatePath("/admin");
+    return { ok: true, message: parsed.data.enabled ? "Resposta automatica ativada." : "Configuracoes salvas." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao salvar configuracoes." };
+  }
+}
+
+export async function saveBhBusinessHoursAction(formData: FormData): Promise<ActionResult> {
+  try {
+    const { admin, organizationId } = await getContext();
+
+    const rows = [];
+    for (let day = 0; day <= 6; day++) {
+      const enabled    = formData.get(`day_${day}_enabled`) === "on";
+      const startRaw   = asText(formData.get(`day_${day}_start`)) || "08:00";
+      const endRaw     = asText(formData.get(`day_${day}_end`))   || "18:00";
+      const timeRegex  = /^\d{2}:\d{2}$/;
+      const start_time = timeRegex.test(startRaw) ? startRaw : "08:00";
+      const end_time   = timeRegex.test(endRaw)   ? endRaw   : "18:00";
+      rows.push({ organization_id: organizationId, day_of_week: day, enabled, start_time, end_time });
+    }
+
+    const { error } = await admin
+      .from("followup_business_hours")
+      .upsert(rows, { onConflict: "organization_id,day_of_week" });
+
+    if (error) return { ok: false, message: error.message };
+    revalidatePath("/admin");
+    return { ok: true, message: "Horarios de atendimento salvos." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao salvar horarios." };
   }
 }
 

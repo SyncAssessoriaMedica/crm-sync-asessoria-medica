@@ -8,6 +8,7 @@ import {
   ArrowUp,
   Building2,
   CheckCircle2,
+  Clock,
   Copy,
   Download,
   Globe,
@@ -55,12 +56,15 @@ import {
   deletePipelineStageAction,
   deleteSourceAction,
   deleteSourceRuleAction,
+  toggleSourceActiveAction,
   deleteTagAction,
   deleteWhatsappInstanceAction,
   disconnectWhatsappInstanceAction,
   fetchWhatsappChatsAction,
   generatePasswordAction,
   importWhatsappConversationsAction,
+  saveBhAutoReplySettingsAction,
+  saveBhBusinessHoursAction,
   setWebhookForInstanceAction,
   movePipelineStageAction,
   syncWhatsappInstanceStatusAction,
@@ -157,6 +161,8 @@ type SourceRow = {
   id: string;
   name: string;
   color: string | null;
+  active: boolean;
+  is_default: boolean;
   created_at: string;
 };
 
@@ -172,6 +178,28 @@ type SourceRuleRow = {
   active: boolean;
   priority: number;
   created_at: string;
+};
+
+type BhAutoReplySettingsRow = {
+  enabled: boolean;
+  message_template: string;
+  delay_minutes: number;
+  cooldown_hours: number;
+  timezone: string;
+} | null;
+
+type BusinessHourRow = {
+  day_of_week: number;
+  start_time: string;
+  end_time: string;
+  enabled: boolean;
+};
+
+type BhAutoReplyStats = {
+  pending: number;
+  sent: number;
+  failed: number;
+  cancelled: number;
 };
 
 type ChatPreview = {
@@ -200,6 +228,9 @@ export type AdminData = {
   tags: TagRow[];
   sources: SourceRow[];
   sourceRules: SourceRuleRow[];
+  bhAutoReplySettings: BhAutoReplySettingsRow;
+  bhBusinessHours: BusinessHourRow[];
+  bhAutoReplyStats: BhAutoReplyStats;
 };
 
 const ROLE_LABELS: Record<string, string> = {
@@ -234,6 +265,7 @@ export function AdminClient({ data }: { data: AdminData }) {
       { id: "tags", label: "Tags", icon: Tag, count: data.tags.length },
       { id: "sources", label: "Origens", icon: Globe, count: data.sources.length },
       { id: "source_rules", label: "Origem automatica", icon: Zap, count: data.sourceRules.length },
+      { id: "bh_auto_reply", label: "Resposta fora do horario", icon: Clock, count: data.bhAutoReplyStats.pending },
     ],
     [data]
   );
@@ -895,8 +927,23 @@ export function AdminClient({ data }: { data: AdminData }) {
           )}
 
           {activeSection === "sources" && (
-            <Section title="Origens" description="Configure as origens de leads. Origens em uso por leads nao podem ser apagadas.">
-              <form action={runAction(createSourceAction)} className="grid gap-3 rounded-xl border border-border bg-background-subtle/50 p-4 md:grid-cols-[1fr_auto]">
+            <Section
+              title="Origens"
+              description="Configure as origens de leads. Desative origens em vez de apagar para preservar o historico."
+            >
+              <form
+                action={runAction(createSourceAction)}
+                className="grid gap-3 rounded-xl border border-border bg-background-subtle/50 p-4 md:grid-cols-[auto_1fr_auto]"
+              >
+                <div className="space-y-1.5">
+                  <Label>Cor</Label>
+                  <input
+                    type="color"
+                    name="color"
+                    defaultValue="#22c55e"
+                    className="h-9 w-12 cursor-pointer rounded-lg border border-border p-0.5"
+                  />
+                </div>
                 <Field label="Nome da origem" name="name" placeholder="Meta Ads" required />
                 <Button className="self-end" disabled={isPending}>Criar</Button>
               </form>
@@ -908,26 +955,67 @@ export function AdminClient({ data }: { data: AdminData }) {
                     <form
                       key={source.id}
                       action={runAction(updateSourceAction)}
-                      className="grid gap-3 rounded-xl border border-border bg-white p-3 md:grid-cols-[1fr_auto_auto]"
+                      className={cn(
+                        "flex flex-wrap items-end gap-3 rounded-xl border bg-white p-3",
+                        source.active ? "border-border" : "border-border/50 bg-background-subtle/40 opacity-75"
+                      )}
                     >
                       <input type="hidden" name="id" value={source.id} />
-                      <Field label="Nome" name="name" defaultValue={source.name} required />
-                      <Button variant="secondary" className="self-end" disabled={isPending}>Salvar</Button>
-                      <Button
-                        type="button"
-                        variant="destructive"
-                        className="self-end"
-                        disabled={isPending}
-                        onClick={() => {
-                          if (!confirm(`Remover a origem "${source.name}"? Origens em uso por leads nao podem ser apagadas.`)) return;
-                          startTransition(async () => {
-                            const result = await deleteSourceAction(source.id);
-                            setMessage(result.message);
-                          });
-                        }}
-                      >
-                        Apagar
-                      </Button>
+                      <div className="space-y-1.5">
+                        <Label>Cor</Label>
+                        <input
+                          type="color"
+                          name="color"
+                          defaultValue={source.color ?? "#22c55e"}
+                          className="h-9 w-12 cursor-pointer rounded-lg border border-border p-0.5"
+                        />
+                      </div>
+                      <div className="min-w-[160px] flex-1 space-y-1.5">
+                        <div className="flex items-center gap-2">
+                          <Label>Nome</Label>
+                          {!source.active && (
+                            <span className="inline-flex items-center rounded-full border border-yellow-300 bg-yellow-50 px-2 py-0.5 text-[10px] font-semibold text-yellow-700">
+                              Inativa
+                            </span>
+                          )}
+                          {source.is_default && (
+                            <span className="text-[10px] text-text-muted">padrao</span>
+                          )}
+                        </div>
+                        <Input name="name" defaultValue={source.name} required />
+                      </div>
+                      <div className="flex gap-2 self-end">
+                        <Button variant="secondary" size="sm" disabled={isPending}>Salvar</Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={isPending || (source.is_default && source.active)}
+                          onClick={() => {
+                            startTransition(async () => {
+                              const result = await toggleSourceActiveAction(source.id, !source.active);
+                              setMessage(result.message);
+                            });
+                          }}
+                        >
+                          {source.active ? "Desativar" : "Ativar"}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          size="sm"
+                          disabled={isPending || source.is_default}
+                          onClick={() => {
+                            if (!confirm(`Apagar permanentemente a origem "${source.name}"?\n\nEsta acao nao pode ser desfeita. Origens em uso por leads ou regras automaticas nao podem ser apagadas.`)) return;
+                            startTransition(async () => {
+                              const result = await deleteSourceAction(source.id);
+                              setMessage(result.message);
+                            });
+                          }}
+                        >
+                          Apagar
+                        </Button>
+                      </div>
                     </form>
                   ))}
                 </div>
@@ -935,14 +1023,24 @@ export function AdminClient({ data }: { data: AdminData }) {
             </Section>
           )}
 
+          {activeSection === "bh_auto_reply" && (
+            <BhAutoReplySection
+              settings={data.bhAutoReplySettings}
+              businessHours={data.bhBusinessHours}
+              stats={data.bhAutoReplyStats}
+              isPending={isPending}
+              onRun={runAction}
+            />
+          )}
+
           {activeSection === "source_rules" && (
             <Section
               title="Origem automatica"
               description="Regras que detectam a origem do lead pela primeira mensagem recebida no WhatsApp. A regra de menor prioridade (numero menor) e aplicada primeiro."
             >
-              {data.sources.length === 0 ? (
+              {data.sources.filter((s) => s.active).length === 0 ? (
                 <p className="rounded-xl border border-border bg-white p-6 text-center text-xs text-text-muted">
-                  Crie ao menos uma Origem antes de configurar regras.
+                  Crie ao menos uma Origem ativa antes de configurar regras.
                 </p>
               ) : (
                 <form
@@ -953,10 +1051,10 @@ export function AdminClient({ data }: { data: AdminData }) {
                     <Field label="Nome da regra" name="name" placeholder="Google Ads — palavra-chave" required />
                     <div className="space-y-1.5">
                       <Label>Origem</Label>
-                      <Select name="source_id" defaultValue={data.sources[0]?.id ?? ""}>
+                      <Select name="source_id" defaultValue={data.sources.find((s) => s.active)?.id ?? ""}>
                         <SelectTrigger><SelectValue placeholder="Selecione uma origem" /></SelectTrigger>
                         <SelectContent>
-                          {data.sources.map((s) => (
+                          {data.sources.filter((s) => s.active).map((s) => (
                             <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
                           ))}
                         </SelectContent>
@@ -1087,6 +1185,175 @@ function SourceRuleTester({ rules, sources }: { rules: SourceRuleRow[]; sources:
   );
 }
 
+const BH_DAYS = ["Domingo", "Segunda", "Terca", "Quarta", "Quinta", "Sexta", "Sabado"];
+
+const BH_DEFAULT_SETTINGS = {
+  enabled: false,
+  message_template:
+    "Ola! Estamos fora do horario de atendimento no momento. O proximo horario disponivel e {{proximo_horario_util}}. Entraremos em contato assim que possivel!",
+  delay_minutes: 15,
+  cooldown_hours: 12,
+  timezone: "America/Sao_Paulo",
+};
+
+function BhAutoReplySection({
+  settings,
+  businessHours,
+  stats,
+  isPending,
+  onRun,
+}: {
+  settings: BhAutoReplySettingsRow;
+  businessHours: BusinessHourRow[];
+  stats: BhAutoReplyStats;
+  isPending: boolean;
+  onRun: (action: (formData: FormData) => Promise<{ ok: boolean; message: string; data?: unknown }>) => (formData: FormData) => void;
+}) {
+  const s = settings ?? BH_DEFAULT_SETTINGS;
+
+  const getHour = (day: number) =>
+    businessHours.find((h) => h.day_of_week === day) ??
+    { day_of_week: day, start_time: "08:00", end_time: "18:00", enabled: day >= 1 && day <= 5 };
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Resposta fora do horario de atendimento</CardTitle>
+          <p className="text-xs text-text-secondary">
+            Quando ativo, o CRM responde automaticamente apenas se a mensagem chegar claramente fora
+            do expediente: no minimo 1h30 depois do fim do atendimento e 1h30 antes do proximo inicio.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Settings form */}
+          <form action={onRun(saveBhAutoReplySettingsAction)} className="space-y-4 rounded-xl border border-border bg-background-subtle/50 p-4">
+            <div className="flex items-center justify-between">
+              <Label className="text-sm font-semibold">Ativar resposta automatica</Label>
+              <label className="flex items-center gap-2 text-sm text-text-secondary">
+                <input
+                  type="checkbox"
+                  name="enabled"
+                  defaultChecked={s.enabled}
+                  className="h-4 w-4 accent-brand-green"
+                />
+                {s.enabled ? "Ativada" : "Desativada"}
+              </label>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label>Mensagem automatica</Label>
+              <textarea
+                name="message_template"
+                defaultValue={s.message_template}
+                rows={4}
+                className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm outline-none focus:border-brand-green focus:ring-2 focus:ring-brand-green"
+              />
+              <p className="text-[11px] text-text-muted">
+                Use <code className="rounded bg-background-subtle px-1 py-0.5 font-mono">{"{{proximo_horario_util}}"}</code> para inserir o proximo horario disponivel. Ex.: &ldquo;hoje as 09 horas&rdquo;, &ldquo;amanha as 08 horas&rdquo;, &ldquo;segunda as 10 horas&rdquo;.
+              </p>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <Field
+                label="Intervalo minimo entre envios (h)"
+                name="cooldown_hours"
+                type="number"
+                min="1"
+                max="168"
+                defaultValue={s.cooldown_hours}
+              />
+              <Field
+                label="Fuso horario"
+                name="timezone"
+                defaultValue={s.timezone}
+                placeholder="America/Sao_Paulo"
+              />
+            </div>
+
+            <Button disabled={isPending}>Salvar configuracoes</Button>
+          </form>
+
+          {/* Business hours form */}
+          <form action={onRun(saveBhBusinessHoursAction)} className="space-y-3 rounded-xl border border-border bg-background-subtle/50 p-4">
+            <p className="text-sm font-semibold text-text-primary">Horario de atendimento</p>
+            <p className="text-xs text-text-secondary">
+              Fora deste horario, mensagens recebidas podem acionar a resposta automatica se a regra
+              estiver ativa e a conversa estiver dentro da janela segura. Este horario tambem e usado
+              pelo Follow-up automatico.
+            </p>
+            <div className="overflow-hidden rounded-xl border border-border bg-white">
+              <table className="w-full text-xs">
+                <thead className="border-b border-border bg-background-subtle">
+                  <tr>
+                    <th className="px-3 py-2 text-left label-eyebrow">Dia</th>
+                    <th className="px-3 py-2 text-left label-eyebrow">Ativo</th>
+                    <th className="px-3 py-2 text-left label-eyebrow">Inicio</th>
+                    <th className="px-3 py-2 text-left label-eyebrow">Fim</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {[0, 1, 2, 3, 4, 5, 6].map((day) => {
+                    const h = getHour(day);
+                    return (
+                      <tr key={day} className="hover:bg-background-subtle/50">
+                        <td className="px-3 py-2 font-medium text-text-primary">{BH_DAYS[day]}</td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="checkbox"
+                            name={`day_${day}_enabled`}
+                            defaultChecked={h.enabled}
+                            className="h-4 w-4 accent-brand-green"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="time"
+                            name={`day_${day}_start`}
+                            defaultValue={h.start_time.substring(0, 5)}
+                            className="rounded border border-border bg-white px-2 py-1 text-xs outline-none focus:border-brand-green"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="time"
+                            name={`day_${day}_end`}
+                            defaultValue={h.end_time.substring(0, 5)}
+                            className="rounded border border-border bg-white px-2 py-1 text-xs outline-none focus:border-brand-green"
+                          />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <Button variant="secondary" disabled={isPending}>Salvar horarios</Button>
+          </form>
+
+          {/* Queue stats */}
+          <div className="rounded-xl border border-border bg-white p-4">
+            <p className="mb-3 text-sm font-semibold text-text-primary">Historico de respostas automaticas</p>
+            <div className="grid grid-cols-4 gap-2 text-center">
+              {[
+                { label: "Pendentes", value: stats.pending, color: "text-warning-amber" },
+                { label: "Enviadas", value: stats.sent, color: "text-brand-green-deep" },
+                { label: "Falhas", value: stats.failed, color: "text-danger-red" },
+                { label: "Canceladas", value: stats.cancelled, color: "text-text-muted" },
+              ].map(({ label, value, color }) => (
+                <div key={label} className="rounded-lg border border-border bg-background-subtle/50 px-3 py-3">
+                  <p className={`text-xl font-black ${color}`}>{value}</p>
+                  <p className="mt-0.5 text-[10px] text-text-muted">{label}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 function SourceRuleRow({
   rule,
   sources,
@@ -1103,7 +1370,9 @@ function SourceRuleRow({
   onTransition: React.TransitionStartFunction;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const sourceName = sources.find((s) => s.id === rule.source_id)?.name ?? rule.source_id;
+  const sourceInfo = sources.find((s) => s.id === rule.source_id);
+  const sourceName = sourceInfo?.name ?? rule.source_id;
+  const sourceInactive = sourceInfo !== undefined && sourceInfo.active === false;
 
   return (
     <div className={cn("rounded-xl border border-border bg-white", !rule.active && "opacity-60")}>
@@ -1119,6 +1388,11 @@ function SourceRuleRow({
             {sourceName}
             {" · Prioridade "}{rule.priority}
           </p>
+          {sourceInactive && (
+            <p className="mt-0.5 text-[11px] font-semibold text-yellow-600">
+              Aviso: a origem &ldquo;{sourceName}&rdquo; esta inativa. Esta regra nao sera aplicada a novos leads.
+            </p>
+          )}
         </div>
         <Badge variant={rule.active ? "green" : "secondary"}>{rule.active ? "Ativa" : "Inativa"}</Badge>
         <Button
@@ -1129,7 +1403,7 @@ function SourceRuleRow({
           disabled={isPending}
           onClick={() => setExpanded((v) => !v)}
         >
-          {expanded ? "Fechar" : "Editar"}
+          {expanded ? "Fechar edicao" : "Editar regra"}
         </Button>
         <Button
           type="button"
@@ -1170,13 +1444,19 @@ function SourceRuleRow({
           className="grid gap-3 border-t border-border p-4 md:grid-cols-2"
         >
           <input type="hidden" name="id" value={rule.id} />
+          <div className="md:col-span-2">
+            <p className="label-eyebrow text-text-muted">Editar origem automatica</p>
+            <p className="mt-1 text-xs text-text-secondary">
+              Ajuste a mensagem de entrada, a origem atribuida e a prioridade desta regra.
+            </p>
+          </div>
           <Field label="Nome" name="name" defaultValue={rule.name} required />
           <div className="space-y-1.5">
             <Label>Origem</Label>
             <Select name="source_id" defaultValue={rule.source_id}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
-                {sources.map((s) => (
+                {sources.filter((s) => s.active !== false || s.id === rule.source_id).map((s) => (
                   <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
                 ))}
               </SelectContent>

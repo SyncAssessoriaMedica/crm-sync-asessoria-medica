@@ -3,17 +3,24 @@
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { CalendarCheck, ChevronDown, Clock, DollarSign, Filter, Inbox, Phone, Search, Tag, User } from "lucide-react";
+import { CalendarCheck, ChevronDown, Clock, DollarSign, Filter, Inbox, Phone, Search, Tag, User, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { createClient } from "@/lib/supabase/client";
 import { cn, formatCurrency, formatPhone, formatTimeAgo, getInitials } from "@/lib/utils";
-import { markConversationReadAction, updateConversationStatusAction } from "./actions";
-import { markLeadScheduledAction } from "../leads/actions";
+import { cancelBhAutoReplyAction, markConversationReadAction, updateConversationStatusAction } from "./actions";
+import { markLeadScheduledAction, updateLeadSourceAction } from "../leads/actions";
 import { MessageBubble } from "./message-media";
-import type { InboxConversation, InboxMessage } from "./types";
+import type { BhAutoReplyQueueItem, InboxConversation, InboxMessage, InboxSource } from "./types";
 
 const MEDIA_LABELS: Record<string, string> = {
   image: "Imagem",
@@ -39,7 +46,9 @@ type InboxClientProps = {
   organizationId: string;
   conversations: InboxConversation[];
   messagesByConversation: Record<string, InboxMessage[]>;
+  bhAutoRepliesByConversation: Record<string, BhAutoReplyQueueItem>;
   instances: { id: string; instance_name: string; phone_number: string | null; status: string }[];
+  sources: InboxSource[];
   initialSearch: string;
   period: string;
 };
@@ -121,7 +130,7 @@ function ConversationItem({
   );
 }
 
-export function InboxClient({ organizationId, conversations, messagesByConversation, instances, initialSearch, period }: InboxClientProps) {
+export function InboxClient({ organizationId, conversations, messagesByConversation, bhAutoRepliesByConversation, instances, sources, initialSearch, period }: InboxClientProps) {
   const router = useRouter();
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const markedReadRef = useRef<Set<string>>(new Set());
@@ -129,6 +138,7 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
   const [search, setSearch] = useState(initialSearch);
   const [filter, setFilter] = useState<"all" | "unread" | "open" | "closed">("all");
   const [locallyReadIds, setLocallyReadIds] = useState<Set<string>>(new Set());
+  const [cancelledBhIds, setCancelledBhIds] = useState<Set<string>>(new Set());
   const [message, setMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
@@ -262,6 +272,15 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
     if (!lead) return;
     startTransition(async () => {
       const result = await markLeadScheduledAction(lead.id);
+      setMessage(result.message);
+      if (result.ok) router.refresh();
+    });
+  }
+
+  function changeLeadSource(sourceId: string) {
+    if (!lead) return;
+    startTransition(async () => {
+      const result = await updateLeadSourceAction(lead.id, sourceId === "none" ? "" : sourceId);
       setMessage(result.message);
       if (result.ok) router.refresh();
     });
@@ -435,7 +454,31 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
               <div className="space-y-3">
                 <Info icon={<User />} label="Status" value={STATUS_LABELS[lead.status] ?? lead.status} />
                 {lead.stage?.name && <Info icon={<Tag />} label="Etapa" value={lead.stage.name} />}
-                {lead.source?.name && <Info icon={<ChevronDown className="rotate-270" />} label="Origem" value={lead.source.name} />}
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2 text-[11px] text-text-muted">
+                    <ChevronDown className="h-3.5 w-3.5 rotate-270" />
+                    <span className="font-semibold uppercase tracking-wide">Origem</span>
+                  </div>
+                  <Select
+                    defaultValue={lead.source_id ?? "none"}
+                    onValueChange={changeLeadSource}
+                    disabled={isPending}
+                  >
+                    <SelectTrigger className="h-8 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Sem origem</SelectItem>
+                      {sources
+                        .filter((source) => source.active !== false || source.id === lead.source_id)
+                        .map((source) => (
+                          <SelectItem key={source.id} value={source.id}>
+                            {source.name}{source.active === false ? " (inativa)" : ""}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
 
               <Separator />
@@ -473,6 +516,39 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
                     Follow-up pausado
                   </div>
                 )}
+                {(() => {
+                  const bhItem = activeConv ? bhAutoRepliesByConversation[activeConv.id] : null;
+                  if (!bhItem || cancelledBhIds.has(bhItem.id)) return null;
+                  const scheduledTime = new Date(bhItem.scheduled_for).toLocaleTimeString("pt-BR", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  });
+                  return (
+                    <div className="flex items-start gap-1.5 rounded-lg border border-warning-amber/30 bg-warning-amber/10 px-2.5 py-2 text-[10px]">
+                      <Clock className="mt-0.5 h-3 w-3 shrink-0 text-warning-amber" />
+                      <span className="flex-1 font-semibold text-warning-amber">
+                        Resposta automatica agendada para {scheduledTime}
+                      </span>
+                      <button
+                        type="button"
+                        className="shrink-0 text-warning-amber hover:text-danger-red"
+                        title="Cancelar resposta automatica"
+                        onClick={() => {
+                          startTransition(async () => {
+                            const result = await cancelBhAutoReplyAction(bhItem.id);
+                            if (result.ok) {
+                              setCancelledBhIds((prev) => new Set([...prev, bhItem.id]));
+                            }
+                            setMessage(result.message);
+                          });
+                        }}
+                        disabled={isPending}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  );
+                })()}
               </div>
             </>
           ) : (

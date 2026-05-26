@@ -57,6 +57,8 @@ export interface LeadSource {
   organization_id: string;
   name: string;
   color?: string;
+  active?: boolean;
+  is_default?: boolean;
 }
 
 export interface Campaign {

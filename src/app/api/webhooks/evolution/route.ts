@@ -218,6 +218,260 @@ function getMessageContent(data: NonNullable<EvolutionPayload["data"]>) {
   };
 }
 
+// ─── Business-hours auto-reply ───────────────────────────────────────────────
+
+type BusinessHour = {
+  day_of_week: number;
+  start_time: string;
+  end_time: string;
+  enabled: boolean;
+};
+
+const BH_AUTO_REPLY_BUFFER_MINUTES = 90;
+
+function isWithinBhHours(now: Date, timezone: string, hours: BusinessHour[]): boolean {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const parts = formatter.formatToParts(now);
+  const dow = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(
+    parts.find((p) => p.type === "weekday")?.value ?? ""
+  );
+  const hourStr = parts.find((p) => p.type === "hour")?.value ?? "00";
+  const minStr  = parts.find((p) => p.type === "minute")?.value ?? "00";
+  const currentTime = `${hourStr.padStart(2, "0")}:${minStr.padStart(2, "0")}`;
+  const rule = hours.find((h) => h.day_of_week === dow);
+  if (!rule || !rule.enabled) return false;
+  return currentTime >= rule.start_time.substring(0, 5) && currentTime < rule.end_time.substring(0, 5);
+}
+
+function minutesUntilNextBhMinute(now: Date, timezone: string, hours: BusinessHour[]): number | null {
+  const slot = new Date(now);
+  for (let i = 1; i <= 8 * 24 * 60; i++) {
+    slot.setMinutes(slot.getMinutes() + 1, 0, 0);
+    if (isWithinBhHours(slot, timezone, hours)) return i;
+  }
+  return null;
+}
+
+function minutesSincePreviousBhMinute(now: Date, timezone: string, hours: BusinessHour[]): number | null {
+  const slot = new Date(now);
+  for (let i = 1; i <= 8 * 24 * 60; i++) {
+    slot.setMinutes(slot.getMinutes() - 1, 0, 0);
+    if (isWithinBhHours(slot, timezone, hours)) return i;
+  }
+  return null;
+}
+
+function isSafelyOutsideBhHours(now: Date, timezone: string, hours: BusinessHour[]): boolean {
+  if (isWithinBhHours(now, timezone, hours)) return false;
+
+  const sincePrevious = minutesSincePreviousBhMinute(now, timezone, hours);
+  const untilNext = minutesUntilNextBhMinute(now, timezone, hours);
+
+  if (sincePrevious === null || untilNext === null) return false;
+  return sincePrevious >= BH_AUTO_REPLY_BUFFER_MINUTES && untilNext >= BH_AUTO_REPLY_BUFFER_MINUTES;
+}
+
+function nextBhSlot(now: Date, timezone: string, hours: BusinessHour[]): Date {
+  const slot = new Date(now);
+  for (let i = 1; i <= 8 * 24 * 60; i++) {
+    slot.setMinutes(slot.getMinutes() + 1, 0, 0);
+    if (isWithinBhHours(slot, timezone, hours)) return slot;
+  }
+  return new Date(now.getTime() + 24 * 60 * 60 * 1000);
+}
+
+const PT_DAY_NAMES = ["domingo", "segunda", "terca", "quarta", "quinta", "sexta", "sabado"];
+
+function getLocalDateParts(date: Date, timezone: string) {
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(date);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+  return {
+    year: get("year"),
+    month: get("month"),
+    day: get("day"),
+    dow: Math.max(0, ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(get("weekday"))),
+    hour: parseInt(get("hour"), 10),
+    minute: parseInt(get("minute"), 10),
+  };
+}
+
+function formatNextBhSlotPt(nextSlot: Date, now: Date, timezone: string): string {
+  const nowP = getLocalDateParts(now, timezone);
+  const slotP = getLocalDateParts(nextSlot, timezone);
+  const tomorrowP = getLocalDateParts(new Date(now.getTime() + 24 * 60 * 60 * 1000), timezone);
+
+  const isSameDay = nowP.year === slotP.year && nowP.month === slotP.month && nowP.day === slotP.day;
+  const isTomorrow = tomorrowP.year === slotP.year && tomorrowP.month === slotP.month && tomorrowP.day === slotP.day;
+  const hourStr = String(slotP.hour).padStart(2, "0");
+  const minuteStr = String(slotP.minute).padStart(2, "0");
+  const timeText = slotP.minute === 0 ? `${hourStr} horas` : `${hourStr}:${minuteStr}`;
+
+  if (isSameDay) return `hoje as ${timeText}`;
+  if (isTomorrow) return `amanha as ${timeText}`;
+  return `${PT_DAY_NAMES[slotP.dow]} as ${timeText}`;
+}
+
+async function sendBhWhatsAppText(
+  instanceName: string,
+  phone: string,
+  text: string
+): Promise<{ ok: boolean; error?: string; evolutionMsgId?: string }> {
+  const baseUrl = process.env.EVOLUTION_API_URL;
+  const apiKey = process.env.EVOLUTION_API_KEY;
+  if (!baseUrl || !apiKey) return { ok: false, error: "Evolution API not configured" };
+
+  const normalizedBaseUrl = baseUrl.replace(/\/+$/, "").replace(/\/manager$/, "");
+  const url = `${normalizedBaseUrl}/message/sendText/${encodeURIComponent(instanceName)}`;
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: apiKey },
+      body: JSON.stringify({
+        number: phone.replace(/\D/g, ""),
+        text,
+        delay: 1200,
+        linkPreview: false,
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      return { ok: false, error: `HTTP ${res.status}: ${body.slice(0, 200)}` };
+    }
+
+    const json = await res.json().catch(() => null);
+    const record = json as Record<string, unknown> | null;
+    const key = record?.key as Record<string, unknown> | undefined;
+    const evolutionMsgId =
+      typeof key?.id === "string" ? key.id :
+      typeof record?.id === "string" ? record.id :
+      typeof record?.messageId === "string" ? record.messageId :
+      undefined;
+
+    return { ok: true, evolutionMsgId };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function maybeSendBhAutoReply(
+  admin: SupabaseAdmin,
+  organizationId: string,
+  conversationId: string,
+  leadId: string | null,
+  triggerMessageId: string,
+  instanceName: string,
+  remoteJid: string
+): Promise<void> {
+  const { data: settings } = await admin
+    .from("bh_auto_reply_settings")
+    .select("enabled, message_template, cooldown_hours, timezone")
+    .eq("organization_id", organizationId)
+    .maybeSingle();
+
+  if (!settings?.enabled) return;
+
+  const { data: hours } = await admin
+    .from("followup_business_hours")
+    .select("day_of_week, start_time, end_time, enabled")
+    .eq("organization_id", organizationId);
+
+  const activeHours = (hours ?? []) as BusinessHour[];
+  if (!activeHours.some((h) => h.enabled)) return;
+
+  const now = new Date();
+  if (!isSafelyOutsideBhHours(now, settings.timezone, activeHours)) return;
+
+  const cooldownThreshold = new Date(now.getTime() - (settings.cooldown_hours as number) * 60 * 60 * 1000);
+  const { data: recentSent } = await admin
+    .from("bh_auto_reply_queue")
+    .select("id")
+    .eq("conversation_id", conversationId)
+    .eq("status", "sent")
+    .gte("sent_at", cooldownThreshold.toISOString())
+    .limit(1)
+    .maybeSingle();
+
+  if (recentSent) return;
+
+  const nextSlot = nextBhSlot(now, settings.timezone, activeHours);
+  const message = (settings.message_template as string).replace(
+    /\{\{proximo_horario_util\}\}/g,
+    formatNextBhSlotPt(nextSlot, now, settings.timezone)
+  );
+  const result = await sendBhWhatsAppText(instanceName, normalizePhone(remoteJid), message);
+
+  let messageId: string | null = null;
+  if (result.ok) {
+    const { data: msgRecord, error: msgError } = await admin
+      .from("messages")
+      .insert({
+        conversation_id: conversationId,
+        evolution_msg_id: result.evolutionMsgId ?? `bh-auto:${triggerMessageId}`,
+        direction: "outbound",
+        message_type: "text",
+        content: message,
+        is_automatic: true,
+        automation_type: "bh_auto_reply",
+      })
+      .select("id")
+      .maybeSingle();
+
+    if (msgError && msgError.code !== "23505") {
+      console.error("[bh_auto_reply] local message insert error:", msgError.message, "convId:", conversationId);
+    }
+    messageId = msgRecord?.id ?? null;
+
+    await admin.from("conversations").update({ updated_at: now.toISOString() }).eq("id", conversationId);
+  }
+
+  const { error } = await admin.from("bh_auto_reply_queue").insert({
+    organization_id: organizationId,
+    conversation_id: conversationId,
+    lead_id: leadId,
+    trigger_message_id: triggerMessageId,
+    scheduled_for: now.toISOString(),
+    status: result.ok ? "sent" : "failed",
+    sent_at: result.ok ? now.toISOString() : null,
+    message_sent: result.ok ? message : null,
+    message_id: messageId,
+    error: result.ok ? null : (result.error ?? "unknown").slice(0, 400),
+  });
+
+  if (error && error.code !== "23505") {
+    console.error("[bh_auto_reply] audit insert error:", error.message, "convId:", conversationId);
+  }
+}
+
+async function cancelPendingBhAutoReplies(
+  admin: SupabaseAdmin,
+  conversationId: string
+): Promise<void> {
+  await admin
+    .from("bh_auto_reply_queue")
+    .update({ status: "cancelled", cancel_reason: "outbound_message", updated_at: new Date().toISOString() })
+    .eq("conversation_id", conversationId)
+    .eq("status", "pending");
+}
+
 // ─── Follow-up: cancel on inbound ────────────────────────────────────────────
 
 // When a lead replies, any pending follow-up items for that conversation become
@@ -341,12 +595,13 @@ async function applyLeadSourceRule(
 
   if ((count ?? 0) > 0) return; // Not the first inbound message
 
-  // Fetch active rules ordered by priority
+  // Fetch active rules ordered by priority and only allow active origins.
   const { data: rules } = await admin
     .from("lead_source_rules")
-    .select("id, source_id, match_type, pattern, case_sensitive, normalize_whitespace, overwrite_existing")
+    .select("id, source_id, match_type, pattern, case_sensitive, normalize_whitespace, overwrite_existing, source:lead_sources!inner(active)")
     .eq("organization_id", organizationId)
     .eq("active", true)
+    .eq("source.active", true)
     .order("priority", { ascending: true })
     .order("created_at", { ascending: true });
 
@@ -383,34 +638,13 @@ async function applyLeadSourceRule(
   });
 }
 
-async function resolveWhatsappSource(admin: SupabaseAdmin, organizationId: string) {
-  const { data: existing } = await admin
-    .from("lead_sources")
-    .select("id")
-    .eq("organization_id", organizationId)
-    .ilike("name", "WhatsApp")
-    .maybeSingle();
-
-  if (existing?.id) return existing.id as string;
-
-  const { data } = await admin
-    .from("lead_sources")
-    .insert({ organization_id: organizationId, name: "WhatsApp", color: "#22c55e" })
-    .select("id")
-    .single();
-
-  return data?.id as string | undefined;
-}
-
 async function resolveLead(admin: SupabaseAdmin, organizationId: string, phone: string, name: string | undefined, inbound: boolean) {
-  const sourceId = await resolveWhatsappSource(admin, organizationId);
   return createOrUpdateLeadByPhone(
     admin,
     {
       organizationId,
       phone,
       name,
-      sourceId: sourceId ?? null,
       status: "new",
       lastInteractionAt: new Date().toISOString(),
     },
@@ -588,7 +822,8 @@ async function handleMessageEvent(admin: SupabaseAdmin, payload: NormalizedPaylo
       });
     }
 
-    // Inbound: cancel pending follow-ups + try to auto-detect lead source.
+    // Inbound: cancel pending follow-ups + auto-detect lead source + send BH auto-reply when eligible.
+    // Outbound: cancel any pending BH auto-reply (attendant responded).
     // Both run after response so Evolution gets a fast ACK.
     if (inbound) {
       const msgId = insertedMessage.id;
@@ -612,6 +847,24 @@ async function handleMessageEvent(admin: SupabaseAdmin, payload: NormalizedPaylo
             );
           } catch { /* best-effort: never block the webhook */ }
         }
+        try {
+          await maybeSendBhAutoReply(
+            admin,
+            instance.organization_id,
+            conversation.id,
+            lead.id ?? null,
+            msgId,
+            payload.instance,
+            remoteJid
+          );
+        } catch { /* best-effort */ }
+      });
+    } else {
+      // Outbound message: cancel any pending BH auto-reply for this conversation.
+      after(async () => {
+        try {
+          await cancelPendingBhAutoReplies(admin, conversation.id);
+        } catch { /* best-effort */ }
       });
     }
   }

@@ -35,6 +35,9 @@ export default async function AdminPage() {
     tagsResult,
     sourcesResult,
     sourceRulesResult,
+    bhAutoReplySettingsResult,
+    bhBusinessHoursResult,
+    bhQueueResult,
   ] = await Promise.all([
     admin.from("organizations").select("id, name, slug, subscription_status, created_at").order("created_at", { ascending: false }),
     admin
@@ -52,8 +55,11 @@ export default async function AdminPage() {
       .eq("is_default", true)
       .maybeSingle(),
     admin.from("tags").select("id, name, color, created_at").eq("organization_id", organizationId).order("name", { ascending: true }),
-    admin.from("lead_sources").select("id, name, color, created_at").eq("organization_id", organizationId).order("name", { ascending: true }),
+    admin.from("lead_sources").select("id, name, color, active, is_default, created_at").eq("organization_id", organizationId).order("name", { ascending: true }),
     admin.from("lead_source_rules").select("id, source_id, name, match_type, pattern, case_sensitive, normalize_whitespace, overwrite_existing, active, priority, created_at").eq("organization_id", organizationId).order("priority", { ascending: true }).order("created_at", { ascending: true }),
+    admin.from("bh_auto_reply_settings").select("enabled, message_template, delay_minutes, cooldown_hours, timezone").eq("organization_id", organizationId).maybeSingle(),
+    admin.from("followup_business_hours").select("day_of_week, start_time, end_time, enabled").eq("organization_id", organizationId).order("day_of_week", { ascending: true }),
+    admin.from("bh_auto_reply_queue").select("status").eq("organization_id", organizationId),
   ]);
 
   const rawUsers = usersResult.data ?? [];
@@ -94,6 +100,15 @@ export default async function AdminPage() {
     }
   }
 
+  const bhQueueItems = (bhQueueResult.data ?? []) as { status: string }[];
+  const bhAutoReplyStats = { pending: 0, sent: 0, failed: 0, cancelled: 0 };
+  for (const item of bhQueueItems) {
+    if (item.status === "pending") bhAutoReplyStats.pending++;
+    else if (item.status === "sent") bhAutoReplyStats.sent++;
+    else if (item.status === "failed") bhAutoReplyStats.failed++;
+    else if (item.status === "cancelled") bhAutoReplyStats.cancelled++;
+  }
+
   const data: AdminData = {
     isSyncAdmin,
     baseUrl: `${protocol}://${host}`,
@@ -116,6 +131,9 @@ export default async function AdminPage() {
     tags: tagsResult.data ?? [],
     sources: sourcesResult.data ?? [],
     sourceRules: sourceRulesResult.data ?? [],
+    bhAutoReplySettings: bhAutoReplySettingsResult.data as AdminData["bhAutoReplySettings"],
+    bhBusinessHours: (bhBusinessHoursResult.data ?? []) as AdminData["bhBusinessHours"],
+    bhAutoReplyStats,
   };
 
   return <AdminClient data={data} />;

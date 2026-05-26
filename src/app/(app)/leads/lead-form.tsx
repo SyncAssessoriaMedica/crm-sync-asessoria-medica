@@ -43,6 +43,14 @@ export function LeadForm({ mode, open, options, lead, customValues = {}, onClose
     [lead]
   );
 
+  const displaySources = useMemo(() => {
+    const currentSourceId = lead?.source_id;
+    if (mode === "create") {
+      return options.sources.filter((s) => s.active !== false);
+    }
+    return options.sources.filter((s) => s.active !== false || s.id === currentSourceId);
+  }, [mode, options.sources, lead?.source_id]);
+
   if (!open) return null;
 
   return (
@@ -86,9 +94,9 @@ export function LeadForm({ mode, open, options, lead, customValues = {}, onClose
 
             <SelectField label="Origem" name="source_id" defaultValue={defaults.source_id}>
               <SelectItem value="none">Sem origem</SelectItem>
-              {options.sources.map((source) => (
+              {displaySources.map((source) => (
                 <SelectItem key={source.id} value={source.id}>
-                  {source.name}
+                  {source.name}{source.active === false ? " (inativa)" : ""}
                 </SelectItem>
               ))}
             </SelectField>
