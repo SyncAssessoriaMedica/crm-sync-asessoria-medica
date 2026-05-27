@@ -1,9 +1,9 @@
 "use client";
 
-import { useRef, useTransition } from "react";
+import { useTransition } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Bell, Calendar, ChevronDown, Loader2, LogOut, Search } from "lucide-react";
+import { Bell, Calendar, ChevronDown, Loader2, LogOut } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
@@ -23,6 +23,9 @@ const periods = [
   { label: "30 dias", value: "30d" },
   { label: "Este mes", value: "month" },
 ];
+
+// Rotas onde o seletor de periodo faz sentido (consomem ?period= de verdade)
+const PERIOD_ROUTES = new Set(["/dashboard", "/inbox"]);
 
 export interface TopbarUser {
   name: string;
@@ -49,31 +52,19 @@ export function Topbar({ title, subtitle, user, notifications = [] }: TopbarProp
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const selectedPeriod = searchParams.get("period") ?? "30d";
-  const selectedSearch = searchParams.get("q") ?? "";
-  const searchTimer = useRef<number | null>(null);
   const [isPeriodPending, startPeriodTransition] = useTransition();
-  const selectedPeriodLabel = periods.find((period) => period.value === selectedPeriod)?.label ?? "30 dias";
+  const selectedPeriodLabel = periods.find((p) => p.value === selectedPeriod)?.label ?? "30 dias";
   const displayName = user?.name ?? "Usuario";
   const displayEmail = user?.email ?? "";
   const initials = getInitials(displayName);
   const notificationCount = notifications.length;
 
+  const showPeriod = PERIOD_ROUTES.has(pathname);
+
   function periodHref(value: string) {
     const params = new URLSearchParams(searchParams.toString());
     params.set("period", value);
     return `${pathname}?${params.toString()}`;
-  }
-
-  function updateSearch(value: string) {
-    if (searchTimer.current) window.clearTimeout(searchTimer.current);
-    searchTimer.current = window.setTimeout(() => {
-      const params = new URLSearchParams(searchParams.toString());
-      const trimmed = value.trim();
-      if (trimmed) params.set("q", trimmed);
-      else params.delete("q");
-      const nextUrl = params.toString() ? `${pathname}?${params.toString()}` : pathname;
-      router.replace(nextUrl, { scroll: false });
-    }, 350);
   }
 
   return (
@@ -85,56 +76,39 @@ export function Topbar({ title, subtitle, user, notifications = [] }: TopbarProp
         </div>
       )}
 
-      <div className="relative max-w-xs flex-1">
-        <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-muted" />
-        <input
-          key={`${pathname}-${selectedSearch}`}
-          type="text"
-          placeholder="Buscar lead, conversa..."
-          defaultValue={selectedSearch}
-          onChange={(event) => updateSearch(event.target.value)}
-          className={cn(
-            "h-8 w-full rounded-lg border border-border bg-background-subtle pl-8 pr-3 text-xs text-text-primary placeholder:text-text-muted",
-            "focus:border-brand-green focus:outline-none focus:ring-2 focus:ring-brand-green"
-          )}
-        />
-      </div>
-
       <div className="ml-auto flex items-center gap-2">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="secondary" size="sm" className="h-8 gap-1.5 text-xs" disabled={isPeriodPending}>
-              {isPeriodPending ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Calendar className="h-3.5 w-3.5" />
-              )}
-              {selectedPeriodLabel}
-              <ChevronDown className="h-3 w-3 text-text-muted" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-40">
-            <DropdownMenuLabel>Periodo</DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            {periods.map((period) => (
-              <DropdownMenuItem
-                key={period.value}
-                className={cn(
-                  pathname === "/dashboard" &&
-                    period.value === selectedPeriod &&
-                    "font-medium text-brand-green-dark"
+        {showPeriod && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="secondary" size="sm" className="h-8 gap-1.5 text-xs" disabled={isPeriodPending}>
+                {isPeriodPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Calendar className="h-3.5 w-3.5" />
                 )}
-                onSelect={() => {
-                  startPeriodTransition(() => {
-                    router.push(periodHref(period.value));
-                  });
-                }}
-              >
-                {period.label}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
+                {selectedPeriodLabel}
+                <ChevronDown className="h-3 w-3 text-text-muted" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-40">
+              <DropdownMenuLabel>Periodo</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {periods.map((period) => (
+                <DropdownMenuItem
+                  key={period.value}
+                  className={cn(period.value === selectedPeriod && "font-medium text-brand-green-dark")}
+                  onSelect={() => {
+                    startPeriodTransition(() => {
+                      router.push(periodHref(period.value));
+                    });
+                  }}
+                >
+                  {period.label}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>

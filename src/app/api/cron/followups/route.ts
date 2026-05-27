@@ -1,81 +1,49 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/lib/supabase/server";
+import {
+  type OrgBusinessHours,
+  isWithinBusinessHours,
+  nextBusinessHoursSlot,
+} from "@/lib/business-hours";
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
 function isAuthorized(request: NextRequest): boolean {
   const secret = process.env.CRON_SECRET;
   if (!secret) return false;
-  // Vercel passes the secret in the Authorization header: "Bearer <secret>"
   const auth = request.headers.get("authorization");
   if (auth === `Bearer ${secret}`) return true;
-  // Allow direct call with query param for local testing
   if (request.nextUrl.searchParams.get("secret") === secret) return true;
   return false;
 }
 
-// ─── Business hours check ─────────────────────────────────────────────────────
-
-type BusinessHour = {
-  day_of_week: number;
-  start_time: string;
-  end_time: string;
-  enabled: boolean;
-};
-
-function isWithinBusinessHours(now: Date, timezone: string, hours: BusinessHour[]): boolean {
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: timezone,
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-
-  const parts = formatter.formatToParts(now);
-  const dow = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(
-    parts.find((p) => p.type === "weekday")?.value ?? ""
-  );
-  const hourStr = parts.find((p) => p.type === "hour")?.value ?? "00";
-  const minStr  = parts.find((p) => p.type === "minute")?.value ?? "00";
-  const currentTime = `${hourStr.padStart(2, "0")}:${minStr.padStart(2, "0")}`;
-
-  const rule = hours.find((h) => h.day_of_week === dow);
-  if (!rule || !rule.enabled) return false;
-  return currentTime >= rule.start_time && currentTime < rule.end_time;
-}
-
-function nextBusinessHoursSlot(now: Date, timezone: string, hours: BusinessHour[]): Date {
-  // Try each 15-min slot for up to 7 days
-  const slot = new Date(now);
-  for (let i = 0; i < 7 * 24 * 4; i++) {
-    slot.setMinutes(slot.getMinutes() + 15);
-    if (isWithinBusinessHours(slot, timezone, hours)) return slot;
-  }
-  return new Date(now.getTime() + 24 * 60 * 60 * 1000);
-}
-
 // ─── Evolution API ────────────────────────────────────────────────────────────
+
+function evolutionBase(): string | null {
+  const raw = process.env.EVOLUTION_API_URL;
+  if (!raw) return null;
+  return raw.replace(/\/+$/, "").replace(/\/manager$/, "");
+}
 
 async function sendWhatsAppText(
   instanceName: string,
   phone: string,
   text: string
 ): Promise<{ ok: boolean; error?: string }> {
-  const baseUrl = process.env.EVOLUTION_API_URL;
-  const apiKey  = process.env.EVOLUTION_API_KEY;
-  if (!baseUrl || !apiKey) return { ok: false, error: "Evolution API not configured" };
-
-  const url = `${baseUrl}/message/sendText/${encodeURIComponent(instanceName)}`;
-  const number = phone.replace(/\D/g, "");
+  const base   = evolutionBase();
+  const apiKey = process.env.EVOLUTION_API_KEY;
+  if (!base || !apiKey) return { ok: false, error: "Evolution API not configured" };
 
   try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", apikey: apiKey },
-      body: JSON.stringify({ number, text, delay: 1200, linkPreview: false }),
-      signal: AbortSignal.timeout(15_000),
-    });
+    const res = await fetch(
+      `${base}/message/sendText/${encodeURIComponent(instanceName)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: apiKey },
+        body: JSON.stringify({ number: phone, text, delay: 1200, linkPreview: false }),
+        signal: AbortSignal.timeout(20_000),
+      }
+    );
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       return { ok: false, error: `HTTP ${res.status}: ${body.slice(0, 200)}` };
@@ -86,9 +54,89 @@ async function sendWhatsAppText(
   }
 }
 
+async function sendWhatsAppImage(
+  instanceName: string,
+  phone: string,
+  mediaUrl: string,
+  caption: string
+): Promise<{ ok: boolean; error?: string }> {
+  const base   = evolutionBase();
+  const apiKey = process.env.EVOLUTION_API_KEY;
+  if (!base || !apiKey) return { ok: false, error: "Evolution API not configured" };
+
+  try {
+    const res = await fetch(
+      `${base}/message/sendMedia/${encodeURIComponent(instanceName)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: apiKey },
+        body: JSON.stringify({
+          number: phone,
+          mediatype: "image",
+          media: mediaUrl,
+          caption,
+          delay: 1200,
+        }),
+        signal: AbortSignal.timeout(30_000),
+      }
+    );
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      return { ok: false, error: `HTTP ${res.status}: ${body.slice(0, 200)}` };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+}
+
+async function sendWhatsAppAudio(
+  instanceName: string,
+  phone: string,
+  audioUrl: string
+): Promise<{ ok: boolean; error?: string }> {
+  const base   = evolutionBase();
+  const apiKey = process.env.EVOLUTION_API_KEY;
+  if (!base || !apiKey) return { ok: false, error: "Evolution API not configured" };
+
+  try {
+    const res = await fetch(
+      `${base}/message/sendWhatsAppAudio/${encodeURIComponent(instanceName)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: apiKey },
+        body: JSON.stringify({ number: phone, audio: audioUrl, delay: 1200, encoding: true }),
+        signal: AbortSignal.timeout(30_000),
+      }
+    );
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      return { ok: false, error: `HTTP ${res.status}: ${body.slice(0, 200)}` };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+}
+
+// ─── Storage signed URL ───────────────────────────────────────────────────────
+
+type SupabaseAdmin = ReturnType<typeof createAdminClient>;
+
+async function getSignedMediaUrl(admin: SupabaseAdmin, storageRef: string): Promise<string | null> {
+  if (!storageRef.startsWith("supabase://media/")) return null;
+  const path = storageRef.slice("supabase://media/".length);
+  const { data, error } = await admin.storage.from("media").createSignedUrl(path, 300); // 5 min
+  if (error || !data?.signedUrl) {
+    console.error("[followup] signed URL error:", error?.message, "path:", path);
+    return null;
+  }
+  return data.signedUrl;
+}
+
 // ─── Route handler ────────────────────────────────────────────────────────────
 
-export const maxDuration = 55; // seconds (Vercel Pro limit)
+export const maxDuration = 55;
 
 export async function GET(request: NextRequest) {
   if (!isAuthorized(request)) {
@@ -109,10 +157,10 @@ export async function GET(request: NextRequest) {
   };
 
   try {
-    // Load all enabled orgs with their settings
+    // Load all enabled orgs
     const { data: orgs } = await admin
       .from("followup_settings")
-      .select("organization_id, timezone, enabled")
+      .select("organization_id, enabled")
       .eq("enabled", true);
 
     if (!orgs || orgs.length === 0) {
@@ -120,17 +168,15 @@ export async function GET(request: NextRequest) {
     }
 
     // ── PHASE 1: Scheduler ───────────────────────────────────────────────────
-    // For each org, find conversations that need new queue items.
 
     for (const org of orgs) {
       const orgId = org.organization_id;
       stats.orgsProcessed++;
 
-      // Load org config
       const [stepsRes, blockedStagesRes, blockedTagsRes] = await Promise.all([
         admin
           .from("followup_steps")
-          .select("id, step_order, delay_days, message_template")
+          .select("id, step_order, delay_days, message_template, message_type, media_url, media_mimetype, media_filename")
           .eq("organization_id", orgId)
           .order("step_order"),
         admin.from("followup_blocked_stages").select("stage_id").eq("organization_id", orgId),
@@ -143,7 +189,6 @@ export async function GET(request: NextRequest) {
 
       if (steps.length === 0) continue;
 
-      // Get open conversations with a linked lead
       const { data: conversations } = await admin
         .from("conversations")
         .select(`
@@ -165,22 +210,14 @@ export async function GET(request: NextRequest) {
           lead_tags: { tag_id: string }[];
         } | null;
 
-        // Skip if no lead or lead is paused
         if (!lead || lead.followup_paused) continue;
-
-        // Skip if lead's stage is blocked
         if (lead.stage_id && blockedStages.has(lead.stage_id)) continue;
-
-        // Skip if lead has any blocked tag
         const leadTagIds = (lead.lead_tags ?? []).map((t) => t.tag_id);
         if (leadTagIds.some((tid) => blockedTags.has(tid))) continue;
 
-        // Skip if WhatsApp instance is not connected
         const instance = conv.instance as unknown as { id: string; instance_name: string; status: string; deleted_at: string | null } | null;
         if (!instance || instance.deleted_at || instance.status !== "connected") continue;
 
-        // Find cycle_started_at: most recent manual, non-imported outbound message.
-        // Imported historical messages are excluded so they don't trigger follow-up.
         const { data: lastManual } = await admin
           .from("messages")
           .select("created_at")
@@ -196,7 +233,6 @@ export async function GET(request: NextRequest) {
 
         const cycleStartedAt = lastManual.created_at;
 
-        // Guard: if the lead replied after the last manual message, do not queue.
         const { data: inboundAfterManual } = await admin
           .from("messages")
           .select("id")
@@ -206,9 +242,8 @@ export async function GET(request: NextRequest) {
           .limit(1)
           .maybeSingle();
 
-        if (inboundAfterManual) continue; // lead replied — cycle is over
+        if (inboundAfterManual) continue;
 
-        // Count how many steps have been sent in this cycle
         const { data: sentItems } = await admin
           .from("followup_queue")
           .select("step_id")
@@ -217,12 +252,9 @@ export async function GET(request: NextRequest) {
           .eq("status", "sent");
 
         const sentStepIds = new Set((sentItems ?? []).map((r) => r.step_id));
-
-        // Find the next step to queue (first not yet sent)
         const nextStep = steps.find((s) => !sentStepIds.has(s.id));
-        if (!nextStep) continue; // all steps done for this cycle
+        if (!nextStep) continue;
 
-        // Check if already queued (pending or sending)
         const { data: existing } = await admin
           .from("followup_queue")
           .select("id")
@@ -232,16 +264,13 @@ export async function GET(request: NextRequest) {
           .in("status", ["pending", "sending"])
           .single();
 
-        if (existing) continue; // already in queue
+        if (existing) continue;
 
-        // Compute scheduled_for
-        const cycleMs    = new Date(cycleStartedAt).getTime();
+        const cycleMs      = new Date(cycleStartedAt).getTime();
         const scheduledFor = new Date(cycleMs + nextStep.delay_days * 24 * 60 * 60 * 1000);
 
-        // Only queue if delay has elapsed
         if (scheduledFor > now) continue;
 
-        // Create queue item
         const { error: insertErr } = await admin.from("followup_queue").insert({
           organization_id: orgId,
           conversation_id: conv.id,
@@ -253,14 +282,12 @@ export async function GET(request: NextRequest) {
         });
 
         if (insertErr) {
-          // 23505 = unique violation (race condition from another cron run) — ignore
           if (insertErr.code !== "23505") {
             console.error("followup queue insert error:", insertErr);
           }
           continue;
         }
 
-        // Log event
         await admin.from("followup_events").insert({
           organization_id: orgId,
           conversation_id: conv.id,
@@ -274,14 +301,13 @@ export async function GET(request: NextRequest) {
     }
 
     // ── PHASE 2: Sender ──────────────────────────────────────────────────────
-    // Pick up to 20 pending items (1 per WhatsApp instance), send them.
 
     const { data: pendingItems } = await admin
       .from("followup_queue")
       .select(`
         id, organization_id, conversation_id, lead_id, step_id,
         cycle_started_at, scheduled_for,
-        step:followup_steps(message_template, step_order),
+        step:followup_steps(message_template, step_order, message_type, media_url, media_mimetype, media_filename),
         conversation:conversations(
           remote_jid,
           lead:leads(name, phone, followup_paused, stage_id, lead_tags(tag_id)),
@@ -301,6 +327,21 @@ export async function GET(request: NextRequest) {
       return true;
     }).slice(0, 20);
 
+    // Cache org business hours to avoid redundant queries per item
+    const bhCache = new Map<string, OrgBusinessHours | null>();
+
+    async function getOrgBh(orgId: string): Promise<OrgBusinessHours | null> {
+      if (bhCache.has(orgId)) return bhCache.get(orgId)!;
+      const { data } = await admin
+        .from("organization_settings")
+        .select("business_hours")
+        .eq("organization_id", orgId)
+        .maybeSingle();
+      const bh = (data?.business_hours as OrgBusinessHours | null) ?? null;
+      bhCache.set(orgId, bh);
+      return bh;
+    }
+
     for (const item of toProcess) {
       const conv = item.conversation as unknown as {
         remote_jid: string;
@@ -308,7 +349,14 @@ export async function GET(request: NextRequest) {
         instance: { id: string; instance_name: string; status: string; deleted_at: string | null } | null;
       } | null;
 
-      const step = item.step as unknown as { message_template: string; step_order: number } | null;
+      const step = item.step as unknown as {
+        message_template: string;
+        step_order: number;
+        message_type: string;
+        media_url: string | null;
+        media_mimetype: string | null;
+        media_filename: string | null;
+      } | null;
 
       if (!conv?.instance || conv.instance.deleted_at || !step) {
         await admin
@@ -319,8 +367,7 @@ export async function GET(request: NextRequest) {
         continue;
       }
 
-      // Re-check blocking conditions
-      const lead = conv.lead;
+      const lead  = conv.lead;
       const orgId = item.organization_id;
 
       if (!lead || lead.followup_paused) {
@@ -341,7 +388,6 @@ export async function GET(request: NextRequest) {
       }
 
       if (conv.instance.status !== "connected") {
-        // Defer: instance offline
         const nextSlot = new Date(now.getTime() + 15 * 60 * 1000);
         await admin
           .from("followup_queue")
@@ -351,18 +397,11 @@ export async function GET(request: NextRequest) {
         continue;
       }
 
-      // Load business hours for this org
-      const { data: orgHours } = await admin
-        .from("followup_business_hours")
-        .select("day_of_week, start_time, end_time, enabled")
-        .eq("organization_id", orgId);
+      // Business hours check — from organization_settings
+      const bh = await getOrgBh(orgId);
 
-      const orgSettings = orgs.find((o) => o.organization_id === orgId);
-      const timezone = orgSettings?.timezone ?? "America/Sao_Paulo";
-      const hours = orgHours ?? [];
-
-      if (!isWithinBusinessHours(now, timezone, hours)) {
-        const nextBizSlot = nextBusinessHoursSlot(now, timezone, hours);
+      if (bh && bh.workingDays?.length && !isWithinBusinessHours(now, bh)) {
+        const nextBizSlot = nextBusinessHoursSlot(now, bh);
         await admin
           .from("followup_queue")
           .update({ scheduled_for: nextBizSlot.toISOString(), updated_at: now.toISOString() })
@@ -379,19 +418,16 @@ export async function GET(request: NextRequest) {
         continue;
       }
 
-      // Mark as sending (lock)
+      // Lock item
       const { error: lockErr } = await admin
         .from("followup_queue")
         .update({ status: "sending", updated_at: now.toISOString() })
         .eq("id", item.id)
         .eq("status", "pending");
 
-      if (lockErr) {
-        // Another process grabbed it
-        continue;
-      }
+      if (lockErr) continue;
 
-      // Final guard: lead may have replied between queue creation and now.
+      // Final inbound guard
       const { data: lateInbound } = await admin
         .from("messages")
         .select("id")
@@ -418,22 +454,68 @@ export async function GET(request: NextRequest) {
         continue;
       }
 
-      // Personalise message
-      const message = step.message_template.replace(/\{nome\}/gi, lead.name ?? "");
+      const phone        = conv.remote_jid.replace(/@.*$/, "").replace(/\D/g, "");
+      const messageType  = step.message_type ?? "text";
+      const personalized = (step.message_template ?? "").replace(/\{nome\}/gi, lead.name ?? "");
 
-      // Send via Evolution API
-      const phone = conv.remote_jid.replace(/@.*$/, "");
-      const result = await sendWhatsAppText(conv.instance.instance_name, phone, message);
+      let result: { ok: boolean; error?: string };
+
+      if (messageType === "image" || messageType === "audio") {
+        if (!step.media_url) {
+          await admin
+            .from("followup_queue")
+            .update({
+              status: "failed",
+              error: "media_url ausente no passo",
+              updated_at: now.toISOString(),
+            })
+            .eq("id", item.id);
+          await admin.from("followup_events").insert({
+            organization_id: orgId,
+            queue_item_id: item.id,
+            conversation_id: item.conversation_id,
+            lead_id: item.lead_id,
+            event_type: "failed",
+            metadata: { error: "media_url ausente", step_order: step.step_order },
+          });
+          stats.failed++;
+          continue;
+        }
+
+        const signedUrl = await getSignedMediaUrl(admin, step.media_url);
+        if (!signedUrl) {
+          await admin
+            .from("followup_queue")
+            .update({
+              status: "failed",
+              error: "nao foi possivel gerar URL assinada para a midia",
+              updated_at: now.toISOString(),
+            })
+            .eq("id", item.id);
+          stats.failed++;
+          continue;
+        }
+
+        if (messageType === "image") {
+          result = await sendWhatsAppImage(conv.instance.instance_name, phone, signedUrl, personalized);
+        } else {
+          result = await sendWhatsAppAudio(conv.instance.instance_name, phone, signedUrl);
+        }
+      } else {
+        result = await sendWhatsAppText(conv.instance.instance_name, phone, personalized);
+      }
 
       if (result.ok) {
-        // Insert message record
         const { data: msgRecord } = await admin
           .from("messages")
           .insert({
             conversation_id: item.conversation_id,
             direction: "outbound",
-            message_type: "text",
-            content: message,
+            message_type: messageType,
+            content: messageType === "text" ? personalized : null,
+            media_url: step.media_url ?? null,
+            media_mimetype: step.media_mimetype ?? null,
+            media_filename: step.media_filename ?? null,
             is_automatic: true,
           })
           .select("id")
@@ -455,7 +537,7 @@ export async function GET(request: NextRequest) {
           conversation_id: item.conversation_id,
           lead_id: item.lead_id,
           event_type: "sent",
-          metadata: { step_order: step.step_order, instance: conv.instance.instance_name },
+          metadata: { step_order: step.step_order, instance: conv.instance.instance_name, message_type: messageType },
         });
 
         stats.sent++;
@@ -464,7 +546,7 @@ export async function GET(request: NextRequest) {
           .from("followup_queue")
           .update({
             status: "failed",
-            error: result.error ?? "unknown",
+            error: (result.error ?? "unknown").slice(0, 400),
             updated_at: now.toISOString(),
           })
           .eq("id", item.id);

@@ -1,5 +1,6 @@
 import { headers } from "next/headers";
 import { getOrganizationContext } from "@/lib/organization-context";
+import { parseOrgBusinessHours } from "@/lib/business-hours";
 import { AdminClient, type AdminData } from "./admin-client";
 
 export const dynamic = "force-dynamic";
@@ -36,7 +37,7 @@ export default async function AdminPage() {
     sourcesResult,
     sourceRulesResult,
     bhAutoReplySettingsResult,
-    bhBusinessHoursResult,
+    organizationSettingsResult,
     bhQueueResult,
   ] = await Promise.all([
     admin.from("organizations").select("id, name, slug, subscription_status, created_at").order("created_at", { ascending: false }),
@@ -58,7 +59,7 @@ export default async function AdminPage() {
     admin.from("lead_sources").select("id, name, color, active, is_default, created_at").eq("organization_id", organizationId).order("name", { ascending: true }),
     admin.from("lead_source_rules").select("id, source_id, name, match_type, pattern, case_sensitive, normalize_whitespace, overwrite_existing, active, priority, created_at").eq("organization_id", organizationId).order("priority", { ascending: true }).order("created_at", { ascending: true }),
     admin.from("bh_auto_reply_settings").select("enabled, message_template, delay_minutes, cooldown_hours, timezone").eq("organization_id", organizationId).maybeSingle(),
-    admin.from("followup_business_hours").select("day_of_week, start_time, end_time, enabled").eq("organization_id", organizationId).order("day_of_week", { ascending: true }),
+    admin.from("organization_settings").select("business_hours").eq("organization_id", organizationId).maybeSingle(),
     admin.from("bh_auto_reply_queue").select("status").eq("organization_id", organizationId),
   ]);
 
@@ -132,7 +133,7 @@ export default async function AdminPage() {
     sources: sourcesResult.data ?? [],
     sourceRules: sourceRulesResult.data ?? [],
     bhAutoReplySettings: bhAutoReplySettingsResult.data as AdminData["bhAutoReplySettings"],
-    bhBusinessHours: (bhBusinessHoursResult.data ?? []) as AdminData["bhBusinessHours"],
+    businessHours: parseOrgBusinessHours(organizationSettingsResult.data?.business_hours),
     bhAutoReplyStats,
   };
 

@@ -1988,33 +1988,6 @@ export async function saveBhAutoReplySettingsAction(formData: FormData): Promise
   }
 }
 
-export async function saveBhBusinessHoursAction(formData: FormData): Promise<ActionResult> {
-  try {
-    const { admin, organizationId } = await getContext();
-
-    const rows = [];
-    for (let day = 0; day <= 6; day++) {
-      const enabled    = formData.get(`day_${day}_enabled`) === "on";
-      const startRaw   = asText(formData.get(`day_${day}_start`)) || "08:00";
-      const endRaw     = asText(formData.get(`day_${day}_end`))   || "18:00";
-      const timeRegex  = /^\d{2}:\d{2}$/;
-      const start_time = timeRegex.test(startRaw) ? startRaw : "08:00";
-      const end_time   = timeRegex.test(endRaw)   ? endRaw   : "18:00";
-      rows.push({ organization_id: organizationId, day_of_week: day, enabled, start_time, end_time });
-    }
-
-    const { error } = await admin
-      .from("followup_business_hours")
-      .upsert(rows, { onConflict: "organization_id,day_of_week" });
-
-    if (error) return { ok: false, message: error.message };
-    revalidatePath("/admin");
-    return { ok: true, message: "Horarios de atendimento salvos." };
-  } catch (error) {
-    return { ok: false, message: error instanceof Error ? error.message : "Erro ao salvar horarios." };
-  }
-}
-
 export async function deactivateInboundWebhookAction(token: string): Promise<ActionResult> {
   try {
     const { admin, organizationId } = await getContext();

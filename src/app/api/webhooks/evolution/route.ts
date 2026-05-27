@@ -5,6 +5,12 @@ import { checkRateLimit, getRateLimitKey } from "@/lib/rate-limit";
 import { sanitizePayload } from "@/lib/sanitize";
 import { createOrUpdateLeadByPhone } from "@/lib/lead-upsert";
 import { fetchAndStoreWhatsAppMedia } from "@/lib/media-storage";
+import {
+  type OrgBusinessHours,
+  isSafelyOutsideBhHours,
+  nextBusinessHoursSlot,
+  formatNextSlotPt,
+} from "@/lib/business-hours";
 
 export const maxDuration = 30;
 
@@ -219,113 +225,7 @@ function getMessageContent(data: NonNullable<EvolutionPayload["data"]>) {
 }
 
 // ─── Business-hours auto-reply ───────────────────────────────────────────────
-
-type BusinessHour = {
-  day_of_week: number;
-  start_time: string;
-  end_time: string;
-  enabled: boolean;
-};
-
-const BH_AUTO_REPLY_BUFFER_MINUTES = 90;
-
-function isWithinBhHours(now: Date, timezone: string, hours: BusinessHour[]): boolean {
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: timezone,
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-  const parts = formatter.formatToParts(now);
-  const dow = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(
-    parts.find((p) => p.type === "weekday")?.value ?? ""
-  );
-  const hourStr = parts.find((p) => p.type === "hour")?.value ?? "00";
-  const minStr  = parts.find((p) => p.type === "minute")?.value ?? "00";
-  const currentTime = `${hourStr.padStart(2, "0")}:${minStr.padStart(2, "0")}`;
-  const rule = hours.find((h) => h.day_of_week === dow);
-  if (!rule || !rule.enabled) return false;
-  return currentTime >= rule.start_time.substring(0, 5) && currentTime < rule.end_time.substring(0, 5);
-}
-
-function minutesUntilNextBhMinute(now: Date, timezone: string, hours: BusinessHour[]): number | null {
-  const slot = new Date(now);
-  for (let i = 1; i <= 8 * 24 * 60; i++) {
-    slot.setMinutes(slot.getMinutes() + 1, 0, 0);
-    if (isWithinBhHours(slot, timezone, hours)) return i;
-  }
-  return null;
-}
-
-function minutesSincePreviousBhMinute(now: Date, timezone: string, hours: BusinessHour[]): number | null {
-  const slot = new Date(now);
-  for (let i = 1; i <= 8 * 24 * 60; i++) {
-    slot.setMinutes(slot.getMinutes() - 1, 0, 0);
-    if (isWithinBhHours(slot, timezone, hours)) return i;
-  }
-  return null;
-}
-
-function isSafelyOutsideBhHours(now: Date, timezone: string, hours: BusinessHour[]): boolean {
-  if (isWithinBhHours(now, timezone, hours)) return false;
-
-  const sincePrevious = minutesSincePreviousBhMinute(now, timezone, hours);
-  const untilNext = minutesUntilNextBhMinute(now, timezone, hours);
-
-  if (sincePrevious === null || untilNext === null) return false;
-  return sincePrevious >= BH_AUTO_REPLY_BUFFER_MINUTES && untilNext >= BH_AUTO_REPLY_BUFFER_MINUTES;
-}
-
-function nextBhSlot(now: Date, timezone: string, hours: BusinessHour[]): Date {
-  const slot = new Date(now);
-  for (let i = 1; i <= 8 * 24 * 60; i++) {
-    slot.setMinutes(slot.getMinutes() + 1, 0, 0);
-    if (isWithinBhHours(slot, timezone, hours)) return slot;
-  }
-  return new Date(now.getTime() + 24 * 60 * 60 * 1000);
-}
-
-const PT_DAY_NAMES = ["domingo", "segunda", "terca", "quarta", "quinta", "sexta", "sabado"];
-
-function getLocalDateParts(date: Date, timezone: string) {
-  const fmt = new Intl.DateTimeFormat("en-US", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-  const parts = fmt.formatToParts(date);
-  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
-  return {
-    year: get("year"),
-    month: get("month"),
-    day: get("day"),
-    dow: Math.max(0, ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(get("weekday"))),
-    hour: parseInt(get("hour"), 10),
-    minute: parseInt(get("minute"), 10),
-  };
-}
-
-function formatNextBhSlotPt(nextSlot: Date, now: Date, timezone: string): string {
-  const nowP = getLocalDateParts(now, timezone);
-  const slotP = getLocalDateParts(nextSlot, timezone);
-  const tomorrowP = getLocalDateParts(new Date(now.getTime() + 24 * 60 * 60 * 1000), timezone);
-
-  const isSameDay = nowP.year === slotP.year && nowP.month === slotP.month && nowP.day === slotP.day;
-  const isTomorrow = tomorrowP.year === slotP.year && tomorrowP.month === slotP.month && tomorrowP.day === slotP.day;
-  const hourStr = String(slotP.hour).padStart(2, "0");
-  const minuteStr = String(slotP.minute).padStart(2, "0");
-  const timeText = slotP.minute === 0 ? `${hourStr} horas` : `${hourStr}:${minuteStr}`;
-
-  if (isSameDay) return `hoje as ${timeText}`;
-  if (isTomorrow) return `amanha as ${timeText}`;
-  return `${PT_DAY_NAMES[slotP.dow]} as ${timeText}`;
-}
+// Logic delegated to @/lib/business-hours (shared with followup cron).
 
 async function sendBhWhatsAppText(
   instanceName: string,
@@ -381,25 +281,28 @@ async function maybeSendBhAutoReply(
   instanceName: string,
   remoteJid: string
 ): Promise<void> {
-  const { data: settings } = await admin
-    .from("bh_auto_reply_settings")
-    .select("enabled, message_template, cooldown_hours, timezone")
-    .eq("organization_id", organizationId)
-    .maybeSingle();
+  const [settingsRes, orgSettingsRes] = await Promise.all([
+    admin
+      .from("bh_auto_reply_settings")
+      .select("enabled, message_template, cooldown_hours")
+      .eq("organization_id", organizationId)
+      .maybeSingle(),
+    admin
+      .from("organization_settings")
+      .select("business_hours")
+      .eq("organization_id", organizationId)
+      .maybeSingle(),
+  ]);
 
-  if (!settings?.enabled) return;
+  if (!settingsRes.data?.enabled) return;
 
-  const { data: hours } = await admin
-    .from("followup_business_hours")
-    .select("day_of_week, start_time, end_time, enabled")
-    .eq("organization_id", organizationId);
-
-  const activeHours = (hours ?? []) as BusinessHour[];
-  if (!activeHours.some((h) => h.enabled)) return;
+  const bh = orgSettingsRes.data?.business_hours as OrgBusinessHours | null;
+  if (!bh || !bh.workingDays?.length) return; // no business hours configured in Settings
 
   const now = new Date();
-  if (!isSafelyOutsideBhHours(now, settings.timezone, activeHours)) return;
+  if (!isSafelyOutsideBhHours(now, bh)) return;
 
+  const settings = settingsRes.data;
   const cooldownThreshold = new Date(now.getTime() - (settings.cooldown_hours as number) * 60 * 60 * 1000);
   const { data: recentSent } = await admin
     .from("bh_auto_reply_queue")
@@ -412,10 +315,10 @@ async function maybeSendBhAutoReply(
 
   if (recentSent) return;
 
-  const nextSlot = nextBhSlot(now, settings.timezone, activeHours);
+  const nextSlot = nextBusinessHoursSlot(now, bh);
   const message = (settings.message_template as string).replace(
     /\{\{proximo_horario_util\}\}/g,
-    formatNextBhSlotPt(nextSlot, now, settings.timezone)
+    formatNextSlotPt(nextSlot, now, bh.timezone)
   );
   const result = await sendBhWhatsAppText(instanceName, normalizePhone(remoteJid), message);
 

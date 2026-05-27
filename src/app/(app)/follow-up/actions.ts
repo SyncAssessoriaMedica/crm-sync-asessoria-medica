@@ -48,11 +48,42 @@ export async function saveFollowupSettingsAction(formData: FormData): Promise<Ac
 
 // ─── Steps ────────────────────────────────────────────────────────────────────
 
-const stepSchema = z.object({
+const textStepSchema = z.object({
   step_order: z.coerce.number().int().min(1),
   delay_days: z.coerce.number().int().min(1).max(365),
-  message_template: z.string().min(1).max(4096),
+  message_type: z.literal("text"),
+  message_template: z.string().min(1, "Mensagem e obrigatoria para passos de texto.").max(4096),
+  media_url: z.null().optional(),
+  media_mimetype: z.null().optional(),
+  media_filename: z.null().optional(),
 });
+
+const mediaStepSchema = z.object({
+  step_order: z.coerce.number().int().min(1),
+  delay_days: z.coerce.number().int().min(1).max(365),
+  message_type: z.enum(["audio", "image"]),
+  message_template: z.string().max(1000).optional().default(""),
+  media_url: z.string().min(1, "URL da midia e obrigatoria."),
+  media_mimetype: z.string().min(1).max(128).optional(),
+  media_filename: z.string().max(255).optional(),
+});
+
+function parseStepFormData(formData: FormData) {
+  const raw = {
+    step_order: formData.get("step_order"),
+    delay_days: formData.get("delay_days"),
+    message_type: formData.get("message_type") ?? "text",
+    message_template: formData.get("message_template") ?? "",
+    media_url: formData.get("media_url") ?? undefined,
+    media_mimetype: formData.get("media_mimetype") ?? undefined,
+    media_filename: formData.get("media_filename") ?? undefined,
+  };
+
+  if (raw.message_type === "text") {
+    return textStepSchema.safeParse({ ...raw, media_url: null });
+  }
+  return mediaStepSchema.safeParse(raw);
+}
 
 export async function upsertFollowupStepAction(
   stepId: string | null,
@@ -61,24 +92,33 @@ export async function upsertFollowupStepAction(
   try {
     const { admin, organizationId } = await getContext();
 
-    const parsed = stepSchema.safeParse({
-      step_order: formData.get("step_order"),
-      delay_days: formData.get("delay_days"),
-      message_template: formData.get("message_template"),
-    });
-    if (!parsed.success) return { ok: false, message: "Dados invalidos: " + parsed.error.issues[0]?.message };
+    const parsed = parseStepFormData(formData);
+    if (!parsed.success) {
+      const msg = parsed.error.issues[0]?.message ?? "Dados invalidos.";
+      return { ok: false, message: msg };
+    }
+
+    const payload = {
+      step_order:       parsed.data.step_order,
+      delay_days:       parsed.data.delay_days,
+      message_type:     parsed.data.message_type,
+      message_template: parsed.data.message_type === "text" ? parsed.data.message_template : (parsed.data.message_template ?? ""),
+      media_url:        parsed.data.message_type !== "text" ? parsed.data.media_url : null,
+      media_mimetype:   parsed.data.message_type !== "text" ? (parsed.data.media_mimetype ?? null) : null,
+      media_filename:   parsed.data.message_type !== "text" ? (parsed.data.media_filename ?? null) : null,
+    };
 
     if (stepId) {
       const { error } = await admin
         .from("followup_steps")
-        .update({ ...parsed.data, updated_at: new Date().toISOString() })
+        .update({ ...payload, updated_at: new Date().toISOString() })
         .eq("id", stepId)
         .eq("organization_id", organizationId);
       if (error) throw error;
     } else {
       const { error } = await admin
         .from("followup_steps")
-        .insert({ organization_id: organizationId, ...parsed.data });
+        .insert({ organization_id: organizationId, ...payload });
       if (error) {
         if (error.code === "23505") return { ok: false, message: "Ja existe um passo com essa ordem." };
         throw error;
@@ -109,43 +149,6 @@ export async function deleteFollowupStepAction(stepId: string): Promise<ActionRe
   } catch (err) {
     console.error("deleteFollowupStepAction:", err);
     return { ok: false, message: "Erro ao remover passo." };
-  }
-}
-
-// ─── Business Hours ───────────────────────────────────────────────────────────
-
-const hoursSchema = z.object({
-  day_of_week: z.coerce.number().int().min(0).max(6),
-  start_time: z.string().regex(/^\d{2}:\d{2}$/),
-  end_time: z.string().regex(/^\d{2}:\d{2}$/),
-  enabled: z.boolean(),
-});
-
-export async function upsertBusinessHoursAction(formData: FormData): Promise<ActionResult> {
-  try {
-    const { admin, organizationId } = await getContext();
-
-    const parsed = hoursSchema.safeParse({
-      day_of_week: formData.get("day_of_week"),
-      start_time: formData.get("start_time"),
-      end_time: formData.get("end_time"),
-      enabled: formData.get("enabled") === "true",
-    });
-    if (!parsed.success) return { ok: false, message: "Dados invalidos." };
-
-    const { error } = await admin
-      .from("followup_business_hours")
-      .upsert(
-        { organization_id: organizationId, ...parsed.data },
-        { onConflict: "organization_id,day_of_week" }
-      );
-
-    if (error) throw error;
-    revalidatePath("/follow-up");
-    return { ok: true, message: "Horario salvo." };
-  } catch (err) {
-    console.error("upsertBusinessHoursAction:", err);
-    return { ok: false, message: "Erro ao salvar horario." };
   }
 }
 

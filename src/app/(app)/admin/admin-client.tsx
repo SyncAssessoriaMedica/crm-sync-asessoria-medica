@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useTransition } from "react";
 import Image from "next/image";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ArrowDown,
@@ -39,6 +40,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn, formatDateTime } from "@/lib/utils";
+import type { OrgBusinessHours } from "@/lib/business-hours";
 import {
   connectWhatsappInstanceAction,
   createInboundWebhookAction,
@@ -64,7 +66,6 @@ import {
   generatePasswordAction,
   importWhatsappConversationsAction,
   saveBhAutoReplySettingsAction,
-  saveBhBusinessHoursAction,
   setWebhookForInstanceAction,
   movePipelineStageAction,
   syncWhatsappInstanceStatusAction,
@@ -188,13 +189,6 @@ type BhAutoReplySettingsRow = {
   timezone: string;
 } | null;
 
-type BusinessHourRow = {
-  day_of_week: number;
-  start_time: string;
-  end_time: string;
-  enabled: boolean;
-};
-
 type BhAutoReplyStats = {
   pending: number;
   sent: number;
@@ -229,7 +223,7 @@ export type AdminData = {
   sources: SourceRow[];
   sourceRules: SourceRuleRow[];
   bhAutoReplySettings: BhAutoReplySettingsRow;
-  bhBusinessHours: BusinessHourRow[];
+  businessHours: OrgBusinessHours | null;
   bhAutoReplyStats: BhAutoReplyStats;
 };
 
@@ -1026,7 +1020,7 @@ export function AdminClient({ data }: { data: AdminData }) {
           {activeSection === "bh_auto_reply" && (
             <BhAutoReplySection
               settings={data.bhAutoReplySettings}
-              businessHours={data.bhBusinessHours}
+              businessHours={data.businessHours}
               stats={data.bhAutoReplyStats}
               isPending={isPending}
               onRun={runAction}
@@ -1204,16 +1198,12 @@ function BhAutoReplySection({
   onRun,
 }: {
   settings: BhAutoReplySettingsRow;
-  businessHours: BusinessHourRow[];
+  businessHours: OrgBusinessHours | null;
   stats: BhAutoReplyStats;
   isPending: boolean;
   onRun: (action: (formData: FormData) => Promise<{ ok: boolean; message: string; data?: unknown }>) => (formData: FormData) => void;
 }) {
   const s = settings ?? BH_DEFAULT_SETTINGS;
-
-  const getHour = (day: number) =>
-    businessHours.find((h) => h.day_of_week === day) ??
-    { day_of_week: day, start_time: "08:00", end_time: "18:00", enabled: day >= 1 && day <= 5 };
 
   return (
     <div className="space-y-4">
@@ -1274,62 +1264,51 @@ function BhAutoReplySection({
             <Button disabled={isPending}>Salvar configuracoes</Button>
           </form>
 
-          {/* Business hours form */}
-          <form action={onRun(saveBhBusinessHoursAction)} className="space-y-3 rounded-xl border border-border bg-background-subtle/50 p-4">
-            <p className="text-sm font-semibold text-text-primary">Horario de atendimento</p>
+          <div className="space-y-3 rounded-xl border border-border bg-background-subtle/50 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-text-primary">Horario de atendimento</p>
+                <p className="mt-1 text-xs text-text-secondary">
+                  Fonte unica: Configuracoes da clinica. Esse mesmo horario alimenta Dashboard,
+                  Follow-up automatico e resposta fora do horario.
+                </p>
+              </div>
+              <Button asChild variant="secondary" size="sm">
+                <Link href="/settings">Editar em Configuracoes</Link>
+              </Button>
+            </div>
             <p className="text-xs text-text-secondary">
               Fora deste horario, mensagens recebidas podem acionar a resposta automatica se a regra
-              estiver ativa e a conversa estiver dentro da janela segura. Este horario tambem e usado
-              pelo Follow-up automatico.
+              estiver ativa e a conversa estiver dentro da janela segura.
             </p>
-            <div className="overflow-hidden rounded-xl border border-border bg-white">
-              <table className="w-full text-xs">
-                <thead className="border-b border-border bg-background-subtle">
-                  <tr>
-                    <th className="px-3 py-2 text-left label-eyebrow">Dia</th>
-                    <th className="px-3 py-2 text-left label-eyebrow">Ativo</th>
-                    <th className="px-3 py-2 text-left label-eyebrow">Inicio</th>
-                    <th className="px-3 py-2 text-left label-eyebrow">Fim</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {[0, 1, 2, 3, 4, 5, 6].map((day) => {
-                    const h = getHour(day);
-                    return (
-                      <tr key={day} className="hover:bg-background-subtle/50">
-                        <td className="px-3 py-2 font-medium text-text-primary">{BH_DAYS[day]}</td>
-                        <td className="px-3 py-2">
-                          <input
-                            type="checkbox"
-                            name={`day_${day}_enabled`}
-                            defaultChecked={h.enabled}
-                            className="h-4 w-4 accent-brand-green"
-                          />
-                        </td>
-                        <td className="px-3 py-2">
-                          <input
-                            type="time"
-                            name={`day_${day}_start`}
-                            defaultValue={h.start_time.substring(0, 5)}
-                            className="rounded border border-border bg-white px-2 py-1 text-xs outline-none focus:border-brand-green"
-                          />
-                        </td>
-                        <td className="px-3 py-2">
-                          <input
-                            type="time"
-                            name={`day_${day}_end`}
-                            defaultValue={h.end_time.substring(0, 5)}
-                            className="rounded border border-border bg-white px-2 py-1 text-xs outline-none focus:border-brand-green"
-                          />
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+            <div className="rounded-xl border border-border bg-white p-3 text-xs">
+              {businessHours ? (
+                <div className="grid gap-3 md:grid-cols-3">
+                  <div>
+                    <p className="label-eyebrow text-text-muted">Dias ativos</p>
+                    <p className="mt-1 font-semibold text-text-primary">
+                      {businessHours.workingDays.map((day) => BH_DAYS[day]).join(", ")}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="label-eyebrow text-text-muted">Horario</p>
+                    <p className="mt-1 font-semibold text-text-primary">
+                      {businessHours.startTime} as {businessHours.endTime}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="label-eyebrow text-text-muted">Fuso horario</p>
+                    <p className="mt-1 font-semibold text-text-primary">{businessHours.timezone}</p>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-text-secondary">
+                  Nenhum horario valido configurado. Defina os dias e horarios em Configuracoes
+                  para liberar as regras por horario util.
+                </p>
+              )}
             </div>
-            <Button variant="secondary" disabled={isPending}>Salvar horarios</Button>
-          </form>
+          </div>
 
           {/* Queue stats */}
           <div className="rounded-xl border border-border bg-white p-4">

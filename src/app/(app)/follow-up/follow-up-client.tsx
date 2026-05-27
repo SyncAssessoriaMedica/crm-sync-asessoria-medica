@@ -1,18 +1,31 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { AlertCircle, CheckCircle2, Clock, Edit2, Plus, Trash2, WifiOff, X } from "lucide-react";
+import {
+  AlertCircle,
+  CheckCircle2,
+  Clock,
+  Edit2,
+  ExternalLink,
+  FileImage,
+  Mic,
+  Plus,
+  Trash2,
+  WifiOff,
+  X,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { cn, formatDateTime } from "@/lib/utils";
+import type { OrgBusinessHours } from "@/lib/business-hours";
 import {
   cancelQueueItemAction,
   deleteFollowupStepAction,
   saveFollowupSettingsAction,
   toggleBlockedStageAction,
   toggleBlockedTagAction,
-  upsertBusinessHoursAction,
   upsertFollowupStepAction,
 } from "./actions";
 
@@ -24,19 +37,15 @@ type FollowupSettings = {
   timezone: string;
 } | null;
 
-type FollowupStep = {
+export type FollowupStep = {
   id: string;
   step_order: number;
   delay_days: number;
   message_template: string;
-};
-
-type BusinessHour = {
-  id: string;
-  day_of_week: number;
-  start_time: string;
-  end_time: string;
-  enabled: boolean;
+  message_type: string;
+  media_url: string | null;
+  media_mimetype: string | null;
+  media_filename: string | null;
 };
 
 type Stage = { id: string; name: string };
@@ -50,7 +59,7 @@ type QueueItem = {
   error: string | null;
   cycle_started_at: string;
   created_at: string;
-  step: { step_order: number; delay_days: number; message_template: string } | null;
+  step: { step_order: number; delay_days: number; message_template: string; message_type?: string } | null;
   conversation: {
     id: string;
     remote_jid: string;
@@ -72,7 +81,7 @@ type FollowupEvent = {
 type Props = {
   settings: FollowupSettings;
   steps: FollowupStep[];
-  businessHours: BusinessHour[];
+  orgBusinessHours: OrgBusinessHours | null;
   blockedStageIds: string[];
   blockedTagIds: string[];
   stages: Stage[];
@@ -82,20 +91,7 @@ type Props = {
   instances: { id: string; instance_name: string; status: string }[];
 };
 
-const DAYS = ["Domingo", "Segunda", "Terca", "Quarta", "Quinta", "Sexta", "Sabado"];
-
-const TIMEZONES = [
-  "America/Sao_Paulo",
-  "America/Manaus",
-  "America/Belem",
-  "America/Recife",
-  "America/Fortaleza",
-  "America/Cuiaba",
-  "America/Porto_Velho",
-  "America/Boa_Vista",
-  "America/Rio_Branco",
-  "America/Noronha",
-];
+const DAYS_PT = ["Domingo", "Segunda", "Terca", "Quarta", "Quinta", "Sexta", "Sabado"];
 
 const EVENT_LABELS: Record<string, string> = {
   queued:                   "Agendado",
@@ -109,12 +105,18 @@ const EVENT_LABELS: Record<string, string> = {
   skipped_due_to_inbound:   "Ignorado por resposta",
 };
 
+const TYPE_LABELS: Record<string, string> = {
+  text:  "Texto",
+  audio: "Audio",
+  image: "Imagem",
+};
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export function FollowUpClient({
   settings: initialSettings,
   steps: initialSteps,
-  businessHours: initialHours,
+  orgBusinessHours,
   blockedStageIds: initialBlockedStages,
   blockedTagIds: initialBlockedTags,
   stages,
@@ -129,11 +131,9 @@ export function FollowUpClient({
 
   const [settings, setSettings] = useState(initialSettings);
   const [steps, setSteps] = useState(initialSteps);
-  const [hours, setHours] = useState(initialHours);
   const [blockedStages, setBlockedStages] = useState(initialBlockedStages);
   const [blockedTags, setBlockedTags] = useState(initialBlockedTags);
 
-  // Step edit state
   const [editingStep, setEditingStep] = useState<FollowupStep | null>(null);
   const [addingStep, setAddingStep] = useState(false);
 
@@ -147,19 +147,21 @@ export function FollowUpClient({
   function toggleEnabled() {
     const enabling = !settings?.enabled;
     if (enabling) {
-      const activeHours = hours.filter((h) => h.enabled);
       if (steps.length === 0) {
         notify({ ok: false, message: "Adicione ao menos uma mensagem antes de ativar o follow-up." });
         return;
       }
-      if (activeHours.length === 0) {
-        notify({ ok: false, message: "Configure ao menos um horario de funcionamento antes de ativar." });
+      if (!orgBusinessHours || !orgBusinessHours.workingDays?.length) {
+        notify({
+          ok: false,
+          message: "Configure o horario de funcionamento em Configuracoes antes de ativar o follow-up.",
+        });
         return;
       }
     }
     const fd = new FormData();
     fd.set("enabled", enabling ? "true" : "false");
-    fd.set("timezone", settings?.timezone ?? "America/Sao_Paulo");
+    fd.set("timezone", orgBusinessHours?.timezone ?? settings?.timezone ?? "America/Sao_Paulo");
     startTransition(async () => {
       const result = await saveFollowupSettingsAction(fd);
       notify(result);
@@ -168,17 +170,6 @@ export function FollowUpClient({
           prev ? { ...prev, enabled: !prev.enabled } : { id: "", enabled: true, timezone: "America/Sao_Paulo" }
         );
       }
-    });
-  }
-
-  function saveTimezone(tz: string) {
-    const fd = new FormData();
-    fd.set("enabled", settings?.enabled ? "true" : "false");
-    fd.set("timezone", tz);
-    startTransition(async () => {
-      const result = await saveFollowupSettingsAction(fd);
-      notify(result);
-      if (result.ok) setSettings((prev) => (prev ? { ...prev, timezone: tz } : null));
     });
   }
 
@@ -191,7 +182,7 @@ export function FollowUpClient({
       if (result.ok) {
         setEditingStep(null);
         setAddingStep(false);
-        router.refresh(); // pull fresh step list from server
+        router.refresh();
       }
     });
   }
@@ -202,28 +193,6 @@ export function FollowUpClient({
       const result = await deleteFollowupStepAction(stepId);
       notify(result);
       if (result.ok) setSteps((prev) => prev.filter((s) => s.id !== stepId));
-    });
-  }
-
-  // ─── Business hours ────────────────────────────────────────────────────────
-
-  function saveHour(day: number, startTime: string, endTime: string, enabled: boolean) {
-    const fd = new FormData();
-    fd.set("day_of_week", String(day));
-    fd.set("start_time", startTime);
-    fd.set("end_time", endTime);
-    fd.set("enabled", enabled ? "true" : "false");
-    startTransition(async () => {
-      const result = await upsertBusinessHoursAction(fd);
-      notify(result);
-      if (result.ok) {
-        setHours((prev) => {
-          const idx = prev.findIndex((h) => h.day_of_week === day);
-          const updated = { id: "", day_of_week: day, start_time: startTime, end_time: endTime, enabled };
-          if (idx >= 0) return prev.map((h, i) => (i === idx ? updated : h));
-          return [...prev, updated];
-        });
-      }
     });
   }
 
@@ -265,6 +234,8 @@ export function FollowUpClient({
     });
   }
 
+  const noBusinessHours = !orgBusinessHours || !orgBusinessHours.workingDays?.length;
+
   // ─── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -290,7 +261,7 @@ export function FollowUpClient({
         </div>
       )}
 
-      {/* Warnings */}
+      {/* Avisos */}
       {instances.every((i) => i.status !== "connected") && (
         <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-700">
           <WifiOff className="h-3.5 w-3.5 shrink-0" />
@@ -301,6 +272,16 @@ export function FollowUpClient({
         <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-700">
           <AlertCircle className="h-3.5 w-3.5 shrink-0" />
           Nenhuma mensagem de follow-up configurada. Adicione ao menos uma na secao &quot;Sequencia de Mensagens&quot; abaixo.
+        </div>
+      )}
+      {noBusinessHours && (
+        <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-700">
+          <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+          Horario de funcionamento nao configurado.{" "}
+          <Link href="/settings" className="underline underline-offset-2 font-medium">
+            Configure em Configuracoes
+          </Link>{" "}
+          antes de ativar o follow-up.
         </div>
       )}
 
@@ -330,21 +311,6 @@ export function FollowUpClient({
             </button>
           </div>
         </CardHeader>
-        <CardContent>
-          <div className="flex items-center gap-3">
-            <label className="text-xs text-text-secondary">Fuso horario:</label>
-            <select
-              className="rounded-lg border border-border bg-white px-2 py-1 text-xs text-text-primary focus:border-brand-green focus:outline-none"
-              value={settings?.timezone ?? "America/Sao_Paulo"}
-              disabled={isPending}
-              onChange={(e) => saveTimezone(e.target.value)}
-            >
-              {TIMEZONES.map((tz) => (
-                <option key={tz} value={tz}>{tz.replace("America/", "")}</option>
-              ))}
-            </select>
-          </div>
-        </CardContent>
       </Card>
 
       {/* ── 2. Sequence ───────────────────────────────────────────────────── */}
@@ -376,27 +342,13 @@ export function FollowUpClient({
                 onCancel={() => setEditingStep(null)}
               />
             ) : (
-              <div key={step.id} className="flex items-start gap-3 rounded-lg border border-border p-3">
-                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-green-soft text-xs font-bold text-brand-green-deep">
-                  {step.step_order}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-[11px] font-semibold text-text-muted">
-                    Dia {step.delay_days} — Passo {step.step_order}
-                  </p>
-                  <p className="mt-0.5 text-xs text-text-primary whitespace-pre-wrap line-clamp-3">
-                    {step.message_template}
-                  </p>
-                </div>
-                <div className="flex shrink-0 gap-1">
-                  <Button variant="ghost" size="icon-sm" onClick={() => setEditingStep(step)} disabled={isPending}>
-                    <Edit2 className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button variant="ghost" size="icon-sm" className="text-danger-red hover:text-danger-red" onClick={() => removeStep(step.id)} disabled={isPending}>
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
-              </div>
+              <StepCard
+                key={step.id}
+                step={step}
+                isPending={isPending}
+                onEdit={() => setEditingStep(step)}
+                onRemove={() => removeStep(step.id)}
+              />
             )
           )}
           {addingStep && (
@@ -410,30 +362,64 @@ export function FollowUpClient({
         </CardContent>
       </Card>
 
-      {/* ── 3. Business Hours ─────────────────────────────────────────────── */}
+      {/* ── 3. Business Hours — read-only from Configuracoes ─────────────── */}
       <Card>
         <CardHeader className="pb-3">
-          <p className="text-sm font-semibold text-text-primary">Horario de Envio</p>
-          <p className="text-xs text-text-muted">Follow-ups fora desta janela sao adiados para o proximo horario valido.</p>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-semibold text-text-primary">Horario de Envio</p>
+              <p className="text-xs text-text-muted">
+                Os follow-ups fora desta janela sao adiados para o proximo horario valido. O horario e definido em{" "}
+                <Link href="/settings" className="underline underline-offset-2 text-brand-green-deep">
+                  Configuracoes
+                </Link>.
+              </p>
+            </div>
+            <Link href="/settings">
+              <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs text-text-muted">
+                <ExternalLink className="h-3 w-3" />
+                Editar
+              </Button>
+            </Link>
+          </div>
         </CardHeader>
-        <CardContent className="space-y-2">
-          {DAYS.map((dayName, dow) => {
-            const h = hours.find((x) => x.day_of_week === dow);
-            const enabled = h?.enabled ?? false;
-            const startTime = h?.start_time ?? "08:00";
-            const endTime   = h?.end_time   ?? "18:00";
-            return (
-              <DayRow
-                key={dow}
-                dayName={dayName}
-                enabled={enabled}
-                startTime={startTime}
-                endTime={endTime}
-                disabled={isPending}
-                onChange={(s, e, en) => saveHour(dow, s, e, en)}
-              />
-            );
-          })}
+        <CardContent>
+          {noBusinessHours ? (
+            <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-700">
+              Nenhum horario configurado. Acesse{" "}
+              <Link href="/settings" className="underline underline-offset-2 font-medium">
+                Configuracoes &rarr; Horario de funcionamento
+              </Link>{" "}
+              para definir os dias e horarios de atendimento da clinica.
+            </p>
+          ) : (
+            <div className="space-y-1.5">
+              <div className="flex flex-wrap gap-1.5">
+                {DAYS_PT.map((name, dow) => {
+                  const active = orgBusinessHours?.workingDays?.includes(dow);
+                  return (
+                    <span
+                      key={dow}
+                      className={cn(
+                        "rounded-full border px-2.5 py-0.5 text-[11px] font-semibold",
+                        active
+                          ? "border-brand-green/40 bg-brand-green-soft text-brand-green-deep"
+                          : "border-border bg-background-subtle text-text-muted"
+                      )}
+                    >
+                      {name}
+                    </span>
+                  );
+                })}
+              </div>
+              {orgBusinessHours && (
+                <p className="text-xs text-text-secondary">
+                  {orgBusinessHours.startTime} — {orgBusinessHours.endTime}
+                  <span className="ml-2 text-text-muted">({orgBusinessHours.timezone})</span>
+                </p>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -494,10 +480,7 @@ export function FollowUpClient({
                     )}
                     style={!blocked ? { borderColor: tag.color + "80" } : undefined}
                   >
-                    <span
-                      className="h-2 w-2 rounded-full"
-                      style={{ backgroundColor: blocked ? undefined : tag.color }}
-                    />
+                    <span className="h-2 w-2 rounded-full" style={{ backgroundColor: blocked ? undefined : tag.color }} />
                     {tag.name}
                     {blocked && <X className="h-3 w-3" />}
                   </button>
@@ -534,7 +517,11 @@ export function FollowUpClient({
                       {item.conversation?.lead?.name ?? item.conversation?.remote_jid ?? "—"}
                     </p>
                     <p className="text-[10px] text-text-muted">
-                      Passo {item.step?.step_order ?? "?"} · Agendado para {formatDateTime(item.scheduled_for)}
+                      Passo {item.step?.step_order ?? "?"}
+                      {item.step?.message_type && item.step.message_type !== "text" && (
+                        <span className="ml-1">· {TYPE_LABELS[item.step.message_type] ?? item.step.message_type}</span>
+                      )}
+                      {" · "}Agendado para {formatDateTime(item.scheduled_for)}
                     </p>
                   </div>
                   <StatusBadge status={item.status} />
@@ -593,7 +580,60 @@ export function FollowUpClient({
   );
 }
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
+// ─── StepCard ─────────────────────────────────────────────────────────────────
+
+function StepCard({
+  step,
+  isPending,
+  onEdit,
+  onRemove,
+}: {
+  step: FollowupStep;
+  isPending: boolean;
+  onEdit: () => void;
+  onRemove: () => void;
+}) {
+  const isMedia = step.message_type === "audio" || step.message_type === "image";
+  return (
+    <div className="flex items-start gap-3 rounded-lg border border-border p-3">
+      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-green-soft text-xs font-bold text-brand-green-deep">
+        {step.step_order}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5">
+          <p className="text-[11px] font-semibold text-text-muted">
+            Dia {step.delay_days} — Passo {step.step_order}
+          </p>
+          {step.message_type !== "text" && (
+            <span className="flex items-center gap-0.5 rounded-full border border-border bg-background-subtle px-1.5 py-0.5 text-[10px] text-text-muted">
+              {step.message_type === "audio" ? <Mic className="h-2.5 w-2.5" /> : <FileImage className="h-2.5 w-2.5" />}
+              {TYPE_LABELS[step.message_type]}
+            </span>
+          )}
+        </div>
+        {isMedia ? (
+          <p className="mt-0.5 text-xs text-text-muted italic">
+            {step.media_filename ?? step.media_url ?? "(midia sem nome)"}
+          </p>
+        ) : (
+          <p className="mt-0.5 text-xs text-text-primary whitespace-pre-wrap line-clamp-3">
+            {step.message_template}
+          </p>
+        )}
+      </div>
+      <div className="flex shrink-0 gap-1">
+        <Button variant="ghost" size="icon-sm" onClick={onEdit} disabled={isPending}>
+          <Edit2 className="h-3.5 w-3.5" />
+        </Button>
+        <Button variant="ghost" size="icon-sm" className="text-danger-red hover:text-danger-red" onClick={onRemove} disabled={isPending}>
+          <Trash2 className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// ─── StepForm ─────────────────────────────────────────────────────────────────
 
 function StepForm({
   step,
@@ -606,21 +646,100 @@ function StepForm({
   onSave: (fd: FormData) => void;
   onCancel: () => void;
 }) {
-  const [order, setOrder] = useState(String(step?.step_order ?? ""));
-  const [delay, setDelay] = useState(String(step?.delay_days ?? ""));
-  const [msg, setMsg] = useState(step?.message_template ?? "");
+  const [order, setOrder]   = useState(String(step?.step_order ?? ""));
+  const [delay, setDelay]   = useState(String(step?.delay_days ?? ""));
+  const [type, setType]     = useState<"text" | "audio" | "image">(
+    (step?.message_type as "text" | "audio" | "image") ?? "text"
+  );
+  const [msg, setMsg]       = useState(step?.message_template ?? "");
 
-  function handleSave() {
+  // Media state
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploading, setUploading]       = useState(false);
+  const [uploadError, setUploadError]   = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const existingMedia = step?.media_url
+    ? { url: step.media_url, mimetype: step.media_mimetype, filename: step.media_filename }
+    : null;
+
+  const hasMedia = selectedFile !== null || existingMedia !== null;
+
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0] ?? null;
+    setSelectedFile(file);
+    setUploadError(null);
+  }
+
+  async function handleSave() {
+    if (!order || !delay) return;
+
     const fd = new FormData();
     fd.set("step_order", order);
     fd.set("delay_days", delay);
-    fd.set("message_template", msg);
+    fd.set("message_type", type);
+
+    if (type === "text") {
+      if (!msg.trim()) {
+        setUploadError("Mensagem e obrigatoria para passos de texto.");
+        return;
+      }
+      fd.set("message_template", msg);
+    } else {
+      fd.set("message_template", msg);
+
+      if (selectedFile) {
+        setUploading(true);
+        setUploadError(null);
+        try {
+          const uploadFd = new FormData();
+          uploadFd.append("file", selectedFile);
+          uploadFd.append("type", type);
+
+          const resp = await fetch("/api/follow-up/upload-media", {
+            method: "POST",
+            body: uploadFd,
+          });
+          const data = await resp.json() as { ok: boolean; error?: string; url?: string; mimetype?: string; filename?: string };
+
+          if (!data.ok) {
+            setUploadError(data.error ?? "Erro ao fazer upload da midia.");
+            return;
+          }
+
+          fd.set("media_url",      data.url      ?? "");
+          fd.set("media_mimetype", data.mimetype ?? "");
+          fd.set("media_filename", data.filename ?? "");
+        } catch {
+          setUploadError("Erro de conexao ao fazer upload. Tente novamente.");
+          return;
+        } finally {
+          setUploading(false);
+        }
+      } else if (existingMedia?.url) {
+        fd.set("media_url",      existingMedia.url);
+        fd.set("media_mimetype", existingMedia.mimetype ?? "");
+        fd.set("media_filename", existingMedia.filename ?? "");
+      } else {
+        setUploadError(type === "audio" ? "Selecione um arquivo de audio." : "Selecione uma imagem.");
+        return;
+      }
+    }
+
     onSave(fd);
   }
 
+  const acceptAttr = type === "audio"
+    ? "audio/ogg,audio/mpeg,audio/mp3,audio/wav,audio/webm,audio/mp4"
+    : "image/jpeg,image/png,image/webp";
+
+  const canSave = !uploading && !disabled && order && delay && (
+    type === "text" ? msg.trim().length > 0 : hasMedia
+  );
+
   return (
     <div className="rounded-lg border border-brand-green/40 bg-brand-green-soft/30 p-3 space-y-3">
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-3 gap-3">
         <div>
           <label className="label-eyebrow mb-1">Ordem</label>
           <input
@@ -641,100 +760,119 @@ function StepForm({
             onChange={(e) => setDelay(e.target.value)}
           />
         </div>
+        <div>
+          <label className="label-eyebrow mb-1">Tipo</label>
+          <select
+            className="h-8 w-full rounded-lg border border-border bg-white px-2 text-xs focus:border-brand-green focus:outline-none"
+            value={type}
+            onChange={(e) => {
+              setType(e.target.value as "text" | "audio" | "image");
+              setSelectedFile(null);
+              setUploadError(null);
+            }}
+          >
+            <option value="text">Texto</option>
+            <option value="audio">Audio</option>
+            <option value="image">Imagem</option>
+          </select>
+        </div>
       </div>
-      <div>
-        <label className="label-eyebrow mb-1">Mensagem</label>
-        <textarea
-          rows={4}
-          className="w-full resize-none rounded-lg border border-border px-2 py-2 text-xs focus:border-brand-green focus:outline-none"
-          placeholder="Ola {nome}, passando para saber se tem alguma duvida..."
-          value={msg}
-          onChange={(e) => setMsg(e.target.value)}
-        />
-      </div>
-      <div className="flex justify-end gap-2">
-        <Button variant="ghost" size="sm" onClick={onCancel} disabled={disabled}>Cancelar</Button>
-        <Button size="sm" onClick={handleSave} disabled={disabled || !order || !delay || !msg.trim()}>Salvar</Button>
-      </div>
-    </div>
-  );
-}
 
-function DayRow({
-  dayName,
-  enabled,
-  startTime,
-  endTime,
-  disabled,
-  onChange,
-}: {
-  dayName: string;
-  enabled: boolean;
-  startTime: string;
-  endTime: string;
-  disabled: boolean;
-  onChange: (start: string, end: string, enabled: boolean) => void;
-}) {
-  const [localStart, setLocalStart] = useState(startTime);
-  const [localEnd, setLocalEnd] = useState(endTime);
-  const [localEnabled, setLocalEnabled] = useState(enabled);
-
-  function commit(s: string, e: string, en: boolean) {
-    onChange(s, e, en);
-  }
-
-  return (
-    <div className="flex items-center gap-3">
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => {
-          const next = !localEnabled;
-          setLocalEnabled(next);
-          commit(localStart, localEnd, next);
-        }}
-        className={cn(
-          "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-50",
-          localEnabled ? "bg-brand-green" : "bg-border"
-        )}
-      >
-        <span className={cn("inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform", localEnabled ? "translate-x-4" : "translate-x-0.5")} />
-      </button>
-      <span className="w-16 text-xs font-medium text-text-primary">{dayName}</span>
-      {localEnabled ? (
-        <>
-          <input
-            type="time"
-            className="h-7 rounded-lg border border-border px-1.5 text-xs focus:border-brand-green focus:outline-none"
-            value={localStart}
-            disabled={disabled}
-            onChange={(e) => setLocalStart(e.target.value)}
-            onBlur={() => commit(localStart, localEnd, localEnabled)}
+      {type === "text" ? (
+        <div>
+          <label className="label-eyebrow mb-1">Mensagem</label>
+          <textarea
+            rows={4}
+            className="w-full resize-none rounded-lg border border-border px-2 py-2 text-xs focus:border-brand-green focus:outline-none"
+            placeholder="Ola {nome}, passando para saber se tem alguma duvida..."
+            value={msg}
+            onChange={(e) => setMsg(e.target.value)}
           />
-          <span className="text-xs text-text-muted">ate</span>
-          <input
-            type="time"
-            className="h-7 rounded-lg border border-border px-1.5 text-xs focus:border-brand-green focus:outline-none"
-            value={localEnd}
-            disabled={disabled}
-            onChange={(e) => setLocalEnd(e.target.value)}
-            onBlur={() => commit(localStart, localEnd, localEnabled)}
-          />
-        </>
+        </div>
       ) : (
-        <span className="text-xs text-text-muted">Inativo</span>
+        <div className="space-y-2">
+          <label className="label-eyebrow">{type === "audio" ? "Arquivo de Audio" : "Imagem"}</label>
+
+          {/* Existing media preview */}
+          {existingMedia && !selectedFile && (
+            <div className="flex items-center gap-2 rounded-lg border border-border bg-white px-2.5 py-2">
+              {type === "audio" ? <Mic className="h-3.5 w-3.5 shrink-0 text-text-muted" /> : <FileImage className="h-3.5 w-3.5 shrink-0 text-text-muted" />}
+              <span className="flex-1 truncate text-xs text-text-secondary">
+                {existingMedia.filename ?? existingMedia.url}
+              </span>
+              <span className="text-[10px] text-text-muted">Atual</span>
+            </div>
+          )}
+
+          {/* File input */}
+          <div
+            className="flex cursor-pointer flex-col items-center gap-1.5 rounded-lg border-2 border-dashed border-border bg-white px-3 py-4 text-center hover:border-brand-green/50 transition-colors"
+            onClick={() => fileRef.current?.click()}
+          >
+            {type === "audio" ? <Mic className="h-5 w-5 text-text-muted" /> : <FileImage className="h-5 w-5 text-text-muted" />}
+            <p className="text-xs text-text-muted">
+              {selectedFile
+                ? selectedFile.name
+                : existingMedia
+                  ? "Clique para substituir"
+                  : type === "audio"
+                    ? "Selecione ogg, mp3, wav ou webm (max 10 MB)"
+                    : "Selecione jpeg, png ou webp (max 10 MB)"}
+            </p>
+            <input
+              ref={fileRef}
+              type="file"
+              accept={acceptAttr}
+              className="hidden"
+              onChange={handleFileChange}
+            />
+          </div>
+
+          {/* Caption for image (optional) */}
+          {type === "image" && (
+            <div>
+              <label className="label-eyebrow mb-1">Legenda (opcional)</label>
+              <input
+                type="text"
+                maxLength={1000}
+                className="h-8 w-full rounded-lg border border-border px-2 text-xs focus:border-brand-green focus:outline-none"
+                placeholder="Texto que aparece abaixo da imagem..."
+                value={msg}
+                onChange={(e) => setMsg(e.target.value)}
+              />
+            </div>
+          )}
+        </div>
       )}
+
+      {uploadError && (
+        <p className="flex items-center gap-1 text-xs text-danger-red">
+          <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+          {uploadError}
+        </p>
+      )}
+
+      <div className="flex justify-end gap-2">
+        <Button variant="ghost" size="sm" onClick={onCancel} disabled={disabled || uploading}>
+          Cancelar
+        </Button>
+        <Button size="sm" onClick={handleSave} disabled={!canSave}>
+          {uploading ? "Enviando..." : "Salvar"}
+        </Button>
+      </div>
     </div>
   );
 }
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
 
 function StatusBadge({ status }: { status: string }) {
   const map: Record<string, string> = {
-    pending: "bg-yellow-50 text-yellow-700 border-yellow-200",
-    sending: "bg-blue-50 text-blue-700 border-blue-200",
-    sent:    "bg-brand-green-soft text-brand-green-deep border-brand-green/30",
-    skipped: "bg-background-subtle text-text-muted border-border",
-    failed:  "bg-red-50 text-danger-red border-danger-red/30",
+    pending:   "bg-yellow-50 text-yellow-700 border-yellow-200",
+    sending:   "bg-blue-50 text-blue-700 border-blue-200",
+    sent:      "bg-brand-green-soft text-brand-green-deep border-brand-green/30",
+    skipped:   "bg-background-subtle text-text-muted border-border",
+    failed:    "bg-red-50 text-danger-red border-danger-red/30",
     cancelled: "bg-background-subtle text-text-muted border-border",
   };
   const labels: Record<string, string> = {

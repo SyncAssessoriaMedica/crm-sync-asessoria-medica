@@ -11,6 +11,7 @@ import { ConversionFunnelChart, DailyLeadsChart, LeadsBySourceChart } from "@/co
 import { MetricCard } from "@/components/dashboard/metric-card";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { businessHoursMs, parseOrgBusinessHours, type OrgBusinessHours } from "@/lib/business-hours";
 import { getOrganizationContext } from "@/lib/organization-context";
 import { cn, formatNumber, formatPercent } from "@/lib/utils";
 import type { ConversionFunnelItem, DailyLeadsData, LeadStatus, LeadsBySource } from "@/lib/types";
@@ -54,13 +55,6 @@ type MsgRow = {
 };
 
 // Structured so future code can replace this with per-org DB config.
-type BusinessHoursConfig = {
-  startTime: string;
-  endTime: string;
-  workingDays: number[]; // 0=Sun … 6=Sat
-  timezone: string;
-};
-
 // ─── Period helpers ───────────────────────────────────────────────────────────
 
 export const dynamic = "force-dynamic";
@@ -104,23 +98,6 @@ function getResponseMode(value?: string): ResponseMode {
   return value === "real_time" ? "real_time" : "business_hours";
 }
 
-function parseBusinessHoursConfig(value: unknown): BusinessHoursConfig | null {
-  if (!value || typeof value !== "object") return null;
-  const data = value as Record<string, unknown>;
-  const startTime = typeof data.startTime === "string" ? data.startTime : "";
-  const endTime = typeof data.endTime === "string" ? data.endTime : "";
-  const timezone = typeof data.timezone === "string" ? data.timezone : "America/Sao_Paulo";
-  const workingDays = Array.isArray(data.workingDays)
-    ? data.workingDays.filter((day): day is number => typeof day === "number" && day >= 0 && day <= 6)
-    : [];
-
-  if (!/^\d{2}:\d{2}$/.test(startTime) || !/^\d{2}:\d{2}$/.test(endTime)) return null;
-  if (workingDays.length === 0) return null;
-  if (timeToMinutes(startTime) >= timeToMinutes(endTime)) return null;
-
-  return { startTime, endTime, workingDays, timezone };
-}
-
 function getPeriodRange(period: DashboardPeriod, baseDate: Date) {
   const tomorrow = new Date(baseDate);
   tomorrow.setDate(tomorrow.getDate() + 1);
@@ -147,104 +124,6 @@ function getPeriodRange(period: DashboardPeriod, baseDate: Date) {
 }
 
 // ─── Business hours calculation ───────────────────────────────────────────────
-
-// Returns 0–6 (Sun–Sat) in the given timezone for a UTC timestamp.
-function localWeekday(date: Date, tz: string): number {
-  const name = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short" }).format(date);
-  return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(name);
-}
-
-function timeToMinutes(value: string): number {
-  const [hours, minutes] = value.split(":").map(Number);
-  return hours * 60 + minutes;
-}
-
-// Returns the local minute of day (0–1439) in the given timezone for a UTC timestamp.
-function localMinuteOfDay(date: Date, tz: string): number {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: tz,
-    hour: "numeric",
-    minute: "numeric",
-    hour12: false,
-  }).formatToParts(date);
-  const h = parseInt(parts.find((p) => p.type === "hour")?.value ?? "0");
-  const m = parseInt(parts.find((p) => p.type === "minute")?.value ?? "0");
-  return (h === 24 ? 0 : h) * 60 + m;
-}
-
-// Returns the UTC timestamp for `minuteOfDay` on the same local date as `refDate` in `tz`.
-// Uses the "sv" locale trick to extract local date components without a library.
-function utcForLocalMinuteOfDay(refDate: Date, minuteOfDay: number, tz: string): Date {
-  const localStr = refDate.toLocaleString("sv", { timeZone: tz }); // "YYYY-MM-DD HH:MM:SS"
-  const datePart = localStr.slice(0, 10);
-  const hours = Math.floor(minuteOfDay / 60);
-  const minutes = minuteOfDay % 60;
-  const targetLocal = new Date(
-    `${datePart}T${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:00`
-  );
-  const refLocal = new Date(localStr.replace(" ", "T"));
-  // offset = how far ahead UTC is from local time (positive for western timezones)
-  const tzOffsetMs = refDate.getTime() - refLocal.getTime();
-  return new Date(targetLocal.getTime() + tzOffsetMs);
-}
-
-// Advances `afterDate` to the start of the next working period.
-// Adds 24 h to safely cross into the next calendar day in the local timezone,
-// then searches up to 7 days forward for the first working day.
-function nextWorkingPeriodStart(afterDate: Date, config: BusinessHoursConfig): Date {
-  const startMinute = timeToMinutes(config.startTime);
-  let candidate = new Date(afterDate.getTime() + 24 * 3_600_000);
-  for (let i = 0; i < 7; i++) {
-    if (config.workingDays.includes(localWeekday(candidate, config.timezone))) {
-      return utcForLocalMinuteOfDay(candidate, startMinute, config.timezone);
-    }
-    candidate = new Date(candidate.getTime() + 24 * 3_600_000);
-  }
-  return new Date(afterDate.getTime() + 8 * 24 * 3_600_000); // safety fallback
-}
-
-// Returns how many milliseconds of business hours fall between `start` and `end`.
-// Equivalent to real elapsed time when start/end are both within working hours.
-function businessHoursMs(start: Date, end: Date, config: BusinessHoursConfig): number {
-  if (start.getTime() >= end.getTime()) return 0;
-
-  let current = new Date(start.getTime());
-  let total = 0;
-  const startMinute = timeToMinutes(config.startTime);
-  const endMinute = timeToMinutes(config.endTime);
-
-  // Safety cap: max 60 calendar-day iterations
-  for (let iter = 0; iter < 60 && current < end; iter++) {
-    const wd = localWeekday(current, config.timezone);
-    const minute = localMinuteOfDay(current, config.timezone);
-
-    if (!config.workingDays.includes(wd)) {
-      current = nextWorkingPeriodStart(current, config);
-      continue;
-    }
-
-    if (minute < startMinute) {
-      current = utcForLocalMinuteOfDay(current, startMinute, config.timezone);
-      continue;
-    }
-
-    if (minute >= endMinute) {
-      current = nextWorkingPeriodStart(current, config);
-      continue;
-    }
-
-    // Inside working hours — accumulate until end of this period or target end
-    const periodEnd = utcForLocalMinuteOfDay(current, endMinute, config.timezone);
-    const intervalEnd = end < periodEnd ? end : periodEnd;
-    total += intervalEnd.getTime() - current.getTime();
-
-    if (end.getTime() <= periodEnd.getTime()) break;
-
-    current = nextWorkingPeriodStart(periodEnd, config);
-  }
-
-  return total;
-}
 
 // ─── Metric helpers ───────────────────────────────────────────────────────────
 
@@ -324,7 +203,7 @@ function formatDuration(ms: number | null): string {
 // Pass bhConfig=null to use raw elapsed time (real_time mode).
 function computeResponseTimes(
   msgs: MsgRow[],
-  bhConfig: BusinessHoursConfig | null
+  bhConfig: OrgBusinessHours | null
 ): { avgFirstResponse: number | null; avgResponseTime: number | null } {
   const byConv = new Map<string, MsgRow[]>();
   for (const msg of msgs) {
@@ -467,8 +346,8 @@ export default async function DashboardPage({
   const openConvIds = openConvs.map((c) => c.id);
   const allLeadConvs = (allConvsResult.data ?? []).filter((c) => !c.remote_jid.includes("@g.us"));
   const allLeadConvIds = allLeadConvs.map((c) => c.id);
-  const configuredBusinessHours = parseBusinessHoursConfig(settingsResult.data?.business_hours);
-  const bhConfig: BusinessHoursConfig | null =
+  const configuredBusinessHours = parseOrgBusinessHours(settingsResult.data?.business_hours);
+  const bhConfig: OrgBusinessHours | null =
     responseMode === "business_hours" ? configuredBusinessHours : null;
 
   // Batch 2 — depends on conversation IDs from batch 1
