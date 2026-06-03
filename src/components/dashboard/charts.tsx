@@ -17,6 +17,7 @@ import {
 import type {
   DailyLeadsData,
   LeadsBySource,
+  LeadsByLocation,
   ConversionFunnelItem,
 } from "@/lib/types";
 
@@ -115,6 +116,77 @@ export function LeadsBySourceChart({ data }: { data: LeadsBySource[] }) {
           }}
         />
       </PieChart>
+    </ResponsiveContainer>
+  );
+}
+
+export function LeadsByLocationChart({ data }: { data: LeadsByLocation[] }) {
+  if (data.length === 0) {
+    return (
+      <div className="flex h-[220px] items-center justify-center rounded-lg border border-dashed border-border bg-background-subtle text-xs text-text-muted">
+        Sem dados de localizacao
+      </div>
+    );
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height={220}>
+      <BarChart data={data} layout="vertical" margin={{ left: 0, right: 34, top: 4, bottom: 4 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#dfe7e1" horizontal={false} />
+        <XAxis
+          type="number"
+          allowDecimals={false}
+          tick={{ fontSize: 10, fill: "#8a948d" }}
+          axisLine={false}
+          tickLine={false}
+        />
+        <YAxis
+          type="category"
+          dataKey="location"
+          width={126}
+          tick={{ fontSize: 11, fill: "#526058" }}
+          axisLine={false}
+          tickLine={false}
+        />
+        <Tooltip
+          contentStyle={{
+            background: "#fff",
+            border: "1px solid #dfe7e1",
+            borderRadius: "10px",
+            fontSize: "12px",
+          }}
+          formatter={(value: number, _name, item) => [
+            `${value} lead${value !== 1 ? "s" : ""} (${item.payload.percentage.toFixed(0)}%)`,
+            item.payload.description ?? "Volume",
+          ]}
+        />
+        <Bar
+          dataKey="count"
+          name="Leads"
+          radius={[0, 6, 6, 0]}
+          label={{
+            position: "right" as const,
+            formatter: (value: number) => `${value}`,
+            fontSize: 10,
+            fill: "#526058",
+          }}
+        >
+          {data.map((item, index) => (
+            <Cell
+              key={item.location}
+              fill={
+                item.serviceAreaStatus === "outside"
+                  ? "#f59e0b"
+                  : item.serviceAreaStatus === "possible"
+                    ? "#46e27f"
+                    : item.serviceAreaStatus === "unknown"
+                      ? "#8a948d"
+                      : PIE_COLORS[index % PIE_COLORS.length]
+              }
+            />
+          ))}
+        </Bar>
+      </BarChart>
     </ResponsiveContainer>
   );
 }

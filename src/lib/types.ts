@@ -254,6 +254,16 @@ export interface LeadsBySource {
   percentage: number;
 }
 
+export interface LeadsByLocation {
+  location: string;
+  city: string;
+  state: string;
+  count: number;
+  percentage: number;
+  serviceAreaStatus: "inside" | "possible" | "outside" | "unknown";
+  description?: string;
+}
+
 export interface LeadsByStatus {
   status: LeadStatus;
   label: string;

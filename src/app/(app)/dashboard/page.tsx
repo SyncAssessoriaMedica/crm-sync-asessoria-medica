@@ -4,18 +4,27 @@ import {
   Bell,
   CalendarCheck,
   Clock,
+  MapPin,
   UserCheck,
   Users,
 } from "lucide-react";
-import { ConversionFunnelChart, DailyLeadsChart, LeadsBySourceChart } from "@/components/dashboard/charts";
+import { ConversionFunnelChart, DailyLeadsChart, LeadsByLocationChart, LeadsBySourceChart } from "@/components/dashboard/charts";
 import { MetricCard } from "@/components/dashboard/metric-card";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { businessHoursMs, parseOrgBusinessHours, type OrgBusinessHours } from "@/lib/business-hours";
 import { getDateRangeFromParams } from "@/lib/date-range";
+import {
+  LOCATION_STATUS_LABELS,
+  normalizeLocationText,
+  normalizeState,
+  parseServiceArea,
+  type ServiceAreaCity,
+  type ServiceAreaSettings,
+} from "@/lib/lead-location";
 import { getOrganizationContext } from "@/lib/organization-context";
 import { cn, formatNumber, formatPercent } from "@/lib/utils";
-import type { ConversionFunnelItem, DailyLeadsData, LeadStatus, LeadsBySource } from "@/lib/types";
+import type { ConversionFunnelItem, DailyLeadsData, LeadStatus, LeadsByLocation, LeadsBySource } from "@/lib/types";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -34,6 +43,10 @@ type DashboardLead = {
   last_interaction_at: string | null;
   source: { name: string | null } | null;
   stage: { id: string; name: string; order: number } | null;
+  detected_city: string | null;
+  detected_state: string | null;
+  phone_ddd: string | null;
+  service_area_status: "inside" | "possible" | "outside" | "unknown";
 };
 
 type StageOption = {
@@ -115,6 +128,189 @@ function buildSourceData(leads: DashboardLead[]): LeadsBySource[] {
       percentage: percent(count, leads.length),
     }))
     .sort((a, b) => b.count - a.count);
+}
+
+function buildLocationData(leads: DashboardLead[]): LeadsByLocation[] {
+  const counts = new Map<
+    string,
+    {
+      city: string;
+      state: string;
+      count: number;
+      serviceAreaStatus: LeadsByLocation["serviceAreaStatus"];
+    }
+  >();
+
+  for (const lead of leads) {
+    const city = lead.detected_city?.trim() || "Sem localizacao";
+    const state = lead.detected_state?.trim() || "";
+    const key = `${city}|${state}`;
+    const previous = counts.get(key);
+    counts.set(key, {
+      city,
+      state,
+      count: (previous?.count ?? 0) + 1,
+      serviceAreaStatus:
+        previous?.serviceAreaStatus === "inside"
+          ? "inside"
+          : lead.service_area_status ?? previous?.serviceAreaStatus ?? "unknown",
+    });
+  }
+
+  return [...counts.values()]
+    .map((item) => ({
+      location: item.state ? `${item.city} / ${item.state}` : item.city,
+      city: item.city,
+      state: item.state,
+      count: item.count,
+      percentage: percent(item.count, leads.length),
+      serviceAreaStatus: item.serviceAreaStatus,
+    }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 8);
+}
+
+function uniqueServiceCities(serviceArea: ServiceAreaSettings): ServiceAreaCity[] {
+  const cities = new Map<string, ServiceAreaCity>();
+  const primaryCity = serviceArea.primaryCity.trim();
+  const primaryState = normalizeState(serviceArea.primaryState);
+
+  if (primaryCity && primaryState) {
+    cities.set(`${normalizeLocationText(primaryCity)}|${primaryState}`, {
+      city: primaryCity,
+      state: primaryState,
+      priority: "primary",
+    });
+  }
+
+  for (const item of serviceArea.servedCities) {
+    const state = normalizeState(item.state);
+    const city = item.city.trim();
+    if (!city || !state) continue;
+    cities.set(`${normalizeLocationText(city)}|${state}`, {
+      city,
+      state,
+      priority: item.priority ?? "secondary",
+    });
+  }
+
+  return [...cities.values()];
+}
+
+function buildServiceRegionData(leads: DashboardLead[], serviceArea: ServiceAreaSettings): LeadsByLocation[] {
+  const serviceCities = uniqueServiceCities(serviceArea);
+  if (serviceCities.length === 0) return buildLocationData(leads);
+
+  const citiesByState = serviceCities.reduce<Record<string, ServiceAreaCity[]>>((acc, city) => {
+    const state = normalizeState(city.state);
+    acc[state] ??= [];
+    acc[state].push(city);
+    return acc;
+  }, {});
+
+  const counts = new Map<
+    string,
+    {
+      location: string;
+      city: string;
+      state: string;
+      count: number;
+      serviceAreaStatus: LeadsByLocation["serviceAreaStatus"];
+      description: string;
+      sortWeight: number;
+    }
+  >();
+
+  function increment(item: Omit<LeadsByLocation, "count" | "percentage" | "description"> & { description: string; sortWeight: number }) {
+    const previous = counts.get(item.location);
+    counts.set(item.location, {
+      ...item,
+      count: (previous?.count ?? 0) + 1,
+      sortWeight: previous?.sortWeight ?? item.sortWeight,
+    });
+  }
+
+  for (const lead of leads) {
+    const leadState = normalizeState(lead.detected_state);
+    const leadCity = normalizeLocationText(lead.detected_city);
+
+    if (!leadState || !leadCity) {
+      increment({
+        location: "Sem localizacao",
+        city: "Sem localizacao",
+        state: "",
+        serviceAreaStatus: "unknown",
+        description: "Leads sem DDD ou localizacao detectada",
+        sortWeight: 4,
+      });
+      continue;
+    }
+
+    const exactCity = serviceCities.find(
+      (city) => normalizeState(city.state) === leadState && normalizeLocationText(city.city) === leadCity
+    );
+
+    if (exactCity) {
+      increment({
+        location: `${exactCity.city} / ${exactCity.state}`,
+        city: exactCity.city,
+        state: exactCity.state,
+        serviceAreaStatus: "inside",
+        description: "Cidade de atendimento configurada",
+        sortWeight: 1,
+      });
+      continue;
+    }
+
+    const sameStateCities = citiesByState[leadState] ?? [];
+    if (sameStateCities.length === 1) {
+      const region = sameStateCities[0];
+      increment({
+        location: `Regiao de ${region.city} / ${region.state}`,
+        city: region.city,
+        state: region.state,
+        serviceAreaStatus: "possible",
+        description: `Lead de ${lead.detected_city} / ${leadState}, associado ao nucleo mais proximo pelo estado`,
+        sortWeight: 2,
+      });
+      continue;
+    }
+
+    if (sameStateCities.length > 1) {
+      increment({
+        location: `Possivel regiao atendida / ${leadState}`,
+        city: "Possivel regiao atendida",
+        state: leadState,
+        serviceAreaStatus: "possible",
+        description: `Lead de ${lead.detected_city} / ${leadState}, mesmo estado de mais de uma cidade atendida`,
+        sortWeight: 2,
+      });
+      continue;
+    }
+
+    increment({
+      location: "Distante / fora da area",
+      city: "Distante",
+      state: leadState,
+      serviceAreaStatus: "outside",
+      description: `Leads de outros estados, fora das regioes configuradas`,
+      sortWeight: 3,
+    });
+  }
+
+  return [...counts.values()]
+    .map((item) => ({
+      location: item.location,
+      city: item.city,
+      state: item.state,
+      count: item.count,
+      percentage: percent(item.count, leads.length),
+      serviceAreaStatus: item.serviceAreaStatus,
+      description: item.description,
+      sortWeight: item.sortWeight,
+    }))
+    .sort((a, b) => a.sortWeight - b.sortWeight || b.count - a.count)
+    .slice(0, 8);
 }
 
 function buildFunnelData(leads: DashboardLead[], stages: StageOption[]): ConversionFunnelItem[] {
@@ -265,6 +461,7 @@ export default async function DashboardPage({
         .from("leads")
         .select(
           `id, source_id, stage_id, status, created_at, last_interaction_at,
+           detected_city, detected_state, phone_ddd, service_area_status,
            source:lead_sources(name),
            stage:pipeline_stages(id, name, order)`
         )
@@ -295,7 +492,7 @@ export default async function DashboardPage({
         .maybeSingle(),
       admin
         .from("organization_settings")
-        .select("business_hours")
+        .select("business_hours, service_area")
         .eq("organization_id", organizationId)
         .maybeSingle(),
     ]);
@@ -316,6 +513,7 @@ export default async function DashboardPage({
   const allLeadConvs = (allConvsResult.data ?? []).filter((c) => !c.remote_jid.includes("@g.us"));
   const allLeadConvIds = allLeadConvs.map((c) => c.id);
   const configuredBusinessHours = parseOrgBusinessHours(settingsResult.data?.business_hours);
+  const serviceArea = parseServiceArea(settingsResult.data?.service_area);
   const bhConfig: OrgBusinessHours | null =
     responseMode === "business_hours" ? configuredBusinessHours : null;
 
@@ -390,7 +588,16 @@ export default async function DashboardPage({
   // ── Chart data ──────────────────────────────────────────────────────────────
   const dailyData = buildDailyData(currentLeads, currentStart, currentEnd);
   const sourceData = buildSourceData(currentLeads);
+  const locationData = buildServiceRegionData(currentLeads, serviceArea);
   const funnelData = buildFunnelData(currentLeads, stages);
+  const serviceAreaCounts = currentLeads.reduce<Record<LeadsByLocation["serviceAreaStatus"], number>>(
+    (acc, lead) => {
+      const status = lead.service_area_status ?? "unknown";
+      acc[status] += 1;
+      return acc;
+    },
+    { inside: 0, possible: 0, outside: 0, unknown: 0 }
+  );
 
   const monthLabel = new Intl.DateTimeFormat("pt-BR", {
     month: "long",
@@ -574,6 +781,60 @@ export default async function DashboardPage({
                 </div>
               ))}
             </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <Card className="lg:col-span-2">
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <CardTitle className="text-sm">Leads por Regiao de Atendimento</CardTitle>
+                <p className="mt-1 text-[11px] text-text-muted">
+                  Agrupamento pelo DDD comparando com as cidades atendidas pela clinica.
+                </p>
+              </div>
+              <MapPin className="h-4 w-4 text-brand-green" />
+            </div>
+          </CardHeader>
+          <CardContent>
+            <LeadsByLocationChart data={locationData} />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Area de Atuacao</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {(["inside", "possible", "outside", "unknown"] as const).map((status) => {
+              const count = serviceAreaCounts[status];
+              const rate = percent(count, currentLeads.length);
+              return (
+                <div key={status} className="space-y-1.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-semibold text-text-secondary">{LOCATION_STATUS_LABELS[status]}</span>
+                    <span className="font-bold text-text-primary">
+                      {count} <span className="font-medium text-text-muted">({rate.toFixed(0)}%)</span>
+                    </span>
+                  </div>
+                  <div className="h-2 overflow-hidden rounded-full bg-background-subtle">
+                    <div
+                      className={cn(
+                        "h-full rounded-full",
+                        status === "outside"
+                          ? "bg-warning-amber"
+                          : status === "unknown"
+                            ? "bg-text-muted"
+                            : "bg-brand-green"
+                      )}
+                      style={{ width: `${rate}%` }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
           </CardContent>
         </Card>
       </div>
