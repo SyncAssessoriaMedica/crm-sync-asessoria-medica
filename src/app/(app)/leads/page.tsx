@@ -88,6 +88,12 @@ export default async function LeadsPage({
     .eq("organization_id", organizationId)
     .eq("status", "open")
     .not("lead_id", "is", null);
+  const allConversationsResult = await admin
+    .from("conversations")
+    .select("id, lead_id, remote_jid, updated_at")
+    .eq("organization_id", organizationId)
+    .not("lead_id", "is", null)
+    .order("updated_at", { ascending: false });
 
   const openConversations = (openConversationsResult.data ?? []).filter(
     (conversation) => !String(conversation.remote_jid ?? "").includes("@g.us")
@@ -120,9 +126,18 @@ export default async function LeadsPage({
     }
   }
 
+  const inboxConversationByLeadId = new Map<string, string>();
+  for (const conversation of allConversationsResult.data ?? []) {
+    if (!conversation.lead_id || String(conversation.remote_jid ?? "").includes("@g.us")) continue;
+    if (!inboxConversationByLeadId.has(conversation.lead_id)) {
+      inboxConversationByLeadId.set(conversation.lead_id, conversation.id);
+    }
+  }
+
   const leads = ((leadsResult.data ?? []) as LeadListItem[]).map((lead) => ({
     ...lead,
     no_followup_48h: noFollowupLeadIds.has(lead.id),
+    inbox_conversation_id: inboxConversationByLeadId.get(lead.id) ?? null,
   }));
 
   return (

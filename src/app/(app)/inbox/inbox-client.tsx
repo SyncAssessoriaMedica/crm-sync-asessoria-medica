@@ -54,6 +54,7 @@ type InboxClientProps = {
   instances: { id: string; instance_name: string; phone_number: string | null; status: string }[];
   sources: InboxSource[];
   initialSearch: string;
+  initialActiveConversationId?: string;
   dateMode: "activity" | "created";
 };
 
@@ -120,13 +121,13 @@ function ConversationItem({
   );
 }
 
-export function InboxClient({ organizationId, conversations, messagesByConversation, bhAutoRepliesByConversation, instances, sources, initialSearch, dateMode }: InboxClientProps) {
+export function InboxClient({ organizationId, conversations, messagesByConversation, bhAutoRepliesByConversation, instances, sources, initialSearch, initialActiveConversationId, dateMode }: InboxClientProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const markedReadRef = useRef<Set<string>>(new Set());
-  const [activeConvId, setActiveConvId] = useState(conversations[0]?.id ?? "");
+  const [activeConvId, setActiveConvId] = useState(initialActiveConversationId || conversations[0]?.id || "");
   const [search, setSearch] = useState(initialSearch);
   const [filter, setFilter] = useState<"all" | "unread" | "open" | "closed" | "no_followup_48h">("all");
   const [locallyReadIds, setLocallyReadIds] = useState<Set<string>>(new Set());

@@ -25,7 +25,7 @@ export const dynamic = "force-dynamic";
 export default async function InboxPage({
   searchParams,
 }: {
-  searchParams?: Promise<{ q?: string; period?: string; start?: string; end?: string; dateMode?: string }>;
+  searchParams?: Promise<{ q?: string; period?: string; start?: string; end?: string; dateMode?: string; conversation?: string }>;
 }) {
   const params = await searchParams;
   const range = getDateRangeFromParams(params);
@@ -98,10 +98,55 @@ export default async function InboxPage({
     );
   }
 
-  const rows = ((conversationsResult.data ?? []) as unknown as ConversationRow[]).filter((conversation) => {
+  const selectedConversationId = params?.conversation ?? "";
+  const initialRows = ((conversationsResult.data ?? []) as unknown as ConversationRow[]).filter((conversation) => {
     const instance = firstRelation(conversation.instance);
     return !instance?.deleted_at;
   });
+  let rows = initialRows;
+
+  if (selectedConversationId && !initialRows.some((conversation) => conversation.id === selectedConversationId)) {
+    const { data: selectedConversation } = await admin
+      .from("conversations")
+      .select(
+        `
+        id,
+        remote_jid,
+        unread_count,
+        status,
+        created_at,
+        updated_at,
+        lead:leads(
+          id,
+          name,
+          phone,
+          procedure,
+          status,
+          potential_value,
+          appointment_scheduled_at,
+          followup_paused,
+          phone_ddd,
+          detected_state,
+          detected_city,
+          service_area_status,
+          source_id,
+          source:lead_sources(id, name, active),
+          stage:pipeline_stages(name)
+        ),
+        instance:whatsapp_instances(id, instance_name, phone_number, status, deleted_at)
+      `
+      )
+      .eq("id", selectedConversationId)
+      .eq("organization_id", organizationId)
+      .maybeSingle();
+
+    if (selectedConversation) {
+      const instance = firstRelation((selectedConversation as unknown as ConversationRow).instance);
+      if (!instance?.deleted_at) {
+        rows = [selectedConversation as unknown as ConversationRow, ...initialRows];
+      }
+    }
+  }
   const conversationIds = rows.map((conversation) => conversation.id);
   const [{ data: messagesData }, { data: bhAutoReplyData }] =
     conversationIds.length > 0
@@ -157,7 +202,7 @@ export default async function InboxPage({
 
   return (
     <InboxClient
-      key={`${params?.q ?? ""}-${dateMode}-${range.start.toISOString()}-${range.end.toISOString()}`}
+      key={`${params?.q ?? ""}-${dateMode}-${range.start.toISOString()}-${range.end.toISOString()}-${selectedConversationId}`}
       organizationId={organizationId}
       conversations={conversations}
       messagesByConversation={messagesByConversation}
@@ -165,6 +210,7 @@ export default async function InboxPage({
       instances={(instancesResult.data ?? []) as InboxInstance[]}
       sources={(sourcesResult.data ?? []) as InboxSource[]}
       initialSearch={params?.q ?? ""}
+      initialActiveConversationId={selectedConversationId}
       dateMode={dateMode}
     />
   );

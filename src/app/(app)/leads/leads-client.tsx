@@ -12,6 +12,7 @@ import {
   Edit2,
   Edit3,
   Filter,
+  Inbox,
   MapPin,
   MessageCircle,
   MoreHorizontal,
@@ -644,6 +645,13 @@ export function LeadsClient({ leads, options, organizationName, periodLabel, rol
                                 <MessageCircle /> Abrir WhatsApp
                               </a>
                             </DropdownMenuItem>
+                            {lead.inbox_conversation_id && (
+                              <DropdownMenuItem asChild>
+                                <Link href={`/inbox?conversation=${lead.inbox_conversation_id}`}>
+                                  <Inbox /> Abrir conversa no Inbox
+                                </Link>
+                              </DropdownMenuItem>
+                            )}
                             <DropdownMenuItem onClick={() => exportCsv([lead])}>
                               <Download /> Exportar este lead
                             </DropdownMenuItem>

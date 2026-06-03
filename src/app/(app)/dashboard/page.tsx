@@ -709,6 +709,12 @@ export default async function DashboardPage({
           icon={CalendarCheck}
         />
         <MetricCard
+          label="Agendamentos"
+          value={formatNumber(scheduledCurrent)}
+          variation={variation(scheduledCurrent, scheduledPrevious)}
+          icon={CalendarCheck}
+        />
+        <MetricCard
           label="Taxa de Comparecimento"
           value={formatPercent(percent(attendedCurrent, scheduledCurrent))}
           variation={variation(
