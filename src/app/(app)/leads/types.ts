@@ -40,6 +40,7 @@ export type LeadListItem = {
   location_manually_edited: boolean;
   location_updated_at: string | null;
   last_interaction_at: string | null;
+  appointment_scheduled_at: string | null;
   followup_paused: boolean;
   created_at: string;
   updated_at: string;

@@ -56,6 +56,7 @@ export default async function InboxPage({
           procedure,
           status,
           potential_value,
+          appointment_scheduled_at,
           followup_paused,
           phone_ddd,
           detected_state,

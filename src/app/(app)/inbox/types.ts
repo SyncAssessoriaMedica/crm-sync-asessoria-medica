@@ -7,6 +7,7 @@ export type InboxLead = {
   procedure: string | null;
   status: LeadStatus;
   potential_value: number | null;
+  appointment_scheduled_at: string | null;
   followup_paused: boolean;
   source_id: string | null;
   phone_ddd: string | null;

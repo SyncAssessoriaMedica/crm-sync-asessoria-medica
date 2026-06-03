@@ -38,6 +38,10 @@ const TaskSchema = z.object({
   due_at: z.string().optional(),
 });
 
+const AppointmentScheduleSchema = z.object({
+  appointment_scheduled_at: z.string().trim().min(1, "Informe a data e horario da consulta."),
+});
+
 async function getCurrentContext() {
   const context = await getOrganizationContext();
 
@@ -548,13 +552,25 @@ export async function updateLeadSourceAction(leadId: string, sourceId: string): 
   }
 }
 
-export async function markLeadScheduledAction(leadId: string): Promise<ActionResult> {
+export async function markLeadScheduledAction(leadId: string, formData: FormData): Promise<ActionResult> {
   try {
-    const { admin, organizationId } = await getCurrentContext();
+    const { admin, user, organizationId } = await getCurrentContext();
+    const parsed = AppointmentScheduleSchema.safeParse({
+      appointment_scheduled_at: formData.get("appointment_scheduled_at"),
+    });
+
+    if (!parsed.success) {
+      return { ok: false, message: parsed.error.issues[0]?.message ?? "Data do agendamento invalida." };
+    }
+
+    const appointmentDate = new Date(parsed.data.appointment_scheduled_at);
+    if (Number.isNaN(appointmentDate.getTime())) {
+      return { ok: false, message: "Data do agendamento invalida." };
+    }
 
     const { data: lead, error: leadError } = await admin
       .from("leads")
-      .select("id")
+      .select("id, appointment_scheduled_at")
       .eq("id", leadId)
       .eq("organization_id", organizationId)
       .maybeSingle();
@@ -565,6 +581,7 @@ export async function markLeadScheduledAction(leadId: string): Promise<ActionRes
     const scheduledStageId = await findScheduledStageId(admin, organizationId);
     const payload: Record<string, unknown> = {
       status: "scheduled",
+      appointment_scheduled_at: appointmentDate.toISOString(),
       updated_at: new Date().toISOString(),
     };
     if (scheduledStageId) payload.stage_id = scheduledStageId;
@@ -577,6 +594,11 @@ export async function markLeadScheduledAction(leadId: string): Promise<ActionRes
 
     if (error) return { ok: false, message: error.message };
 
+    await insertAuditLog(admin, user.id, organizationId, "mark_appointment_scheduled", "lead", leadId, {
+      previous_appointment_scheduled_at: lead.appointment_scheduled_at,
+      appointment_scheduled_at: appointmentDate.toISOString(),
+    });
+
     revalidatePath("/dashboard");
     revalidatePath("/inbox");
     revalidatePath("/leads");
@@ -586,8 +608,8 @@ export async function markLeadScheduledAction(leadId: string): Promise<ActionRes
     return {
       ok: true,
       message: scheduledStageId
-        ? "Consulta marcada como agendada."
-        : "Consulta marcada como agendada. Nenhuma etapa de agendamento foi encontrada no funil.",
+        ? "Consulta agendada com data e horario salvos."
+        : "Consulta agendada com data e horario salvos. Nenhuma etapa de agendamento foi encontrada no funil.",
     };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "Erro ao marcar consulta agendada." };

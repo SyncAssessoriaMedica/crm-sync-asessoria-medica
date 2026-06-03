@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { CalendarCheck, ChevronDown, Clock, DollarSign, Filter, Inbox, MapPin, Phone, Search, Tag, User, X } from "lucide-react";
+import { ChevronDown, Clock, DollarSign, Filter, Inbox, MapPin, Phone, Search, Tag, User, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -17,9 +17,10 @@ import {
 } from "@/components/ui/select";
 import { createClient } from "@/lib/supabase/client";
 import { LOCATION_STATUS_LABELS } from "@/lib/lead-location";
-import { cn, formatCurrency, formatPhone, formatTimeAgo, getInitials } from "@/lib/utils";
+import { cn, formatCurrency, formatDateTime, formatPhone, formatTimeAgo, getInitials } from "@/lib/utils";
+import { AppointmentScheduler } from "@/components/leads/appointment-scheduler";
 import { cancelBhAutoReplyAction, markConversationReadAction, updateConversationStatusAction } from "./actions";
-import { markLeadScheduledAction, updateLeadSourceAction } from "../leads/actions";
+import { updateLeadSourceAction } from "../leads/actions";
 import { MessageBubble } from "./message-media";
 import type { BhAutoReplyQueueItem, InboxConversation, InboxMessage, InboxSource } from "./types";
 
@@ -264,15 +265,6 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
     });
   }
 
-  function markScheduled() {
-    if (!lead) return;
-    startTransition(async () => {
-      const result = await markLeadScheduledAction(lead.id);
-      setMessage(result.message);
-      if (result.ok) router.refresh();
-    });
-  }
-
   function changeLeadSource(leadId: string, sourceId: string) {
     const nextSourceId = sourceId === "none" ? null : sourceId;
     setLocalLeadSources((prev) => ({ ...prev, [leadId]: nextSourceId }));
@@ -479,6 +471,13 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
               <div className="space-y-3">
                 <Info icon={<User />} label="Status" value={STATUS_LABELS[lead.status] ?? lead.status} />
                 {lead.stage?.name && <Info icon={<Tag />} label="Etapa" value={lead.stage.name} />}
+                {lead.appointment_scheduled_at && (
+                  <Info
+                    icon={<Clock />}
+                    label="Consulta agendada"
+                    value={formatDateTime(lead.appointment_scheduled_at)}
+                  />
+                )}
                 {(lead.detected_city || lead.detected_state || lead.phone_ddd) && (
                   <Info
                     icon={<MapPin />}
@@ -533,16 +532,13 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
               )}
 
               <div className="space-y-2 pt-2">
-                <Button
-                  size="sm"
+                <AppointmentScheduler
+                  leadId={lead.id}
+                  appointmentScheduledAt={lead.appointment_scheduled_at}
                   className="w-full gap-1.5 text-xs"
-                  variant={lead.status === "scheduled" ? "secondary" : "default"}
-                  disabled={isPending || lead.status === "scheduled"}
-                  onClick={markScheduled}
-                >
-                  <CalendarCheck className="h-3.5 w-3.5" />
-                  {lead.status === "scheduled" ? "Consulta agendada" : "Marcar consulta agendada"}
-                </Button>
+                  onResult={(resultMessage) => setMessage(resultMessage)}
+                  onSuccess={() => router.refresh()}
+                />
                 <Button size="sm" className="w-full text-xs" variant="secondary" asChild>
                   <Link href={`/leads/${lead.id}`}>Ver ficha completa</Link>
                 </Button>

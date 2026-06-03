@@ -106,6 +106,7 @@ export interface Lead {
   created_at: string;
   updated_at: string;
   last_interaction_at?: string;
+  appointment_scheduled_at?: string | null;
   next_action_at?: string;
   next_action_note?: string;
   observations?: string;

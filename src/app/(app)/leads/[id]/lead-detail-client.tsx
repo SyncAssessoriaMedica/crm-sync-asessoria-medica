@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
-  CalendarCheck,
   CheckSquare,
   Clock,
   Copy,
@@ -52,6 +51,7 @@ import {
   getInitials,
 } from "@/lib/utils";
 import { LOCATION_CONFIDENCE_LABELS, LOCATION_STATUS_LABELS } from "@/lib/lead-location";
+import { AppointmentScheduler } from "@/components/leads/appointment-scheduler";
 import type {
   LeadEventItem,
   LeadListItem,
@@ -66,7 +66,6 @@ import {
   deleteLeadAction,
   removeTagFromLeadAction,
   toggleTaskAction,
-  markLeadScheduledAction,
   updateLeadAction,
   updateLeadSourceAction,
   updateLeadStageAction,
@@ -166,14 +165,6 @@ export function LeadDetailClient({ lead, options, leadTags: initialLeadTags, not
     });
   }
 
-  function markScheduled() {
-    startTransition(async () => {
-      const result = await markLeadScheduledAction(lead.id);
-      setMessage(result.message);
-      if (result.ok) router.refresh();
-    });
-  }
-
   function changeSource(sourceId: string) {
     startTransition(async () => {
       const result = await updateLeadSourceAction(lead.id, sourceId === "none" ? "" : sourceId);
@@ -200,16 +191,13 @@ export function LeadDetailClient({ lead, options, leadTags: initialLeadTags, not
           <h1 className="text-xl font-black text-text-primary">{lead.name}</h1>
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            variant={lead.status === "scheduled" ? "secondary" : "default"}
-            size="sm"
+          <AppointmentScheduler
+            leadId={lead.id}
+            appointmentScheduledAt={lead.appointment_scheduled_at}
             className="gap-1.5"
-            disabled={isPending || lead.status === "scheduled"}
-            onClick={markScheduled}
-          >
-            <CalendarCheck className="h-3.5 w-3.5" />
-            {lead.status === "scheduled" ? "Consulta agendada" : "Marcar consulta agendada"}
-          </Button>
+            onResult={(resultMessage) => setMessage(resultMessage)}
+            onSuccess={() => router.refresh()}
+          />
           <Button variant="secondary" size="sm" className="gap-1.5" onClick={() => setEditOpen(true)}>
             <Edit2 className="h-3.5 w-3.5" />
             Editar
@@ -292,6 +280,12 @@ export function LeadDetailClient({ lead, options, leadTags: initialLeadTags, not
                   )}
                 </div>
               )}
+              <Separator />
+              <Meta
+                label="Consulta agendada"
+                value={lead.appointment_scheduled_at ? formatDateTime(lead.appointment_scheduled_at) : undefined}
+                strong
+              />
               <Separator />
               <div>
                 <p className="label-eyebrow mb-1.5">Etapa do Funil</p>
