@@ -1,10 +1,10 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { CalendarCheck, X } from "lucide-react";
+import { CalendarCheck, CalendarX, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { formatDateTime } from "@/lib/utils";
-import { markLeadScheduledAction } from "@/app/(app)/leads/actions";
+import { markLeadScheduledAction, unmarkLeadScheduledAction } from "@/app/(app)/leads/actions";
 
 type AppointmentSchedulerProps = {
   leadId: string;
@@ -51,18 +51,38 @@ export function AppointmentScheduler({
     });
   }
 
+  function unmarkAppointment() {
+    if (!hasAppointment) return;
+    startTransition(async () => {
+      const result = await unmarkLeadScheduledAction(leadId);
+      onResult?.(result.message, result.ok);
+      if (result.ok) {
+        setOpen(false);
+        onSuccess?.();
+      }
+    });
+  }
+
   return (
     <>
-      <Button
-        size="sm"
-        className={className}
-        variant={hasAppointment ? "secondary" : "default"}
-        disabled={isPending}
-        onClick={openScheduler}
-      >
-        <CalendarCheck className="h-3.5 w-3.5" />
-        {hasAppointment ? "Alterar agendamento" : "Marcar consulta agendada"}
-      </Button>
+      <div className={hasAppointment ? "flex flex-col gap-2 sm:flex-row" : undefined}>
+        <Button
+          size="sm"
+          className={className}
+          variant={hasAppointment ? "secondary" : "default"}
+          disabled={isPending}
+          onClick={openScheduler}
+        >
+          <CalendarCheck className="h-3.5 w-3.5" />
+          {hasAppointment ? "Alterar agendamento" : "Marcar consulta agendada"}
+        </Button>
+        {hasAppointment && (
+          <Button size="sm" className={className} variant="outline" disabled={isPending} onClick={unmarkAppointment}>
+            <CalendarX className="h-3.5 w-3.5" />
+            Desmarcar consulta
+          </Button>
+        )}
+      </div>
 
       {open && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/35 p-4">

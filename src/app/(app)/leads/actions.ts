@@ -134,6 +134,22 @@ async function findScheduledStageId(admin: ReturnType<typeof createAdminClient>,
   return scheduledStage?.id ?? null;
 }
 
+async function findContactedStageId(admin: ReturnType<typeof createAdminClient>, organizationId: string) {
+  const { data: pipeline } = await admin
+    .from("pipelines")
+    .select("id, pipeline_stages(id, name, order)")
+    .eq("organization_id", organizationId)
+    .eq("is_default", true)
+    .maybeSingle();
+
+  const stages = (pipeline?.pipeline_stages ?? []) as { id: string; name: string | null; order: number }[];
+  const contactedStage = stages
+    .sort((a, b) => a.order - b.order)
+    .find((stage) => normalizeStageName(stage.name).includes("contact"));
+
+  return contactedStage?.id ?? null;
+}
+
 async function saveCustomFieldValues(
   admin: ReturnType<typeof createAdminClient>,
   organizationId: string,
@@ -613,6 +629,64 @@ export async function markLeadScheduledAction(leadId: string, formData: FormData
     };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "Erro ao marcar consulta agendada." };
+  }
+}
+
+export async function unmarkLeadScheduledAction(leadId: string): Promise<ActionResult> {
+  try {
+    const { admin, user, organizationId } = await getCurrentContext();
+
+    const { data: lead, error: leadError } = await admin
+      .from("leads")
+      .select("id, status, stage_id, appointment_scheduled_at")
+      .eq("id", leadId)
+      .eq("organization_id", organizationId)
+      .maybeSingle();
+
+    if (leadError) return { ok: false, message: leadError.message };
+    if (!lead?.id) return { ok: false, message: "Lead nao encontrado." };
+
+    const scheduledStageId = await findScheduledStageId(admin, organizationId);
+    const contactedStageId = await findContactedStageId(admin, organizationId);
+    const wasScheduledStage = Boolean(scheduledStageId && lead.stage_id === scheduledStageId);
+
+    const payload: Record<string, unknown> = {
+      appointment_scheduled_at: null,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (lead.status === "scheduled") {
+      payload.status = "contacted";
+    }
+    if (wasScheduledStage) {
+      payload.stage_id = contactedStageId;
+    }
+
+    const { error } = await admin
+      .from("leads")
+      .update(payload)
+      .eq("id", leadId)
+      .eq("organization_id", organizationId);
+
+    if (error) return { ok: false, message: error.message };
+
+    await insertAuditLog(admin, user.id, organizationId, "unmark_appointment_scheduled", "lead", leadId, {
+      previous_appointment_scheduled_at: lead.appointment_scheduled_at,
+      previous_status: lead.status,
+      previous_stage_id: lead.stage_id,
+      next_status: payload.status ?? lead.status,
+      next_stage_id: wasScheduledStage ? contactedStageId : lead.stage_id,
+    });
+
+    revalidatePath("/dashboard");
+    revalidatePath("/inbox");
+    revalidatePath("/leads");
+    revalidatePath("/kanban");
+    revalidatePath(`/leads/${leadId}`);
+
+    return { ok: true, message: "Consulta desmarcada." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao desmarcar consulta." };
   }
 }
 
