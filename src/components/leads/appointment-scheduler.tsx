@@ -65,10 +65,10 @@ export function AppointmentScheduler({
 
   return (
     <>
-      <div className={hasAppointment ? "flex flex-col gap-2 sm:flex-row" : undefined}>
+      <div className={hasAppointment ? "flex w-full flex-col gap-2" : "w-full"}>
         <Button
           size="sm"
-          className={className}
+          className={className ?? "w-full"}
           variant={hasAppointment ? "secondary" : "default"}
           disabled={isPending}
           onClick={openScheduler}
@@ -77,7 +77,7 @@ export function AppointmentScheduler({
           {hasAppointment ? "Alterar agendamento" : "Marcar consulta agendada"}
         </Button>
         {hasAppointment && (
-          <Button size="sm" className={className} variant="outline" disabled={isPending} onClick={unmarkAppointment}>
+          <Button size="sm" className={className ?? "w-full"} variant="outline" disabled={isPending} onClick={unmarkAppointment}>
             <CalendarX className="h-3.5 w-3.5" />
             Desmarcar consulta
           </Button>
