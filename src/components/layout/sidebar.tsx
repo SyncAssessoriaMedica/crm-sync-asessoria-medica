@@ -8,6 +8,7 @@ import {
   Building2,
   ChevronDown,
   Clock,
+  Columns3,
   LayoutDashboard,
   Loader2,
   MessageSquare,
@@ -30,6 +31,12 @@ const navItems = [
     label: "Leads",
     href: "/leads",
     icon: Users,
+    roles: ["super_admin", "gestor_sync", "admin_clinica", "atendente"],
+  },
+  {
+    label: "Kanban",
+    href: "/kanban",
+    icon: Columns3,
     roles: ["super_admin", "gestor_sync", "admin_clinica", "atendente"],
   },
   {

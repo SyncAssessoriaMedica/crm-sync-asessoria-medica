@@ -19,7 +19,7 @@ import { formatDateParam, getDateRangeFromParams, PERIOD_OPTIONS, type DatePerio
 import { cn, getInitials } from "@/lib/utils";
 
 // Rotas onde o seletor de periodo faz sentido (consomem ?period= de verdade)
-const PERIOD_ROUTES = new Set(["/dashboard", "/leads", "/inbox"]);
+const PERIOD_ROUTES = new Set(["/dashboard", "/leads", "/kanban", "/inbox"]);
 
 export interface TopbarUser {
   name: string;

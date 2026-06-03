@@ -252,6 +252,7 @@ export async function createLeadAction(formData: FormData): Promise<ActionResult
     await saveCustomFieldValues(admin, organizationId, data.id as string, formData);
 
     revalidatePath("/leads");
+    revalidatePath("/kanban");
     revalidatePath("/dashboard");
     return { ok: true, message: "Lead criado com sucesso.", id: data.id as string };
   } catch (error) {
@@ -300,6 +301,7 @@ export async function updateLeadAction(leadId: string, formData: FormData): Prom
     await saveCustomFieldValues(admin, organizationId, leadId, formData);
 
     revalidatePath("/leads");
+    revalidatePath("/kanban");
     revalidatePath("/dashboard");
     revalidatePath("/inbox");
     revalidatePath(`/leads/${leadId}`);
@@ -331,6 +333,7 @@ export async function deleteLeadAction(leadId: string): Promise<ActionResult> {
 
     await insertAuditLog(admin, user.id, organizationId, "delete_lead", "lead", leadId);
     revalidatePath("/leads");
+    revalidatePath("/kanban");
     revalidatePath("/dashboard");
     revalidatePath("/inbox");
     return { ok: true, message: "Lead excluido." };
@@ -482,6 +485,7 @@ export async function updateLeadStageAction(leadId: string, stageId: string): Pr
     if (error) return { ok: false, message: error.message };
 
     revalidatePath("/leads");
+    revalidatePath("/kanban");
     revalidatePath("/dashboard");
     revalidatePath("/inbox");
     revalidatePath(`/leads/${leadId}`);
@@ -576,6 +580,7 @@ export async function markLeadScheduledAction(leadId: string): Promise<ActionRes
     revalidatePath("/dashboard");
     revalidatePath("/inbox");
     revalidatePath("/leads");
+    revalidatePath("/kanban");
     revalidatePath(`/leads/${leadId}`);
 
     return {
@@ -643,6 +648,7 @@ export async function deleteLeadsBulkAction(leadIds: string[]): Promise<ActionRe
       lead_ids: ownedIds,
     });
     revalidatePath("/leads");
+    revalidatePath("/kanban");
     revalidatePath("/dashboard");
     revalidatePath("/inbox");
     return { ok: true, message: `${ownedIds.length} lead(s) apagado(s) com sucesso.` };
@@ -715,6 +721,7 @@ export async function updateLeadsBulkAction(
     }
 
     revalidatePath("/leads");
+    revalidatePath("/kanban");
     revalidatePath("/dashboard");
     return { ok: true, message: `${ownedIds.length} lead(s) atualizado(s) com sucesso.` };
   } catch (error) {
