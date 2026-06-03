@@ -2,8 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { CalendarCheck, ChevronDown, Clock, DollarSign, Filter, Inbox, Phone, Search, Tag, User, X } from "lucide-react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { CalendarCheck, ChevronDown, Clock, DollarSign, Filter, Inbox, MapPin, Phone, Search, Tag, User, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -16,6 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { createClient } from "@/lib/supabase/client";
+import { LOCATION_STATUS_LABELS } from "@/lib/lead-location";
 import { cn, formatCurrency, formatPhone, formatTimeAgo, getInitials } from "@/lib/utils";
 import { cancelBhAutoReplyAction, markConversationReadAction, updateConversationStatusAction } from "./actions";
 import { markLeadScheduledAction, updateLeadSourceAction } from "../leads/actions";
@@ -50,28 +51,8 @@ type InboxClientProps = {
   instances: { id: string; instance_name: string; phone_number: string | null; status: string }[];
   sources: InboxSource[];
   initialSearch: string;
-  period: string;
+  dateMode: "activity" | "created";
 };
-
-function startOfDay(date: Date) {
-  const next = new Date(date);
-  next.setHours(0, 0, 0, 0);
-  return next;
-}
-
-function periodStart(period: string) {
-  const now = new Date();
-  if (period === "today") return startOfDay(now);
-  if (period === "7d") {
-    const start = startOfDay(now);
-    start.setDate(start.getDate() - 6);
-    return start;
-  }
-  if (period === "month") return new Date(now.getFullYear(), now.getMonth(), 1);
-  const start = startOfDay(now);
-  start.setDate(start.getDate() - 29);
-  return start;
-}
 
 function cleanJid(remoteJid: string) {
   return remoteJid.replace("@s.whatsapp.net", "").replace("@c.us", "");
@@ -130,8 +111,10 @@ function ConversationItem({
   );
 }
 
-export function InboxClient({ organizationId, conversations, messagesByConversation, bhAutoRepliesByConversation, instances, sources, initialSearch, period }: InboxClientProps) {
+export function InboxClient({ organizationId, conversations, messagesByConversation, bhAutoRepliesByConversation, instances, sources, initialSearch, dateMode }: InboxClientProps) {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const markedReadRef = useRef<Set<string>>(new Set());
   const [activeConvId, setActiveConvId] = useState(conversations[0]?.id ?? "");
@@ -145,7 +128,6 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
 
   const filteredConversations = useMemo(() => {
     const term = search.toLowerCase().trim();
-    const start = periodStart(period);
     return conversations.filter((conversation) => {
       const lead = conversation.lead;
       const haystack = [
@@ -164,10 +146,9 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
         filter === "all" ||
         (filter === "unread" && conversation.unread_count > 0) ||
         conversation.status === filter;
-      const matchesPeriod = new Date(conversation.updated_at).getTime() >= start.getTime();
-      return matchesSearch && matchesFilter && matchesPeriod;
+      return matchesSearch && matchesFilter;
     });
-  }, [conversations, filter, period, search]);
+  }, [conversations, filter, search]);
 
   const activeConv =
     filteredConversations.find((conversation) => conversation.id === activeConvId) ??
@@ -183,6 +164,17 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
     () => conversations.map((conversation) => conversation.id).sort().join(","),
     [conversations]
   );
+
+  function changeDateMode(nextMode: "activity" | "created") {
+    const params = new URLSearchParams(searchParams.toString());
+    if (nextMode === "activity") {
+      params.delete("dateMode");
+    } else {
+      params.set("dateMode", nextMode);
+    }
+    const query = params.toString();
+    router.push(query ? `${pathname}?${query}` : pathname);
+  }
 
   useEffect(() => {
     const scheduleRefresh = () => {
@@ -322,6 +314,26 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
               onChange={(event) => setSearch(event.target.value)}
               className="h-7 w-full rounded-lg border border-border bg-background-subtle pl-7 pr-3 text-[11px] placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-brand-green"
             />
+          </div>
+          <div className="grid grid-cols-2 gap-1 rounded-lg border border-border bg-background-subtle p-1">
+            {[
+              ["activity", "Ativas"],
+              ["created", "Iniciadas"],
+            ].map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => changeDateMode(value as "activity" | "created")}
+                className={cn(
+                  "rounded-md px-2 py-1 text-[10px] font-semibold transition-colors",
+                  dateMode === value
+                    ? "bg-white text-brand-green-deep shadow-sm"
+                    : "text-text-muted hover:text-text-secondary"
+                )}
+              >
+                {label}
+              </button>
+            ))}
           </div>
           <div className="grid grid-cols-3 gap-1">
             {[
@@ -467,6 +479,19 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
               <div className="space-y-3">
                 <Info icon={<User />} label="Status" value={STATUS_LABELS[lead.status] ?? lead.status} />
                 {lead.stage?.name && <Info icon={<Tag />} label="Etapa" value={lead.stage.name} />}
+                {(lead.detected_city || lead.detected_state || lead.phone_ddd) && (
+                  <Info
+                    icon={<MapPin />}
+                    label="Localizacao"
+                    value={[
+                      [lead.detected_city, lead.detected_state].filter(Boolean).join(" / "),
+                      lead.phone_ddd ? `DDD ${lead.phone_ddd}` : null,
+                      LOCATION_STATUS_LABELS[lead.service_area_status] ?? null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  />
+                )}
                 <div className="space-y-1.5">
                   <div className="flex items-center gap-2 text-[11px] text-text-muted">
                     <ChevronDown className="h-3.5 w-3.5 rotate-270" />

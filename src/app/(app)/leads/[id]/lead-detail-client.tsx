@@ -14,6 +14,7 @@ import {
   Edit2,
   FileText,
   Mail,
+  MapPin,
   MessageCircle,
   MessageSquare,
   MoreHorizontal,
@@ -50,6 +51,7 @@ import {
   formatPhone,
   getInitials,
 } from "@/lib/utils";
+import { LOCATION_CONFIDENCE_LABELS, LOCATION_STATUS_LABELS } from "@/lib/lead-location";
 import type {
   LeadEventItem,
   LeadListItem,
@@ -268,6 +270,26 @@ export function LeadDetailClient({ lead, options, leadTags: initialLeadTags, not
                 <div className="flex items-center gap-2 text-xs">
                   <Mail className="h-3.5 w-3.5 shrink-0 text-text-muted" />
                   <span className="text-text-secondary">{lead.email}</span>
+                </div>
+              )}
+              {(lead.detected_city || lead.detected_state || lead.phone_ddd) && (
+                <div className="rounded-lg border border-border bg-background-subtle p-3">
+                  <div className="mb-2 flex items-center gap-1.5">
+                    <MapPin className="h-3.5 w-3.5 text-brand-green-dark" />
+                    <p className="label-eyebrow text-brand-green-dark">Localizacao</p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Meta
+                      label="Cidade"
+                      value={[lead.detected_city, lead.detected_state].filter(Boolean).join(" / ") || undefined}
+                    />
+                    <Meta label="DDD" value={lead.phone_ddd ? `DDD ${lead.phone_ddd}` : undefined} />
+                    <Meta label="Area" value={LOCATION_STATUS_LABELS[lead.service_area_status]} />
+                    <Meta label="Confianca" value={LOCATION_CONFIDENCE_LABELS[lead.location_confidence]} />
+                  </div>
+                  {lead.location_manually_edited && (
+                    <p className="mt-2 text-[10px] font-semibold text-text-muted">Localizacao ajustada manualmente.</p>
+                  )}
                 </div>
               )}
               <Separator />

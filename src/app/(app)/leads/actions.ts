@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getOrganizationContext } from "@/lib/organization-context";
+import { buildLocationPayloadForOrg } from "@/lib/lead-location";
 import { createAdminClient } from "@/lib/supabase/server";
 import type { LeadStatus } from "@/lib/types";
 
@@ -18,6 +19,12 @@ const LeadSchema = z.object({
   potential_value: z.coerce.number().nonnegative().optional().or(z.literal("")),
   closed_value: z.coerce.number().nonnegative().optional().or(z.literal("")),
   observations: z.string().trim().optional(),
+  phone_ddd: z.string().trim().max(2).optional(),
+  detected_state: z.string().trim().max(2).optional(),
+  detected_region: z.string().trim().max(120).optional(),
+  detected_city: z.string().trim().max(120).optional(),
+  service_area_status: z.enum(["inside", "possible", "outside", "unknown"]).optional(),
+  location_manually_edited: z.boolean().optional(),
 });
 
 const NoteSchema = z.object({
@@ -168,6 +175,12 @@ function formToLeadPayload(formData: FormData) {
     potential_value: formData.get("potential_value") ?? "",
     closed_value: formData.get("closed_value") ?? "",
     observations: formData.get("observations"),
+    phone_ddd: formData.get("phone_ddd"),
+    detected_state: formData.get("detected_state"),
+    detected_region: formData.get("detected_region"),
+    detected_city: formData.get("detected_city"),
+    service_area_status: formData.get("service_area_status"),
+    location_manually_edited: formData.get("location_manually_edited") === "on",
   });
 
   if (!parsed.success) {
@@ -187,6 +200,20 @@ function formToLeadPayload(formData: FormData) {
       closed_value: optionalNumber(data.closed_value),
       observations: optionalString(data.observations),
     },
+    manualLocation:
+      data.location_manually_edited === true
+        ? {
+            phone_country: "BR",
+            phone_ddd: optionalString(data.phone_ddd),
+            detected_state: optionalString(data.detected_state)?.toUpperCase() ?? null,
+            detected_region: optionalString(data.detected_region),
+            detected_city: optionalString(data.detected_city),
+            location_confidence: "high",
+            service_area_status: data.service_area_status ?? "unknown",
+            location_manually_edited: true,
+            location_updated_at: new Date().toISOString(),
+          }
+        : null,
   };
 }
 
@@ -196,6 +223,8 @@ export async function createLeadAction(formData: FormData): Promise<ActionResult
     const result = formToLeadPayload(formData);
     if ("error" in result) return { ok: false, message: result.error ?? "Dados invalidos." };
     const status = await getStatusForStage(admin, result.payload.stage_id);
+    const locationPayload =
+      result.manualLocation ?? (await buildLocationPayloadForOrg(admin, organizationId, result.payload.phone));
 
     const { data: existingLead } = await admin
       .from("leads")
@@ -214,7 +243,7 @@ export async function createLeadAction(formData: FormData): Promise<ActionResult
 
     const { data, error } = await admin
       .from("leads")
-      .insert({ ...result.payload, status, organization_id: organizationId })
+      .insert({ ...result.payload, ...locationPayload, status, organization_id: organizationId })
       .select("id")
       .single();
 
@@ -236,6 +265,8 @@ export async function updateLeadAction(leadId: string, formData: FormData): Prom
     const result = formToLeadPayload(formData);
     if ("error" in result) return { ok: false, message: result.error ?? "Dados invalidos." };
     const status = await getStatusForStage(admin, result.payload.stage_id);
+    const locationPayload =
+      result.manualLocation ?? (await buildLocationPayloadForOrg(admin, organizationId, result.payload.phone));
 
     const { data: existingLead } = await admin
       .from("leads")
@@ -255,7 +286,12 @@ export async function updateLeadAction(leadId: string, formData: FormData): Prom
 
     const { error } = await admin
       .from("leads")
-      .update({ ...result.payload, status })
+      .update({
+        ...result.payload,
+        ...locationPayload,
+        location_manually_edited: result.manualLocation ? true : false,
+        status,
+      })
       .eq("id", leadId)
       .eq("organization_id", organizationId);
 

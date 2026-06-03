@@ -13,6 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { LeadListItem, LeadOptionData } from "./types";
+import { LOCATION_STATUS_LABELS } from "@/lib/lead-location";
 
 type LeadFormProps = {
   mode: "create" | "edit";
@@ -39,6 +40,12 @@ export function LeadForm({ mode, open, options, lead, customValues = {}, onClose
       potential_value: lead?.potential_value ?? "",
       closed_value: lead?.closed_value ?? "",
       observations: lead?.observations ?? "",
+      phone_ddd: lead?.phone_ddd ?? "",
+      detected_state: lead?.detected_state ?? "",
+      detected_region: lead?.detected_region ?? "",
+      detected_city: lead?.detected_city ?? "",
+      service_area_status: lead?.service_area_status ?? "unknown",
+      location_manually_edited: lead?.location_manually_edited ?? false,
     }),
     [lead]
   );
@@ -122,6 +129,37 @@ export function LeadForm({ mode, open, options, lead, customValues = {}, onClose
               defaultValue={defaults.observations}
               className="min-h-24 w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-text-primary outline-none focus:border-brand-green focus:ring-2 focus:ring-brand-green"
             />
+          </div>
+
+          <div className="space-y-4 rounded-xl border border-border bg-background-subtle/40 p-4">
+            <div>
+              <p className="label-eyebrow text-text-muted">Localizacao do lead</p>
+              <p className="mt-1 text-xs text-text-secondary">
+                O CRM preenche pelo DDD automaticamente. Marque a correcao manual para ajustar cidade, estado ou status.
+              </p>
+            </div>
+            <label className="flex items-center gap-2 rounded-lg border border-border bg-white px-3 py-2 text-xs font-semibold text-text-secondary">
+              <input
+                type="checkbox"
+                name="location_manually_edited"
+                defaultChecked={defaults.location_manually_edited}
+                className="h-4 w-4 accent-brand-green"
+              />
+              Localizacao corrigida manualmente
+            </label>
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field label="DDD" name="phone_ddd" defaultValue={defaults.phone_ddd} placeholder="11" />
+              <Field label="Estado" name="detected_state" defaultValue={defaults.detected_state} placeholder="SP" />
+              <Field label="Cidade provavel" name="detected_city" defaultValue={defaults.detected_city} placeholder="Sao Paulo" />
+              <Field label="Regiao provavel" name="detected_region" defaultValue={defaults.detected_region} placeholder="Grande Sao Paulo" />
+              <SelectField label="Status da area" name="service_area_status" defaultValue={defaults.service_area_status}>
+                {Object.entries(LOCATION_STATUS_LABELS).map(([value, label]) => (
+                  <SelectItem key={value} value={value}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectField>
+            </div>
           </div>
 
           {options.customFields.length > 0 && (

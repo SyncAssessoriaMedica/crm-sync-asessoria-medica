@@ -11,6 +11,7 @@ import {
   Edit2,
   Edit3,
   Filter,
+  MapPin,
   MessageCircle,
   MoreHorizontal,
   Plus,
@@ -36,6 +37,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn, formatCurrency, formatDate, formatPhone, getInitials } from "@/lib/utils";
+import { LOCATION_STATUS_LABELS } from "@/lib/lead-location";
 import type { LeadListItem, LeadOptionData } from "./types";
 import {
   createLeadAction,
@@ -51,13 +53,17 @@ type LeadsClientProps = {
   leads: LeadListItem[];
   options: LeadOptionData;
   organizationName: string;
+  periodLabel: string;
   role: string;
 };
 
-export function LeadsClient({ leads, options, organizationName, role }: LeadsClientProps) {
+export function LeadsClient({ leads, options, organizationName, periodLabel, role }: LeadsClientProps) {
   const [search, setSearch] = useState("");
   const [stageFilter, setStageFilter] = useState("all");
   const [sourceFilter, setSourceFilter] = useState("all");
+  const [stateFilter, setStateFilter] = useState("all");
+  const [cityFilter, setCityFilter] = useState("all");
+  const [areaFilter, setAreaFilter] = useState("all");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [sortField, setSortField] = useState<keyof LeadListItem>("created_at");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
@@ -85,9 +91,12 @@ export function LeadsClient({ leads, options, organizationName, role }: LeadsCli
         (lead.procedure?.toLowerCase().includes(normalizedSearch) ?? false);
       const matchesStage = stageFilter === "all" || lead.stage_id === stageFilter;
       const matchesSource = sourceFilter === "all" || lead.source_id === sourceFilter;
-      return matchesSearch && matchesStage && matchesSource;
+      const matchesState = stateFilter === "all" || lead.detected_state === stateFilter;
+      const matchesCity = cityFilter === "all" || lead.detected_city === cityFilter;
+      const matchesArea = areaFilter === "all" || lead.service_area_status === areaFilter;
+      return matchesSearch && matchesStage && matchesSource && matchesState && matchesCity && matchesArea;
     });
-  }, [leads, search, sourceFilter, stageFilter]);
+  }, [areaFilter, cityFilter, leads, search, sourceFilter, stageFilter, stateFilter]);
 
   const sorted = useMemo(() => {
     return [...filtered].sort((a, b) => {
@@ -158,7 +167,15 @@ export function LeadsClient({ leads, options, organizationName, role }: LeadsCli
     });
   }
 
-  const activeFilterCount = [stageFilter, sourceFilter].filter((v) => v !== "all").length;
+  const locationOptions = useMemo(() => {
+    const states = Array.from(new Set(leads.map((lead) => lead.detected_state).filter(Boolean) as string[])).sort();
+    const cities = Array.from(new Set(leads.map((lead) => lead.detected_city).filter(Boolean) as string[])).sort();
+    return { states, cities };
+  }, [leads]);
+
+  const activeFilterCount = [stageFilter, sourceFilter, stateFilter, cityFilter, areaFilter].filter(
+    (v) => v !== "all"
+  ).length;
 
   const handleSort = (field: keyof LeadListItem) => {
     if (sortField === field) setSortDir(sortDir === "asc" ? "desc" : "asc");
@@ -280,6 +297,7 @@ export function LeadsClient({ leads, options, organizationName, role }: LeadsCli
         <div>
           <p className="label-eyebrow text-text-muted">{organizationName}</p>
           <h1 className="mt-1 text-2xl font-black text-text-primary">Historico de Leads</h1>
+          <p className="mt-1 text-xs text-text-muted">Periodo: {periodLabel}</p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="secondary" size="sm" className="gap-1.5" onClick={() => exportCsv(sorted)}>
@@ -333,12 +351,36 @@ export function LeadsClient({ leads, options, organizationName, role }: LeadsCli
         </div>
 
         {showAdvanced && (
-          <div className="mt-4 grid gap-3 border-t border-border pt-4 md:grid-cols-2">
+          <div className="mt-4 grid gap-3 border-t border-border pt-4 md:grid-cols-2 lg:grid-cols-3">
             <FilterSelect label="Origem" value={sourceFilter} onValueChange={(v) => { setSourceFilter(v); setSelectedIds(new Set()); }}>
               <SelectItem value="all">Todas as origens</SelectItem>
               {options.sources.map((source) => (
                 <SelectItem key={source.id} value={source.id}>
                   {source.name}
+                </SelectItem>
+              ))}
+            </FilterSelect>
+            <FilterSelect label="Estado" value={stateFilter} onValueChange={(v) => { setStateFilter(v); setSelectedIds(new Set()); }}>
+              <SelectItem value="all">Todos os estados</SelectItem>
+              {locationOptions.states.map((state) => (
+                <SelectItem key={state} value={state}>
+                  {state}
+                </SelectItem>
+              ))}
+            </FilterSelect>
+            <FilterSelect label="Cidade provavel" value={cityFilter} onValueChange={(v) => { setCityFilter(v); setSelectedIds(new Set()); }}>
+              <SelectItem value="all">Todas as cidades</SelectItem>
+              {locationOptions.cities.map((city) => (
+                <SelectItem key={city} value={city}>
+                  {city}
+                </SelectItem>
+              ))}
+            </FilterSelect>
+            <FilterSelect label="Area de atuacao" value={areaFilter} onValueChange={(v) => { setAreaFilter(v); setSelectedIds(new Set()); }}>
+              <SelectItem value="all">Todas</SelectItem>
+              {Object.entries(LOCATION_STATUS_LABELS).map(([value, label]) => (
+                <SelectItem key={value} value={value}>
+                  {label}
                 </SelectItem>
               ))}
             </FilterSelect>
@@ -350,6 +392,9 @@ export function LeadsClient({ leads, options, organizationName, role }: LeadsCli
                   setSearch("");
                   setStageFilter("all");
                   setSourceFilter("all");
+                  setStateFilter("all");
+                  setCityFilter("all");
+                  setAreaFilter("all");
                   setSelectedIds(new Set());
                 }}
               >
@@ -510,7 +555,16 @@ export function LeadsClient({ leads, options, organizationName, role }: LeadsCli
                       </div>
                     </td>
                     <td className="px-4 py-3 text-xs text-text-secondary">
-                      {formatPhone(lead.phone)}
+                      <div>{formatPhone(lead.phone)}</div>
+                      {(lead.detected_city || lead.detected_state || lead.phone_ddd) && (
+                        <div className="mt-1 flex items-center gap-1 text-[10px] text-text-muted">
+                          <MapPin className="h-3 w-3" />
+                          <span className="truncate">
+                            {[lead.detected_city, lead.detected_state].filter(Boolean).join(" / ") || "Localizacao provavel"}
+                            {lead.phone_ddd ? ` · DDD ${lead.phone_ddd}` : ""}
+                          </span>
+                        </div>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-xs text-text-secondary">
                       {lead.procedure ?? "-"}

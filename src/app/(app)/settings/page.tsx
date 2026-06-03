@@ -1,5 +1,6 @@
 import { AccessDenied } from "@/components/layout/access-denied";
 import { canAccessRoute } from "@/lib/permissions";
+import { parseServiceArea } from "@/lib/lead-location";
 import { getOrganizationContext } from "@/lib/organization-context";
 import { SettingsClient, type SettingsData } from "./settings-client";
 
@@ -43,7 +44,7 @@ export default async function SettingsPage() {
 
   const { data: settings } = await admin
     .from("organization_settings")
-    .select("cnpj, city, state, scheduling_url, notification_preferences, business_hours")
+    .select("cnpj, city, state, scheduling_url, notification_preferences, business_hours, service_area")
     .eq("organization_id", organizationId)
     .maybeSingle();
 
@@ -70,6 +71,7 @@ export default async function SettingsPage() {
       scheduling_url: settings?.scheduling_url ?? "",
       notification_preferences: notificationPreferences,
       business_hours: parseBusinessHours(settings?.business_hours),
+      service_area: parseServiceArea(settings?.service_area),
     },
     user: {
       role: effectiveRole,

@@ -1,4 +1,5 @@
 import { canAccessRoute } from "@/lib/permissions";
+import { getDateRangeFromParams } from "@/lib/date-range";
 import { getOrganizationContext } from "@/lib/organization-context";
 import { AccessDenied } from "@/components/layout/access-denied";
 import { LeadsClient } from "./leads-client";
@@ -6,7 +7,13 @@ import type { LeadListItem, LeadOptionData } from "./types";
 
 export const dynamic = "force-dynamic";
 
-export default async function LeadsPage() {
+export default async function LeadsPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ period?: string; start?: string; end?: string }>;
+}) {
+  const params = await searchParams;
+  const range = getDateRangeFromParams(params);
   const context = await getOrganizationContext();
   const { admin, organizationId, organization, role: userRole } = context;
 
@@ -27,6 +34,8 @@ export default async function LeadsPage() {
       `
       )
       .eq("organization_id", organizationId)
+      .gte("created_at", range.start.toISOString())
+      .lt("created_at", range.end.toISOString())
       .order("created_at", { ascending: false }),
     admin
       .from("lead_sources")
@@ -76,6 +85,7 @@ export default async function LeadsPage() {
       leads={(leadsResult.data ?? []) as LeadListItem[]}
       options={options}
       organizationName={organization?.name ?? "Sync Marketing"}
+      periodLabel={range.label}
       role={userRole}
     />
   );

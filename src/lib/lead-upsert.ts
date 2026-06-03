@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/server";
+import { buildLocationPayloadForOrg } from "@/lib/lead-location";
 
 type SupabaseAdmin = ReturnType<typeof createAdminClient>;
 
@@ -30,7 +31,13 @@ function normalizeName(name: string | null | undefined) {
   return value || null;
 }
 
-function buildUpdatePayload(input: LeadInput, existingName: string | null, nameMode: LeadNameMode) {
+async function buildUpdatePayload(
+  admin: SupabaseAdmin,
+  input: LeadInput,
+  existingName: string | null,
+  locationManuallyEdited: boolean,
+  nameMode: LeadNameMode
+) {
   const payload: Record<string, unknown> = {
     last_interaction_at: input.lastInteractionAt ?? new Date().toISOString(),
   };
@@ -47,13 +54,18 @@ function buildUpdatePayload(input: LeadInput, existingName: string | null, nameM
   if (input.procedure !== undefined) payload.procedure = input.procedure;
   if (input.potentialValue !== undefined) payload.potential_value = input.potentialValue;
 
+  Object.assign(
+    payload,
+    await buildLocationPayloadForOrg(admin, input.organizationId, input.phone, locationManuallyEdited)
+  );
+
   return payload;
 }
 
 async function fetchLeadByPhone(admin: SupabaseAdmin, organizationId: string, phone: string) {
   const { data, error } = await admin
     .from("leads")
-    .select("id, name")
+    .select("id, name, location_manually_edited")
     .eq("organization_id", organizationId)
     .eq("phone", phone)
     .order("created_at", { ascending: true })
@@ -61,7 +73,7 @@ async function fetchLeadByPhone(admin: SupabaseAdmin, organizationId: string, ph
     .maybeSingle();
 
   if (error) throw error;
-  return data as { id: string; name: string | null } | null;
+  return data as { id: string; name: string | null; location_manually_edited: boolean | null } | null;
 }
 
 export async function createOrUpdateLeadByPhone(
@@ -77,7 +89,13 @@ export async function createOrUpdateLeadByPhone(
   const existing = await fetchLeadByPhone(admin, input.organizationId, input.phone);
 
   if (existing?.id) {
-    const updates = buildUpdatePayload(input, existing.name, nameMode);
+    const updates = await buildUpdatePayload(
+      admin,
+      input,
+      existing.name,
+      existing.location_manually_edited === true,
+      nameMode
+    );
     await admin.from("leads").update(updates).eq("id", existing.id);
     return { id: existing.id, created: false };
   }
@@ -85,6 +103,7 @@ export async function createOrUpdateLeadByPhone(
   if (!createIfMissing) return { id: null, created: false };
 
   const now = input.lastInteractionAt ?? new Date().toISOString();
+  const locationPayload = await buildLocationPayloadForOrg(admin, input.organizationId, input.phone);
   const { data, error } = await admin
     .from("leads")
     .insert({
@@ -97,6 +116,7 @@ export async function createOrUpdateLeadByPhone(
       potential_value: input.potentialValue ?? null,
       status: input.status ?? "new",
       last_interaction_at: now,
+      ...locationPayload,
     })
     .select("id")
     .single();
@@ -109,7 +129,13 @@ export async function createOrUpdateLeadByPhone(
   const raced = await fetchLeadByPhone(admin, input.organizationId, input.phone);
   if (!raced?.id) throw error;
 
-  const updates = buildUpdatePayload(input, raced.name, nameMode);
+  const updates = await buildUpdatePayload(
+    admin,
+    input,
+    raced.name,
+    raced.location_manually_edited === true,
+    nameMode
+  );
   await admin.from("leads").update(updates).eq("id", raced.id);
   return { id: raced.id, created: false };
 }

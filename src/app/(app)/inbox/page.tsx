@@ -1,4 +1,5 @@
 import { canAccessRoute } from "@/lib/permissions";
+import { getDateRangeFromParams } from "@/lib/date-range";
 import { getOrganizationContext } from "@/lib/organization-context";
 import { AccessDenied } from "@/components/layout/access-denied";
 import { InboxClient } from "./inbox-client";
@@ -9,8 +10,14 @@ type ConversationRow = Omit<InboxConversation, "lead" | "instance" | "last_messa
   instance: InboxInstance | InboxInstance[] | null;
 };
 
+type InboxDateMode = "activity" | "created";
+
 function firstRelation<T>(value: T | T[] | null): T | null {
   return Array.isArray(value) ? value[0] ?? null : value;
+}
+
+function getDateMode(value?: string): InboxDateMode {
+  return value === "created" ? "created" : "activity";
 }
 
 export const dynamic = "force-dynamic";
@@ -18,9 +25,12 @@ export const dynamic = "force-dynamic";
 export default async function InboxPage({
   searchParams,
 }: {
-  searchParams?: Promise<{ q?: string; period?: string }>;
+  searchParams?: Promise<{ q?: string; period?: string; start?: string; end?: string; dateMode?: string }>;
 }) {
   const params = await searchParams;
+  const range = getDateRangeFromParams(params);
+  const dateMode = getDateMode(params?.dateMode);
+  const dateColumn = dateMode === "created" ? "created_at" : "updated_at";
   const context = await getOrganizationContext();
   const { admin, organizationId, role: userRole } = context;
 
@@ -47,6 +57,10 @@ export default async function InboxPage({
           status,
           potential_value,
           followup_paused,
+          phone_ddd,
+          detected_state,
+          detected_city,
+          service_area_status,
           source_id,
           source:lead_sources(id, name, active),
           stage:pipeline_stages(name)
@@ -56,7 +70,9 @@ export default async function InboxPage({
       )
       .eq("organization_id", organizationId)
       .not("lead_id", "is", null)
-      .order("updated_at", { ascending: false })
+      .gte(dateColumn, range.start.toISOString())
+      .lt(dateColumn, range.end.toISOString())
+      .order(dateColumn, { ascending: false })
       .limit(80),
     admin
       .from("whatsapp_instances")
@@ -140,7 +156,7 @@ export default async function InboxPage({
 
   return (
     <InboxClient
-      key={`${params?.q ?? ""}-${params?.period ?? "30d"}`}
+      key={`${params?.q ?? ""}-${dateMode}-${range.start.toISOString()}-${range.end.toISOString()}`}
       organizationId={organizationId}
       conversations={conversations}
       messagesByConversation={messagesByConversation}
@@ -148,7 +164,7 @@ export default async function InboxPage({
       instances={(instancesResult.data ?? []) as InboxInstance[]}
       sources={(sourcesResult.data ?? []) as InboxSource[]}
       initialSearch={params?.q ?? ""}
-      period={params?.period ?? "30d"}
+      dateMode={dateMode}
     />
   );
 }

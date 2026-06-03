@@ -1,6 +1,6 @@
 "use client";
 
-import { useTransition } from "react";
+import { useState, useTransition } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Bell, Calendar, ChevronDown, Loader2, LogOut } from "lucide-react";
@@ -15,17 +15,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { logoutAction } from "@/lib/actions/auth";
+import { formatDateParam, getDateRangeFromParams, PERIOD_OPTIONS, type DatePeriod } from "@/lib/date-range";
 import { cn, getInitials } from "@/lib/utils";
 
-const periods = [
-  { label: "Hoje", value: "today" },
-  { label: "7 dias", value: "7d" },
-  { label: "30 dias", value: "30d" },
-  { label: "Este mes", value: "month" },
-];
-
 // Rotas onde o seletor de periodo faz sentido (consomem ?period= de verdade)
-const PERIOD_ROUTES = new Set(["/dashboard", "/inbox"]);
+const PERIOD_ROUTES = new Set(["/dashboard", "/leads", "/inbox"]);
 
 export interface TopbarUser {
   name: string;
@@ -51,9 +45,22 @@ export function Topbar({ title, subtitle, user, notifications = [] }: TopbarProp
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const selectedPeriod = searchParams.get("period") ?? "30d";
+  const selectedPeriod = (searchParams.get("period") ?? "30d") as DatePeriod;
+  const selectedStart = searchParams.get("start");
+  const selectedEnd = searchParams.get("end");
   const [isPeriodPending, startPeriodTransition] = useTransition();
-  const selectedPeriodLabel = periods.find((p) => p.value === selectedPeriod)?.label ?? "30 dias";
+  const activeRange = getDateRangeFromParams({
+    period: selectedPeriod,
+    start: selectedStart,
+    end: selectedEnd,
+  });
+  const selectedPeriodLabel =
+    activeRange.period === "custom"
+      ? activeRange.label
+      : PERIOD_OPTIONS.find((p) => p.value === activeRange.period)?.label ?? "30 dias";
+  const [showCustomRange, setShowCustomRange] = useState(activeRange.period === "custom");
+  const [customStart, setCustomStart] = useState(formatDateParam(activeRange.start));
+  const [customEnd, setCustomEnd] = useState(formatDateParam(new Date(activeRange.end.getTime() - 1)));
   const displayName = user?.name ?? "Usuario";
   const displayEmail = user?.email ?? "";
   const initials = getInitials(displayName);
@@ -61,10 +68,25 @@ export function Topbar({ title, subtitle, user, notifications = [] }: TopbarProp
 
   const showPeriod = PERIOD_ROUTES.has(pathname);
 
-  function periodHref(value: string) {
+  function periodHref(value: DatePeriod) {
     const params = new URLSearchParams(searchParams.toString());
     params.set("period", value);
+    if (value !== "custom") {
+      params.delete("start");
+      params.delete("end");
+    }
     return `${pathname}?${params.toString()}`;
+  }
+
+  function applyCustomRange() {
+    if (!customStart || !customEnd) return;
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("period", "custom");
+    params.set("start", customStart);
+    params.set("end", customEnd);
+    startPeriodTransition(() => {
+      router.push(`${pathname}?${params.toString()}`);
+    });
   }
 
   return (
@@ -90,14 +112,22 @@ export function Topbar({ title, subtitle, user, notifications = [] }: TopbarProp
                 <ChevronDown className="h-3 w-3 text-text-muted" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-40">
+            <DropdownMenuContent align="end" className="w-64">
               <DropdownMenuLabel>Periodo</DropdownMenuLabel>
               <DropdownMenuSeparator />
-              {periods.map((period) => (
+              {PERIOD_OPTIONS.map((period) => (
                 <DropdownMenuItem
                   key={period.value}
-                  className={cn(period.value === selectedPeriod && "font-medium text-brand-green-dark")}
-                  onSelect={() => {
+                  className={cn(period.value === activeRange.period && "font-medium text-brand-green-dark")}
+                  onSelect={(event) => {
+                    if (period.value === "custom") {
+                      event.preventDefault();
+                      setCustomStart(formatDateParam(activeRange.start));
+                      setCustomEnd(formatDateParam(new Date(activeRange.end.getTime() - 1)));
+                      setShowCustomRange(true);
+                      return;
+                    }
+                    setShowCustomRange(false);
                     startPeriodTransition(() => {
                       router.push(periodHref(period.value));
                     });
@@ -106,6 +136,46 @@ export function Topbar({ title, subtitle, user, notifications = [] }: TopbarProp
                   {period.label}
                 </DropdownMenuItem>
               ))}
+              {showCustomRange && (
+                <>
+                  <DropdownMenuSeparator />
+                  <div className="space-y-2 px-2 py-2" onClick={(event) => event.stopPropagation()}>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="space-y-1">
+                        <span className="text-[10px] font-semibold uppercase tracking-wide text-text-muted">
+                          Inicio
+                        </span>
+                        <input
+                          type="date"
+                          value={customStart}
+                          onChange={(event) => setCustomStart(event.target.value)}
+                          className="h-8 w-full rounded-md border border-border bg-white px-2 text-xs outline-none focus:border-brand-green"
+                        />
+                      </label>
+                      <label className="space-y-1">
+                        <span className="text-[10px] font-semibold uppercase tracking-wide text-text-muted">
+                          Fim
+                        </span>
+                        <input
+                          type="date"
+                          value={customEnd}
+                          onChange={(event) => setCustomEnd(event.target.value)}
+                          className="h-8 w-full rounded-md border border-border bg-white px-2 text-xs outline-none focus:border-brand-green"
+                        />
+                      </label>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-8 w-full text-xs"
+                      disabled={isPeriodPending || !customStart || !customEnd}
+                      onClick={applyCustomRange}
+                    >
+                      Aplicar periodo
+                    </Button>
+                  </div>
+                </>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         )}

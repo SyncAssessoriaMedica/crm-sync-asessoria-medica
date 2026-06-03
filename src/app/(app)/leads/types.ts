@@ -30,6 +30,15 @@ export type LeadListItem = {
   potential_value: number | null;
   closed_value: number | null;
   observations: string | null;
+  phone_country: string | null;
+  phone_ddd: string | null;
+  detected_state: string | null;
+  detected_region: string | null;
+  detected_city: string | null;
+  location_confidence: "high" | "medium" | "low" | "unknown";
+  service_area_status: "inside" | "possible" | "outside" | "unknown";
+  location_manually_edited: boolean;
+  location_updated_at: string | null;
   last_interaction_at: string | null;
   followup_paused: boolean;
   created_at: string;

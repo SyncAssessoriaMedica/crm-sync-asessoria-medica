@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { updateBusinessHoursAction, updateClinicSettingsAction, updateNotificationSettingsAction } from "./actions";
+import type { ServiceAreaSettings } from "@/lib/lead-location";
 
 type NotificationPreferences = {
   new_lead: boolean;
@@ -40,6 +41,7 @@ export type SettingsData = {
     scheduling_url: string;
     notification_preferences: NotificationPreferences;
     business_hours: BusinessHoursSettings;
+    service_area: ServiceAreaSettings;
   };
   user: {
     role: string;
@@ -184,6 +186,64 @@ export function SettingsClient({ data }: { data: SettingsData }) {
                         placeholder="https://clinica.com.br/agendamento"
                       />
                     </div>
+                  </div>
+                  <Separator />
+                  <div className="space-y-4 rounded-xl border border-brand-green/20 bg-brand-green-soft/50 p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p className="label-eyebrow text-brand-green-dark">Area de atuacao</p>
+                        <p className="mt-1 text-xs text-text-secondary">
+                          O CRM usa estes dados para classificar automaticamente leads pelo DDD como dentro, possivel ou fora da area.
+                        </p>
+                      </div>
+                      <label className="flex items-center gap-2 rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-brand-green-deep">
+                        <input
+                          type="checkbox"
+                          name="service_area_enabled"
+                          defaultChecked={data.settings.service_area.enabled}
+                          className="h-4 w-4 accent-brand-green"
+                        />
+                        Ativar classificacao
+                      </label>
+                    </div>
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <Field
+                        label="Cidade principal atendida"
+                        name="primary_city"
+                        defaultValue={data.settings.service_area.primaryCity}
+                        placeholder="Sao Paulo"
+                      />
+                      <Field
+                        label="Estado principal"
+                        name="primary_state"
+                        defaultValue={data.settings.service_area.primaryState}
+                        placeholder="SP"
+                      />
+                    </div>
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <TextAreaField
+                        label="Cidades atendidas"
+                        name="served_cities"
+                        defaultValue={data.settings.service_area.servedCities
+                          .map((item) => `${item.city}, ${item.state}`)
+                          .join("\n")}
+                        placeholder={"Sao Paulo, SP\nGuarulhos, SP\nCampinas, SP"}
+                        hint="Uma cidade por linha, no formato Cidade, UF."
+                      />
+                      <TextAreaField
+                        label="Estados atendidos"
+                        name="served_states"
+                        defaultValue={data.settings.service_area.servedStates.join("\n")}
+                        placeholder={"SP\nRJ"}
+                        hint="Use para marcar como possivel area quando o DDD cair no mesmo estado."
+                      />
+                    </div>
+                    <TextAreaField
+                      label="Observacao interna da area"
+                      name="service_area_notes"
+                      defaultValue={data.settings.service_area.notes}
+                      placeholder="Ex: atende presencial em Sao Paulo e online para todo o estado."
+                    />
                   </div>
                   <Separator />
                   <div className="flex justify-end">
@@ -352,6 +412,34 @@ function Field({
         placeholder={placeholder}
         required={required}
       />
+    </div>
+  );
+}
+
+function TextAreaField({
+  label,
+  name,
+  defaultValue,
+  placeholder,
+  hint,
+}: {
+  label: string;
+  name: string;
+  defaultValue?: string;
+  placeholder?: string;
+  hint?: string;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={name}>{label}</Label>
+      <textarea
+        id={name}
+        name={name}
+        defaultValue={defaultValue}
+        placeholder={placeholder}
+        className="min-h-24 w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-text-primary outline-none focus:border-brand-green focus:ring-2 focus:ring-brand-green"
+      />
+      {hint && <p className="text-[11px] text-text-muted">{hint}</p>}
     </div>
   );
 }

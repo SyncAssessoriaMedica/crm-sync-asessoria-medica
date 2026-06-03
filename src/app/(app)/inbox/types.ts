@@ -9,6 +9,10 @@ export type InboxLead = {
   potential_value: number | null;
   followup_paused: boolean;
   source_id: string | null;
+  phone_ddd: string | null;
+  detected_state: string | null;
+  detected_city: string | null;
+  service_area_status: "inside" | "possible" | "outside" | "unknown";
   source: { id?: string | null; name: string | null; active?: boolean | null } | null;
   stage: { name: string | null } | null;
 };

@@ -109,6 +109,15 @@ export interface Lead {
   next_action_at?: string;
   next_action_note?: string;
   observations?: string;
+  phone_country?: string;
+  phone_ddd?: string;
+  detected_state?: string;
+  detected_region?: string;
+  detected_city?: string;
+  location_confidence?: "high" | "medium" | "low" | "unknown";
+  service_area_status?: "inside" | "possible" | "outside" | "unknown";
+  location_manually_edited?: boolean;
+  location_updated_at?: string;
 }
 
 export interface LeadNote {

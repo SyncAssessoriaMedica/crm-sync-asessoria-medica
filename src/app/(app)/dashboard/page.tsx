@@ -12,6 +12,7 @@ import { MetricCard } from "@/components/dashboard/metric-card";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { businessHoursMs, parseOrgBusinessHours, type OrgBusinessHours } from "@/lib/business-hours";
+import { getDateRangeFromParams } from "@/lib/date-range";
 import { getOrganizationContext } from "@/lib/organization-context";
 import { cn, formatNumber, formatPercent } from "@/lib/utils";
 import type { ConversionFunnelItem, DailyLeadsData, LeadStatus, LeadsBySource } from "@/lib/types";
@@ -19,16 +20,9 @@ import type { ConversionFunnelItem, DailyLeadsData, LeadStatus, LeadsBySource } 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const PIE_COLORS = ["#22c55e", "#16a34a", "#46e27f", "#0f4f2a", "#8a948d"];
-const PERIOD_LABELS = {
-  today: "hoje",
-  "7d": "ultimos 7 dias",
-  "30d": "ultimos 30 dias",
-  month: "este mes",
-} as const;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type DashboardPeriod = keyof typeof PERIOD_LABELS;
 type ResponseMode = "business_hours" | "real_time";
 
 type DashboardLead = {
@@ -65,12 +59,6 @@ function startOfDay(date: Date) {
   return next;
 }
 
-function daysAgo(days: number, base = new Date()) {
-  const date = new Date(base);
-  date.setDate(date.getDate() - days);
-  return date;
-}
-
 function inRange(date: string, start: Date, end: Date) {
   const value = new Date(date).getTime();
   return value >= start.getTime() && value < end.getTime();
@@ -89,38 +77,8 @@ function isScheduledStatus(status: LeadStatus) {
   return ["scheduled", "attended", "closed_won", "closed_lost", "no_show"].includes(status);
 }
 
-function getPeriod(value?: string): DashboardPeriod {
-  if (value === "today" || value === "7d" || value === "30d" || value === "month") return value;
-  return "30d";
-}
-
 function getResponseMode(value?: string): ResponseMode {
   return value === "real_time" ? "real_time" : "business_hours";
-}
-
-function getPeriodRange(period: DashboardPeriod, baseDate: Date) {
-  const tomorrow = new Date(baseDate);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const end = startOfDay(tomorrow);
-
-  if (period === "today") {
-    const start = startOfDay(baseDate);
-    return { start, end, previousStart: daysAgo(1, start) };
-  }
-
-  if (period === "7d") {
-    const start = daysAgo(6, startOfDay(baseDate));
-    return { start, end, previousStart: daysAgo(7, start) };
-  }
-
-  if (period === "month") {
-    const start = new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
-    const previousStart = new Date(baseDate.getFullYear(), baseDate.getMonth() - 1, 1);
-    return { start, end, previousStart };
-  }
-
-  const start = daysAgo(29, startOfDay(baseDate));
-  return { start, end, previousStart: daysAgo(30, start) };
 }
 
 // ─── Business hours calculation ───────────────────────────────────────────────
@@ -272,22 +230,33 @@ function computeNoFollowup(openConvIds: string[], recentMsgs: MsgRow[], cutoff: 
 export default async function DashboardPage({
   searchParams,
 }: {
-  searchParams?: Promise<{ period?: string; responseMode?: string }>;
+  searchParams?: Promise<{ period?: string; start?: string; end?: string; responseMode?: string }>;
 }) {
   const params = await searchParams;
-  const period = getPeriod(params?.period);
+  const range = getDateRangeFromParams(params);
   const responseMode = getResponseMode(params?.responseMode);
 
   const context = await getOrganizationContext();
   const { admin, organizationId, organization } = context;
   const today = new Date();
-  const { start: currentStart, end: currentEnd, previousStart } = getPeriodRange(period, today);
+  const currentStart = range.start;
+  const currentEnd = range.end;
+  const previousStart = range.previousStart;
   const fortyEightHoursAgo = new Date(today.getTime() - 48 * 60 * 60 * 1000);
 
   // Toggle URLs — preserve the current period when switching mode
-  const toggleBase = `?period=${period}`;
-  const businessHoursUrl = `${toggleBase}&responseMode=business_hours`;
-  const realTimeUrl = `${toggleBase}&responseMode=real_time`;
+  const toggleParams = new URLSearchParams();
+  toggleParams.set("period", range.period);
+  if (range.period === "custom") {
+    if (params?.start) toggleParams.set("start", params.start);
+    if (params?.end) toggleParams.set("end", params.end);
+  }
+  const businessHoursParams = new URLSearchParams(toggleParams);
+  businessHoursParams.set("responseMode", "business_hours");
+  const realTimeParams = new URLSearchParams(toggleParams);
+  realTimeParams.set("responseMode", "real_time");
+  const businessHoursUrl = `?${businessHoursParams.toString()}`;
+  const realTimeUrl = `?${realTimeParams.toString()}`;
 
   // Batch 1 — all independent queries in parallel
   const [leadsResult, tasksResult, openConvsResult, allConvsResult, pipelinesResult, settingsResult] =
@@ -439,7 +408,7 @@ export default async function DashboardPage({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="label-eyebrow text-text-muted">
-            {organization?.name ?? "Sync Marketing"} · {monthLabel} · {PERIOD_LABELS[period]}
+            {organization?.name ?? "Sync Marketing"} · {monthLabel} · {range.label}
           </p>
           <h1 className="mt-1 text-2xl font-black text-text-primary">Dashboard</h1>
         </div>
@@ -614,7 +583,7 @@ export default async function DashboardPage({
           <div className="flex items-center justify-between">
             <CardTitle className="text-sm">Funil de Conversao</CardTitle>
             <Badge variant="secondary" className="text-[10px]">
-              {PERIOD_LABELS[period]}
+              {range.label}
             </Badge>
           </div>
         </CardHeader>
