@@ -42,6 +42,7 @@ export type LeadListItem = {
   last_interaction_at: string | null;
   appointment_scheduled_at: string | null;
   followup_paused: boolean;
+  no_followup_48h?: boolean;
   created_at: string;
   updated_at: string;
   lead_tags: LeadTagRelation[];

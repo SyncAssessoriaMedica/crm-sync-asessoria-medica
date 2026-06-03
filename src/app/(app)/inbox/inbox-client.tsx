@@ -44,6 +44,8 @@ const STATUS_LABELS: Record<string, string> = {
   no_show: "Nao compareceu",
 };
 
+const FOLLOWUP_CUTOFF_MS = 48 * 60 * 60 * 1000;
+
 type InboxClientProps = {
   organizationId: string;
   conversations: InboxConversation[];
@@ -63,6 +65,12 @@ function lastMessagePreview(message: InboxMessage | null) {
   if (!message) return "Conversa iniciada";
   if (message.message_type !== "text") return MEDIA_LABELS[message.message_type] ?? message.message_type;
   return message.content ?? "Mensagem";
+}
+
+function needsFollowup48h(conversation: InboxConversation) {
+  const lastMessage = conversation.last_message;
+  if (!lastMessage || conversation.status !== "open") return false;
+  return lastMessage.direction === "inbound" && Date.now() - new Date(lastMessage.created_at).getTime() > FOLLOWUP_CUTOFF_MS;
 }
 
 function ConversationItem({
@@ -120,7 +128,7 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
   const markedReadRef = useRef<Set<string>>(new Set());
   const [activeConvId, setActiveConvId] = useState(conversations[0]?.id ?? "");
   const [search, setSearch] = useState(initialSearch);
-  const [filter, setFilter] = useState<"all" | "unread" | "open" | "closed">("all");
+  const [filter, setFilter] = useState<"all" | "unread" | "open" | "closed" | "no_followup_48h">("all");
   const [locallyReadIds, setLocallyReadIds] = useState<Set<string>>(new Set());
   const [cancelledBhIds, setCancelledBhIds] = useState<Set<string>>(new Set());
   const [localLeadSources, setLocalLeadSources] = useState<Record<string, string | null>>({});
@@ -146,6 +154,7 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
       const matchesFilter =
         filter === "all" ||
         (filter === "unread" && conversation.unread_count > 0) ||
+        (filter === "no_followup_48h" && needsFollowup48h(conversation)) ||
         conversation.status === filter;
       return matchesSearch && matchesFilter;
     });
@@ -161,6 +170,10 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
     ? (localLeadSources[lead.id] !== undefined ? localLeadSources[lead.id] : lead.source_id) ?? "none"
     : "none";
   const activeInstance = activeConv?.instance ?? instances[0] ?? null;
+  const noFollowupCount = useMemo(
+    () => conversations.filter((conversation) => needsFollowup48h(conversation)).length,
+    [conversations]
+  );
   const conversationIdsKey = useMemo(
     () => conversations.map((conversation) => conversation.id).sort().join(","),
     [conversations]
@@ -327,18 +340,23 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
               </button>
             ))}
           </div>
-          <div className="grid grid-cols-3 gap-1">
+          <div className="grid grid-cols-4 gap-1">
             {[
               ["all", "Todas"],
               ["open", "Abertas"],
               ["closed", "Fechadas"],
+              ["no_followup_48h", `48h+${noFollowupCount > 0 ? ` (${noFollowupCount})` : ""}`],
             ].map(([value, label]) => (
               <button
                 key={value}
-                onClick={() => setFilter(value as "all" | "open" | "closed")}
+                onClick={() => setFilter(value as "all" | "open" | "closed" | "no_followup_48h")}
                 className={cn(
                   "rounded-md px-2 py-1 text-[10px] font-semibold",
-                  filter === value ? "bg-brand-green-soft text-brand-green-deep" : "text-text-muted hover:bg-background-subtle"
+                  filter === value
+                    ? value === "no_followup_48h"
+                      ? "bg-amber-50 text-amber-700"
+                      : "bg-brand-green-soft text-brand-green-deep"
+                    : "text-text-muted hover:bg-background-subtle"
                 )}
               >
                 {label}

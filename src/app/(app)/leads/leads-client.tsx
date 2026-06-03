@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import {
+  AlertCircle,
   ChevronDown,
   ChevronUp,
   ChevronsUpDown,
@@ -64,6 +65,7 @@ export function LeadsClient({ leads, options, organizationName, periodLabel, rol
   const [stateFilter, setStateFilter] = useState("all");
   const [cityFilter, setCityFilter] = useState("all");
   const [areaFilter, setAreaFilter] = useState("all");
+  const [followupFilter, setFollowupFilter] = useState("all");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [sortField, setSortField] = useState<keyof LeadListItem>("created_at");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
@@ -94,9 +96,10 @@ export function LeadsClient({ leads, options, organizationName, periodLabel, rol
       const matchesState = stateFilter === "all" || lead.detected_state === stateFilter;
       const matchesCity = cityFilter === "all" || lead.detected_city === cityFilter;
       const matchesArea = areaFilter === "all" || lead.service_area_status === areaFilter;
-      return matchesSearch && matchesStage && matchesSource && matchesState && matchesCity && matchesArea;
+      const matchesFollowup = followupFilter === "all" || lead.no_followup_48h === true;
+      return matchesSearch && matchesStage && matchesSource && matchesState && matchesCity && matchesArea && matchesFollowup;
     });
-  }, [areaFilter, cityFilter, leads, search, sourceFilter, stageFilter, stateFilter]);
+  }, [areaFilter, cityFilter, followupFilter, leads, search, sourceFilter, stageFilter, stateFilter]);
 
   const sorted = useMemo(() => {
     return [...filtered].sort((a, b) => {
@@ -173,9 +176,10 @@ export function LeadsClient({ leads, options, organizationName, periodLabel, rol
     return { states, cities };
   }, [leads]);
 
-  const activeFilterCount = [stageFilter, sourceFilter, stateFilter, cityFilter, areaFilter].filter(
+  const activeFilterCount = [stageFilter, sourceFilter, stateFilter, cityFilter, areaFilter, followupFilter].filter(
     (v) => v !== "all"
   ).length;
+  const noFollowupCount = useMemo(() => leads.filter((lead) => lead.no_followup_48h).length, [leads]);
 
   const handleSort = (field: keyof LeadListItem) => {
     if (sortField === field) setSortDir(sortDir === "asc" ? "desc" : "asc");
@@ -384,6 +388,10 @@ export function LeadsClient({ leads, options, organizationName, periodLabel, rol
                 </SelectItem>
               ))}
             </FilterSelect>
+            <FilterSelect label="Follow-up" value={followupFilter} onValueChange={(v) => { setFollowupFilter(v); setSelectedIds(new Set()); }}>
+              <SelectItem value="all">Todos</SelectItem>
+              <SelectItem value="no_followup_48h">Sem follow-up 48h+</SelectItem>
+            </FilterSelect>
             <div className="flex items-end">
               <Button
                 variant="ghost"
@@ -395,6 +403,7 @@ export function LeadsClient({ leads, options, organizationName, periodLabel, rol
                   setStateFilter("all");
                   setCityFilter("all");
                   setAreaFilter("all");
+                  setFollowupFilter("all");
                   setSelectedIds(new Set());
                 }}
               >
@@ -404,6 +413,23 @@ export function LeadsClient({ leads, options, organizationName, periodLabel, rol
           </div>
         )}
       </div>
+
+      {noFollowupCount > 0 && (
+        <button
+          type="button"
+          className="flex w-full items-center gap-2 rounded-xl border border-warning-amber/30 bg-amber-50 px-4 py-3 text-left text-xs text-amber-800 transition-colors hover:bg-amber-100"
+          onClick={() => {
+            setShowAdvanced(true);
+            setFollowupFilter("no_followup_48h");
+            setSelectedIds(new Set());
+          }}
+        >
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          <span>
+            <strong>{noFollowupCount}</strong> lead{noFollowupCount !== 1 ? "s" : ""} com conversa aberta sem follow-up ha mais de 48h.
+          </span>
+        </button>
+      )}
 
       {/* ── Bulk action bar ──────────────────────────────────────────────────── */}
       {selectedCount > 0 && (
@@ -533,6 +559,11 @@ export function LeadsClient({ leads, options, organizationName, periodLabel, rol
                           </Link>
                           {lead.email && (
                             <p className="mt-0.5 text-[11px] text-text-muted">{lead.email}</p>
+                          )}
+                          {lead.no_followup_48h && (
+                            <Badge variant="outline" className="mt-1 border-warning-amber/40 bg-amber-50 text-[9px] text-amber-700">
+                              Sem follow-up 48h+
+                            </Badge>
                           )}
                           {(lead.lead_tags ?? []).length > 0 && (
                             <div className="mt-1 flex flex-wrap gap-1">

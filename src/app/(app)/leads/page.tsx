@@ -16,6 +16,8 @@ export default async function LeadsPage({
   const range = getDateRangeFromParams(params);
   const context = await getOrganizationContext();
   const { admin, organizationId, organization, role: userRole } = context;
+  const now = new Date();
+  const fortyEightHoursAgo = new Date(now.getTime() - 48 * 60 * 60 * 1000);
 
   if (!canAccessRoute(userRole, "/leads")) {
     return <AccessDenied />;
@@ -80,9 +82,52 @@ export default async function LeadsPage({
     );
   }
 
+  const openConversationsResult = await admin
+    .from("conversations")
+    .select("id, lead_id, remote_jid")
+    .eq("organization_id", organizationId)
+    .eq("status", "open")
+    .not("lead_id", "is", null);
+
+  const openConversations = (openConversationsResult.data ?? []).filter(
+    (conversation) => !String(conversation.remote_jid ?? "").includes("@g.us")
+  ) as { id: string; lead_id: string; remote_jid: string }[];
+  const conversationIds = openConversations.map((conversation) => conversation.id);
+  const recentMessagesResult =
+    conversationIds.length > 0
+      ? await admin
+          .from("messages")
+          .select("conversation_id, direction, created_at")
+          .in("conversation_id", conversationIds)
+          .order("created_at", { ascending: false })
+      : { data: [] as { conversation_id: string; direction: string; created_at: string }[] };
+
+  const lastMessageByConversation = new Map<string, { direction: string; created_at: string }>();
+  for (const message of recentMessagesResult.data ?? []) {
+    if (!lastMessageByConversation.has(message.conversation_id)) {
+      lastMessageByConversation.set(message.conversation_id, message);
+    }
+  }
+
+  const noFollowupLeadIds = new Set<string>();
+  for (const conversation of openConversations) {
+    const lastMessage = lastMessageByConversation.get(conversation.id);
+    if (
+      lastMessage?.direction === "inbound" &&
+      new Date(lastMessage.created_at).getTime() < fortyEightHoursAgo.getTime()
+    ) {
+      noFollowupLeadIds.add(conversation.lead_id);
+    }
+  }
+
+  const leads = ((leadsResult.data ?? []) as LeadListItem[]).map((lead) => ({
+    ...lead,
+    no_followup_48h: noFollowupLeadIds.has(lead.id),
+  }));
+
   return (
     <LeadsClient
-      leads={(leadsResult.data ?? []) as LeadListItem[]}
+      leads={leads}
       options={options}
       organizationName={organization?.name ?? "Sync Marketing"}
       periodLabel={range.label}

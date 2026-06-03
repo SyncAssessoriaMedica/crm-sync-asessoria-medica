@@ -4,6 +4,7 @@ import {
   Bell,
   CalendarCheck,
   Clock,
+  DollarSign,
   MapPin,
   UserCheck,
   Users,
@@ -23,7 +24,7 @@ import {
   type ServiceAreaSettings,
 } from "@/lib/lead-location";
 import { getOrganizationContext } from "@/lib/organization-context";
-import { cn, formatNumber, formatPercent } from "@/lib/utils";
+import { cn, formatCurrency, formatNumber, formatPercent } from "@/lib/utils";
 import type { ConversionFunnelItem, DailyLeadsData, LeadStatus, LeadsByLocation, LeadsBySource } from "@/lib/types";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -39,6 +40,8 @@ type DashboardLead = {
   source_id: string | null;
   stage_id: string | null;
   status: LeadStatus;
+  potential_value: number | null;
+  closed_value: number | null;
   created_at: string;
   last_interaction_at: string | null;
   source: { name: string | null } | null;
@@ -460,7 +463,7 @@ export default async function DashboardPage({
       admin
         .from("leads")
         .select(
-          `id, source_id, stage_id, status, created_at, last_interaction_at,
+          `id, source_id, stage_id, status, potential_value, closed_value, created_at, last_interaction_at,
            detected_city, detected_state, phone_ddd, service_area_status,
            source:lead_sources(name),
            stage:pipeline_stages(id, name, order)`
@@ -563,6 +566,10 @@ export default async function DashboardPage({
   const attendedPrevious = previousLeads.filter((lead) =>
     ["attended", "closed_won", "closed_lost"].includes(lead.status)
   ).length;
+  const potentialCurrent = currentLeads.reduce((sum, lead) => sum + Number(lead.potential_value ?? 0), 0);
+  const potentialPrevious = previousLeads.reduce((sum, lead) => sum + Number(lead.potential_value ?? 0), 0);
+  const closedCurrent = currentLeads.reduce((sum, lead) => sum + Number(lead.closed_value ?? 0), 0);
+  const closedPrevious = previousLeads.reduce((sum, lead) => sum + Number(lead.closed_value ?? 0), 0);
 
   // ── Response time metrics ───────────────────────────────────────────────────
   const { avgFirstResponse, avgResponseTime } =
@@ -684,8 +691,8 @@ export default async function DashboardPage({
         </div>
       )}
 
-      {/* 6 metric cards — 3 columns on desktop */}
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
+      {/* Metric cards */}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <MetricCard
           label="Total de Leads"
           value={formatNumber(currentLeads.length)}
@@ -709,6 +716,18 @@ export default async function DashboardPage({
             percent(attendedPrevious, scheduledPrevious)
           )}
           icon={UserCheck}
+        />
+        <MetricCard
+          label="Valor Potencial"
+          value={formatCurrency(potentialCurrent)}
+          variation={variation(potentialCurrent, potentialPrevious)}
+          icon={DollarSign}
+        />
+        <MetricCard
+          label="Valor Fechado"
+          value={formatCurrency(closedCurrent)}
+          variation={variation(closedCurrent, closedPrevious)}
+          icon={DollarSign}
         />
         {/* Response-time cards — affected by the business hours toggle */}
         <MetricCard
