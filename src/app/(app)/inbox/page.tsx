@@ -25,7 +25,7 @@ export const dynamic = "force-dynamic";
 export default async function InboxPage({
   searchParams,
 }: {
-  searchParams?: Promise<{ q?: string; period?: string; start?: string; end?: string; dateMode?: string; conversation?: string }>;
+  searchParams?: Promise<{ q?: string; period?: string; start?: string; end?: string; dateMode?: string; conversation?: string; lead?: string }>;
 }) {
   const params = await searchParams;
   const range = getDateRangeFromParams(params);
@@ -38,7 +38,7 @@ export default async function InboxPage({
     return <AccessDenied />;
   }
 
-  const [conversationsResult, instancesResult, sourcesResult, servicesResult, stagesResult] = await Promise.all([
+  const [conversationsResult, instancesResult, sourcesResult, servicesResult, pipelineResult] = await Promise.all([
     admin
       .from("conversations")
       .select(
@@ -96,11 +96,11 @@ export default async function InboxPage({
       .order("order", { ascending: true })
       .order("name", { ascending: true }),
     admin
-      .from("pipeline_stages")
-      .select("id, name, color")
+      .from("pipelines")
+      .select("pipeline_stages(id, name, color, order)")
       .eq("organization_id", organizationId)
-      .order("order", { ascending: true })
-      .order("name", { ascending: true }),
+      .eq("is_default", true)
+      .maybeSingle(),
   ]);
 
   if (conversationsResult.error) {
@@ -113,47 +113,48 @@ export default async function InboxPage({
     );
   }
 
-  const selectedConversationId = params?.conversation ?? "";
+  let selectedConversationId = params?.conversation ?? "";
+  const leadParam = params?.lead ?? "";
   const initialRows = ((conversationsResult.data ?? []) as unknown as ConversationRow[]).filter((conversation) => {
     const instance = firstRelation(conversation.instance);
     return !instance?.deleted_at;
   });
   let rows = initialRows;
 
+  const CONVERSATION_SELECT = `
+    id,
+    remote_jid,
+    unread_count,
+    status,
+    created_at,
+    updated_at,
+    lead:leads(
+      id,
+      name,
+      phone,
+      procedure,
+      status,
+      potential_value,
+      appointment_scheduled_at,
+      followup_paused,
+      phone_ddd,
+      detected_state,
+      detected_city,
+      service_area_status,
+      source_id,
+      service_id,
+      source:lead_sources(id, name, active),
+      service:clinic_services(id, name, active),
+      stage_id,
+      stage:pipeline_stages(id, name)
+    ),
+    instance:whatsapp_instances(id, instance_name, phone_number, status, deleted_at)
+  `;
+
   if (selectedConversationId && !initialRows.some((conversation) => conversation.id === selectedConversationId)) {
     const { data: selectedConversation } = await admin
       .from("conversations")
-      .select(
-        `
-        id,
-        remote_jid,
-        unread_count,
-        status,
-        created_at,
-        updated_at,
-        lead:leads(
-          id,
-          name,
-          phone,
-          procedure,
-          status,
-          potential_value,
-          appointment_scheduled_at,
-          followup_paused,
-          phone_ddd,
-          detected_state,
-          detected_city,
-          service_area_status,
-          source_id,
-          service_id,
-          source:lead_sources(id, name, active),
-          service:clinic_services(id, name, active),
-          stage_id,
-          stage:pipeline_stages(id, name)
-        ),
-        instance:whatsapp_instances(id, instance_name, phone_number, status, deleted_at)
-      `
-      )
+      .select(CONVERSATION_SELECT)
       .eq("id", selectedConversationId)
       .eq("organization_id", organizationId)
       .maybeSingle();
@@ -162,6 +163,33 @@ export default async function InboxPage({
       const instance = firstRelation((selectedConversation as unknown as ConversationRow).instance);
       if (!instance?.deleted_at) {
         rows = [selectedConversation as unknown as ConversationRow, ...initialRows];
+      }
+    }
+  }
+
+  if (leadParam && !selectedConversationId) {
+    const existingRow = initialRows.find((conversation) => {
+      const lead = firstRelation(conversation.lead);
+      return lead?.id === leadParam;
+    });
+    if (existingRow) {
+      selectedConversationId = existingRow.id;
+    } else {
+      const { data: leadConversation } = await admin
+        .from("conversations")
+        .select(CONVERSATION_SELECT)
+        .eq("lead_id", leadParam)
+        .eq("organization_id", organizationId)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (leadConversation) {
+        const instance = firstRelation((leadConversation as unknown as ConversationRow).instance);
+        if (!instance?.deleted_at) {
+          selectedConversationId = leadConversation.id;
+          rows = [leadConversation as unknown as ConversationRow, ...initialRows];
+        }
       }
     }
   }
@@ -221,7 +249,7 @@ export default async function InboxPage({
 
   return (
     <InboxClient
-      key={`${params?.q ?? ""}-${dateMode}-${range.start.toISOString()}-${range.end.toISOString()}-${selectedConversationId}`}
+      key={`${params?.q ?? ""}-${dateMode}-${range.start.toISOString()}-${range.end.toISOString()}-${selectedConversationId}-${leadParam}`}
       organizationId={organizationId}
       conversations={conversations}
       messagesByConversation={messagesByConversation}
@@ -229,7 +257,7 @@ export default async function InboxPage({
       instances={(instancesResult.data ?? []) as InboxInstance[]}
       sources={(sourcesResult.data ?? []) as InboxSource[]}
       services={(servicesResult.data ?? []) as InboxService[]}
-      stages={(stagesResult.data ?? []) as InboxStage[]}
+      stages={((pipelineResult.data?.pipeline_stages ?? []) as InboxStage[]).sort((a, b) => (a.order ?? 0) - (b.order ?? 0))}
       initialSearch={params?.q ?? ""}
       initialActiveConversationId={selectedConversationId}
       dateMode={dateMode}

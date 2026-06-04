@@ -385,7 +385,7 @@ function LeadCard({
           </SelectContent>
         </Select>
         <Link
-          href={`/inbox?q=${lead.phone.replace(/\D/g, "")}`}
+          href={`/inbox?lead=${lead.id}`}
           onClick={(e) => e.stopPropagation()}
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-background-subtle text-text-muted hover:border-brand-green/40 hover:text-brand-green-dark"
           title="Ver conversa no Inbox"

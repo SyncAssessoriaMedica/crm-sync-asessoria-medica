@@ -25,6 +25,7 @@ export type InboxStage = {
   id: string;
   name: string;
   color: string | null;
+  order?: number | null;
 };
 
 export type InboxSource = {
