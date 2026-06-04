@@ -1568,6 +1568,9 @@ function WebhookConfigCard({
             <Field label="Caminho do procedimento" name="procedure_path" placeholder="lead.procedure" defaultValue={config.mappings.procedure ?? ""} />
             <Field label="Caminho do valor" name="potential_value_path" placeholder="deal.value" defaultValue={config.mappings.potential_value ?? ""} />
           </div>
+          <p className="text-[11px] text-text-muted">
+            Os caminhos aceitam JSON aninhado e campos planos de ferramentas como n8n. Exemplo: o caminho lead.name funciona tanto para {"{ \"lead\": { \"name\": \"Ana\" } }"} quanto para um campo chamado lead.name.
+          </p>
           <div className="space-y-1.5">
             <Label htmlFor={`custom-${config.token}`}>Campos customizados em JSON</Label>
             <textarea

@@ -21,10 +21,28 @@ type WebhookConfigPayload = {
 
 function getByPath(payload: unknown, path?: string) {
   if (!path) return undefined;
-  return path.split(".").reduce<unknown>((value, segment) => {
+
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    const root = payload as Record<string, unknown>;
+    if (Object.prototype.hasOwnProperty.call(root, path)) return root[path];
+
+    const underscorePath = path.replace(/\./g, "_");
+    if (underscorePath !== path && Object.prototype.hasOwnProperty.call(root, underscorePath)) {
+      return root[underscorePath];
+    }
+  }
+
+  return path.split(".").reduce<unknown>((value, segment, index, segments) => {
     if (value === null || value === undefined) return undefined;
     if (Array.isArray(value) && /^\d+$/.test(segment)) return value[Number(segment)];
-    if (typeof value === "object") return (value as Record<string, unknown>)[segment];
+    if (typeof value === "object") {
+      const objectValue = value as Record<string, unknown>;
+      const remainingPath = segments.slice(index).join(".");
+      if (Object.prototype.hasOwnProperty.call(objectValue, remainingPath)) {
+        return objectValue[remainingPath];
+      }
+      return objectValue[segment];
+    }
     return undefined;
   }, payload);
 }
