@@ -35,6 +35,7 @@ export default async function AdminPage() {
     stagesResult,
     tagsResult,
     sourcesResult,
+    servicesResult,
     sourceRulesResult,
     bhAutoReplySettingsResult,
     organizationSettingsResult,
@@ -48,7 +49,7 @@ export default async function AdminPage() {
     admin.from("whatsapp_instances").select("id, instance_name, phone_number, status, created_at, organizations(id, name)").eq("organization_id", organizationId).is("deleted_at", null).order("created_at", { ascending: false }),
     admin.from("webhook_events").select("id, source, event_type, payload, processed, error, created_at").eq("organization_id", organizationId).eq("source", "inbound_webhook_config").order("created_at", { ascending: false }).limit(50),
     admin.from("webhook_events").select("id, source, event_type, payload, processed, error, created_at").eq("organization_id", organizationId).eq("source", "inbound_webhook_incoming").order("created_at", { ascending: false }).limit(10),
-    admin.from("custom_fields").select("id, name, key, field_type, options, required, order, created_at").eq("organization_id", organizationId).order("order", { ascending: true }).order("created_at", { ascending: true }),
+    admin.from("custom_fields").select("id, name, key, field_type, options, required, order, created_at").eq("organization_id", organizationId).neq("key", "servico").order("order", { ascending: true }).order("created_at", { ascending: true }),
     admin
       .from("pipelines")
       .select("id, pipeline_stages(id, pipeline_id, name, order, color)")
@@ -57,6 +58,7 @@ export default async function AdminPage() {
       .maybeSingle(),
     admin.from("tags").select("id, name, color, created_at").eq("organization_id", organizationId).order("name", { ascending: true }),
     admin.from("lead_sources").select("id, name, color, active, is_default, created_at").eq("organization_id", organizationId).order("name", { ascending: true }),
+    admin.from("clinic_services").select("id, name, active, order").eq("organization_id", organizationId).order("order", { ascending: true }).order("name", { ascending: true }),
     admin.from("lead_source_rules").select("id, source_id, name, match_type, pattern, case_sensitive, normalize_whitespace, overwrite_existing, active, priority, created_at").eq("organization_id", organizationId).order("priority", { ascending: true }).order("created_at", { ascending: true }),
     admin.from("bh_auto_reply_settings").select("enabled, message_template, delay_minutes, cooldown_hours, timezone").eq("organization_id", organizationId).maybeSingle(),
     admin.from("organization_settings").select("business_hours").eq("organization_id", organizationId).maybeSingle(),
@@ -131,6 +133,7 @@ export default async function AdminPage() {
     pipelineStages: ((stagesResult.data?.pipeline_stages ?? []) as AdminData["pipelineStages"]).sort((a, b) => a.order - b.order),
     tags: tagsResult.data ?? [],
     sources: sourcesResult.data ?? [],
+    services: servicesResult.data ?? [],
     sourceRules: sourceRulesResult.data ?? [],
     bhAutoReplySettings: bhAutoReplySettingsResult.data as AdminData["bhAutoReplySettings"],
     businessHours: parseOrgBusinessHours(organizationSettingsResult.data?.business_hours),

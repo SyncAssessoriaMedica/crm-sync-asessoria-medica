@@ -43,6 +43,12 @@ export type SettingsData = {
     business_hours: BusinessHoursSettings;
     service_area: ServiceAreaSettings;
   };
+  services: Array<{
+    id: string;
+    name: string;
+    active: boolean;
+    order: number;
+  }>;
   user: {
     role: string;
   };
@@ -184,6 +190,15 @@ export function SettingsClient({ data }: { data: SettingsData }) {
                         name="scheduling_url"
                         defaultValue={data.settings.scheduling_url}
                         placeholder="https://clinica.com.br/agendamento"
+                      />
+                    </div>
+                    <div className="md:col-span-2">
+                      <TextAreaField
+                        label="Servicos oferecidos"
+                        name="services"
+                        defaultValue={data.services.filter((service) => service.active !== false).map((service) => service.name).join("\n")}
+                        placeholder={"Consulta avaliativa\nHarmonizacao facial\nImplante capilar"}
+                        hint="Um servico por linha. Estes servicos podem ser marcados automaticamente por webhook e usados nos filtros do CRM."
                       />
                     </div>
                   </div>

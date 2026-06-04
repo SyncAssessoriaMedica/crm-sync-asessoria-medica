@@ -23,13 +23,14 @@ export default async function LeadsPage({
     return <AccessDenied />;
   }
 
-  const [leadsResult, sourcesResult, pipelinesResult, customFieldsResult, tagsResult] = await Promise.all([
+  const [leadsResult, sourcesResult, servicesResult, pipelinesResult, customFieldsResult, tagsResult] = await Promise.all([
     admin
       .from("leads")
       .select(
         `
         *,
         source:lead_sources(*),
+        service:clinic_services(*),
         stage:pipeline_stages(*),
         lead_tags(tags(*)),
         custom_field_values(field_id, value)
@@ -45,6 +46,12 @@ export default async function LeadsPage({
       .eq("organization_id", organizationId)
       .order("name", { ascending: true }),
     admin
+      .from("clinic_services")
+      .select("*")
+      .eq("organization_id", organizationId)
+      .order("order", { ascending: true })
+      .order("name", { ascending: true }),
+    admin
       .from("pipelines")
       .select("id, pipeline_stages(*)")
       .eq("organization_id", organizationId)
@@ -54,6 +61,7 @@ export default async function LeadsPage({
       .from("custom_fields")
       .select("*")
       .eq("organization_id", organizationId)
+      .neq("key", "servico")
       .order("order", { ascending: true })
       .order("created_at", { ascending: true }),
     admin
@@ -65,6 +73,7 @@ export default async function LeadsPage({
 
   const options: LeadOptionData = {
     sources: (sourcesResult.data ?? []) as LeadOptionData["sources"],
+    services: (servicesResult.data ?? []) as LeadOptionData["services"],
     stages: ((pipelinesResult.data?.pipeline_stages ?? []) as LeadOptionData["stages"]).sort(
       (a, b) => a.order - b.order
     ),

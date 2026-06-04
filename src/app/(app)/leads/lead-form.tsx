@@ -35,6 +35,7 @@ export function LeadForm({ mode, open, options, lead, customValues = {}, onClose
       phone: lead?.phone ?? "",
       email: lead?.email ?? "",
       source_id: lead?.source_id ?? "none",
+      service_id: lead?.service_id ?? "none",
       procedure: lead?.procedure ?? "",
       stage_id: lead?.stage_id ?? "none",
       potential_value: lead?.potential_value ?? "",
@@ -86,6 +87,7 @@ export function LeadForm({ mode, open, options, lead, customValues = {}, onClose
             for (const key of ["source_id", "stage_id"]) {
               if (formData.get(key) === "none") formData.set(key, "");
             }
+            if (formData.get("service_id") === "none") formData.set("service_id", "");
             startTransition(async () => {
               const result = await onSubmit(formData);
               setMessage(result.message);
@@ -98,6 +100,17 @@ export function LeadForm({ mode, open, options, lead, customValues = {}, onClose
             <Field label="Telefone" name="phone" defaultValue={defaults.phone} required />
             <Field label="Email" name="email" type="email" defaultValue={defaults.email} />
             <Field label="Procedimento/interesse" name="procedure" defaultValue={defaults.procedure} />
+
+            <SelectField label="Servico" name="service_id" defaultValue={defaults.service_id}>
+              <SelectItem value="none">Sem servico</SelectItem>
+              {options.services
+                .filter((service) => service.active !== false || service.id === lead?.service_id)
+                .map((service) => (
+                  <SelectItem key={service.id} value={service.id}>
+                    {service.name}{service.active === false ? " (inativo)" : ""}
+                  </SelectItem>
+                ))}
+            </SelectField>
 
             <SelectField label="Origem" name="source_id" defaultValue={defaults.source_id}>
               <SelectItem value="none">Sem origem</SelectItem>

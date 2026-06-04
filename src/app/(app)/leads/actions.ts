@@ -14,6 +14,7 @@ const LeadSchema = z.object({
   phone: z.string().trim().min(8, "Informe um telefone valido."),
   email: z.string().trim().email("Email invalido.").optional().or(z.literal("")),
   source_id: z.string().uuid().optional().or(z.literal("")),
+  service_id: z.string().uuid().optional().or(z.literal("")),
   procedure: z.string().trim().optional(),
   stage_id: z.string().uuid().optional().or(z.literal("")),
   potential_value: z.coerce.number().nonnegative().optional().or(z.literal("")),
@@ -190,6 +191,7 @@ function formToLeadPayload(formData: FormData) {
     phone: formData.get("phone"),
     email: formData.get("email"),
     source_id: formData.get("source_id"),
+    service_id: formData.get("service_id"),
     procedure: formData.get("procedure"),
     stage_id: formData.get("stage_id"),
     potential_value: formData.get("potential_value") ?? "",
@@ -214,6 +216,7 @@ function formToLeadPayload(formData: FormData) {
       phone: data.phone.replace(/\D/g, ""),
       email: optionalString(data.email),
       source_id: optionalString(data.source_id),
+      service_id: optionalString(data.service_id),
       procedure: optionalString(data.procedure),
       stage_id: optionalString(data.stage_id),
       potential_value: optionalNumber(data.potential_value),
@@ -758,6 +761,7 @@ export async function updateLeadsBulkAction(
   updates: {
     stage_id?: string;
     source_id?: string;
+    service_id?: string;
     tagsToAdd?: string[];
     tagsToRemove?: string[];
   }
@@ -790,6 +794,20 @@ export async function updateLeadsBulkAction(
     }
     if (updates.source_id !== undefined) {
       leadUpdates.source_id = updates.source_id || null;
+    }
+    if (updates.service_id !== undefined) {
+      if (updates.service_id) {
+        const { data: service, error: serviceError } = await admin
+          .from("clinic_services")
+          .select("id")
+          .eq("id", updates.service_id)
+          .eq("organization_id", organizationId)
+          .eq("active", true)
+          .maybeSingle();
+        if (serviceError) return { ok: false, message: serviceError.message };
+        if (!service) return { ok: false, message: "Servico invalido para esta clinica." };
+      }
+      leadUpdates.service_id = updates.service_id || null;
     }
 
     if (Object.keys(leadUpdates).length > 1) {

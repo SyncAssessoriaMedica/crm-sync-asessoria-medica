@@ -81,7 +81,7 @@ const EVENT_ICONS: Record<string, { icon: React.ElementType; color: string }> = 
   message: { icon: MessageSquare, color: "bg-blue-50 text-blue-600" },
 };
 
-const DEFAULT_WEBHOOK_FIELD_KEYS = ["servico", "campanha", "conjunto", "criativo"];
+const DEFAULT_WEBHOOK_FIELD_KEYS = ["campanha", "conjunto", "criativo"];
 
 type TagItem = { id: string; name: string; color: string };
 
@@ -106,18 +106,19 @@ export function LeadDetailClient({ lead, options, leadTags: initialLeadTags, not
   const [isPending, startTransition] = useTransition();
   const [followupPaused, setFollowupPaused] = useState(lead.followup_paused);
   const webhookFields = options.customFields.filter((field) => DEFAULT_WEBHOOK_FIELD_KEYS.includes(field.key));
-  const otherCustomFields = options.customFields.filter((field) => !DEFAULT_WEBHOOK_FIELD_KEYS.includes(field.key));
+  const otherCustomFields = options.customFields.filter((field) => !DEFAULT_WEBHOOK_FIELD_KEYS.includes(field.key) && field.key !== "servico");
   const hasWebhookData = webhookFields.some((field) => formatCustomValue(customValues[field.id]));
   const hasOtherCustomData = otherCustomFields.some((field) => formatCustomValue(customValues[field.id]));
 
   function exportLead() {
     const row = [
-      "Nome,Telefone,Email,Origem,Procedimento,Etapa,Valor potencial,Valor fechado,Criado em",
+      "Nome,Telefone,Email,Origem,Servico,Procedimento,Etapa,Valor potencial,Valor fechado,Criado em",
       [
         lead.name,
         lead.phone,
         lead.email ?? "",
         lead.source?.name ?? "",
+        lead.service?.name ?? "",
         lead.procedure ?? "",
         lead.stage?.name ?? "",
         lead.potential_value ?? "",
@@ -251,7 +252,9 @@ export function LeadDetailClient({ lead, options, leadTags: initialLeadTags, not
                 </div>
                 <div>
                   <p className="text-sm font-semibold leading-none text-text-primary">{lead.name}</p>
-                  {lead.procedure && <p className="mt-0.5 text-[11px] text-text-muted">{lead.procedure}</p>}
+                  <p className="mt-0.5 text-[11px] text-text-muted">
+                    {[lead.service?.name, lead.procedure].filter(Boolean).join(" · ") || "Sem servico definido"}
+                  </p>
                 </div>
               </div>
             </CardHeader>
@@ -349,6 +352,7 @@ export function LeadDetailClient({ lead, options, leadTags: initialLeadTags, not
                 </div>
                 <Meta label="Valor Pot." value={lead.potential_value ? formatCurrency(lead.potential_value) : undefined} strong />
                 <Meta label="Valor Fechado" value={lead.closed_value ? formatCurrency(lead.closed_value) : undefined} strong />
+                <Meta label="Servico" value={lead.service?.name ?? undefined} strong />
               </div>
               {options.tags.length > 0 && (
                 <>

@@ -38,6 +38,7 @@ type ResponseMode = "business_hours" | "real_time";
 type DashboardLead = {
   id: string;
   source_id: string | null;
+  service_id: string | null;
   stage_id: string | null;
   status: LeadStatus;
   potential_value: number | null;
@@ -45,6 +46,7 @@ type DashboardLead = {
   created_at: string;
   last_interaction_at: string | null;
   source: { name: string | null } | null;
+  service: { id: string; name: string | null; active: boolean | null } | null;
   stage: { id: string; name: string; order: number } | null;
   detected_city: string | null;
   detected_state: string | null;
@@ -429,11 +431,12 @@ function computeNoFollowup(openConvIds: string[], recentMsgs: MsgRow[], cutoff: 
 export default async function DashboardPage({
   searchParams,
 }: {
-  searchParams?: Promise<{ period?: string; start?: string; end?: string; responseMode?: string }>;
+  searchParams?: Promise<{ period?: string; start?: string; end?: string; responseMode?: string; service?: string }>;
 }) {
   const params = await searchParams;
   const range = getDateRangeFromParams(params);
   const responseMode = getResponseMode(params?.responseMode);
+  const selectedService = params?.service ?? "all";
 
   const context = await getOrganizationContext();
   const { admin, organizationId, organization } = context;
@@ -450,6 +453,7 @@ export default async function DashboardPage({
     if (params?.start) toggleParams.set("start", params.start);
     if (params?.end) toggleParams.set("end", params.end);
   }
+  if (selectedService !== "all") toggleParams.set("service", selectedService);
   const businessHoursParams = new URLSearchParams(toggleParams);
   businessHoursParams.set("responseMode", "business_hours");
   const realTimeParams = new URLSearchParams(toggleParams);
@@ -458,14 +462,15 @@ export default async function DashboardPage({
   const realTimeUrl = `?${realTimeParams.toString()}`;
 
   // Batch 1 — all independent queries in parallel
-  const [leadsResult, tasksResult, openConvsResult, allConvsResult, pipelinesResult, settingsResult] =
+  const [leadsResult, tasksResult, openConvsResult, allConvsResult, pipelinesResult, settingsResult, servicesResult] =
     await Promise.all([
       admin
         .from("leads")
         .select(
-          `id, source_id, stage_id, status, potential_value, closed_value, created_at, last_interaction_at,
+          `id, source_id, service_id, stage_id, status, potential_value, closed_value, created_at, last_interaction_at,
            detected_city, detected_state, phone_ddd, service_area_status,
            source:lead_sources(name),
+           service:clinic_services(id, name, active),
            stage:pipeline_stages(id, name, order)`
         )
         .eq("organization_id", organizationId)
@@ -498,6 +503,12 @@ export default async function DashboardPage({
         .select("business_hours, service_area")
         .eq("organization_id", organizationId)
         .maybeSingle(),
+      admin
+        .from("clinic_services")
+        .select("id, name, active, order")
+        .eq("organization_id", organizationId)
+        .order("order", { ascending: true })
+        .order("name", { ascending: true }),
     ]);
 
   if (leadsResult.error) {
@@ -542,11 +553,14 @@ export default async function DashboardPage({
   ]);
 
   // ── Lead metrics ────────────────────────────────────────────────────────────
-  const leads = (leadsResult.data ?? []).map((lead) => ({
+  const services = servicesResult.data ?? [];
+  const allLeads = (leadsResult.data ?? []).map((lead) => ({
     ...lead,
     source: Array.isArray(lead.source) ? (lead.source[0] ?? null) : lead.source,
+    service: Array.isArray(lead.service) ? (lead.service[0] ?? null) : lead.service,
     stage: Array.isArray(lead.stage) ? (lead.stage[0] ?? null) : lead.stage,
   })) as DashboardLead[];
+  const leads = selectedService === "all" ? allLeads : allLeads.filter((lead) => lead.service_id === selectedService);
 
   const stages = ((pipelinesResult.data?.pipeline_stages ?? []) as StageOption[]).sort(
     (a, b) => a.order - b.order
@@ -628,6 +642,32 @@ export default async function DashboardPage({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {/* Response mode toggle — affects only the two response-time cards */}
+          {services.length > 0 && (
+            <form action="/dashboard" className="flex items-center gap-2">
+              <input type="hidden" name="period" value={range.period} />
+              {range.period === "custom" && params?.start && <input type="hidden" name="start" value={params.start} />}
+              {range.period === "custom" && params?.end && <input type="hidden" name="end" value={params.end} />}
+              <input type="hidden" name="responseMode" value={responseMode} />
+              <select
+                name="service"
+                defaultValue={selectedService}
+                className="h-8 rounded-lg border border-border bg-white px-3 text-xs font-semibold text-text-secondary shadow-card outline-none transition focus:border-brand-green"
+              >
+                <option value="all">Todos os servicos</option>
+                {services.map((service) => (
+                  <option key={service.id} value={service.id}>
+                    {service.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="submit"
+                className="h-8 rounded-lg bg-brand-green px-3 text-xs font-bold text-white transition hover:bg-brand-green-dark"
+              >
+                Filtrar
+              </button>
+            </form>
+          )}
           <div className="flex items-center gap-0.5 rounded-lg border border-border bg-white p-0.5 text-[11px] font-semibold shadow-card">
             <Link
               href={businessHoursUrl}

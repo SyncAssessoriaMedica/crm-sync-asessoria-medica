@@ -10,11 +10,13 @@ export type InboxLead = {
   appointment_scheduled_at: string | null;
   followup_paused: boolean;
   source_id: string | null;
+  service_id: string | null;
   phone_ddd: string | null;
   detected_state: string | null;
   detected_city: string | null;
   service_area_status: "inside" | "possible" | "outside" | "unknown";
   source: { id?: string | null; name: string | null; active?: boolean | null } | null;
+  service: { id?: string | null; name: string | null; active?: boolean | null } | null;
   stage: { name: string | null } | null;
 };
 
@@ -23,6 +25,13 @@ export type InboxSource = {
   name: string;
   color: string | null;
   active: boolean;
+};
+
+export type InboxService = {
+  id: string;
+  name: string;
+  active: boolean;
+  order: number;
 };
 
 export type InboxInstance = {

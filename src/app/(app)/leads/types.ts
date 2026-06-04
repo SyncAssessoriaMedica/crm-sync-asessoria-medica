@@ -23,6 +23,8 @@ export type LeadListItem = {
   email: string | null;
   source_id: string | null;
   source: LeadSource | null;
+  service_id: string | null;
+  service: ClinicServiceItem | null;
   procedure: string | null;
   stage_id: string | null;
   stage: PipelineStage | null;
@@ -52,9 +54,18 @@ export type LeadListItem = {
 
 export type LeadOptionData = {
   sources: LeadSource[];
+  services: ClinicServiceItem[];
   stages: PipelineStage[];
   customFields: CustomFieldItem[];
   tags: LeadTagItem[];
+};
+
+export type ClinicServiceItem = {
+  id: string;
+  organization_id?: string;
+  name: string;
+  active: boolean;
+  order: number;
 };
 
 export type CustomFieldItem = {

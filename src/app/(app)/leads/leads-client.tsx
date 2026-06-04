@@ -67,6 +67,7 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
   const [search, setSearch] = useState("");
   const [stageFilter, setStageFilter] = useState("all");
   const [sourceFilter, setSourceFilter] = useState("all");
+  const [serviceFilter, setServiceFilter] = useState("all");
   const [stateFilter, setStateFilter] = useState("all");
   const [cityFilter, setCityFilter] = useState("all");
   const [areaFilter, setAreaFilter] = useState("all");
@@ -134,16 +135,18 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
         lead.name.toLowerCase().includes(normalizedSearch) ||
         lead.phone.includes(normalizedSearch.replace(/\D/g, "")) ||
         (lead.email?.toLowerCase().includes(normalizedSearch) ?? false) ||
-        (lead.procedure?.toLowerCase().includes(normalizedSearch) ?? false);
+        (lead.procedure?.toLowerCase().includes(normalizedSearch) ?? false) ||
+        (lead.service?.name.toLowerCase().includes(normalizedSearch) ?? false);
       const matchesStage = stageFilter === "all" || lead.stage_id === stageFilter;
       const matchesSource = sourceFilter === "all" || lead.source_id === sourceFilter;
+      const matchesService = serviceFilter === "all" || lead.service_id === serviceFilter;
       const matchesState = stateFilter === "all" || lead.detected_state === stateFilter;
       const matchesCity = cityFilter === "all" || lead.detected_city === cityFilter;
       const matchesArea = areaFilter === "all" || lead.service_area_status === areaFilter;
       const matchesFollowup = followupFilter === "all" || lead.no_followup_48h === true;
-      return matchesSearch && matchesStage && matchesSource && matchesState && matchesCity && matchesArea && matchesFollowup;
+      return matchesSearch && matchesStage && matchesSource && matchesService && matchesState && matchesCity && matchesArea && matchesFollowup;
     });
-  }, [areaFilter, cityFilter, followupFilter, leads, search, sourceFilter, stageFilter, stateFilter]);
+  }, [areaFilter, cityFilter, followupFilter, leads, search, serviceFilter, sourceFilter, stageFilter, stateFilter]);
 
   const sorted = useMemo(() => {
     return [...filtered].sort((a, b) => {
@@ -220,7 +223,7 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
     return { states, cities };
   }, [leads]);
 
-  const activeFilterCount = [stageFilter, sourceFilter, stateFilter, cityFilter, areaFilter, followupFilter].filter(
+  const activeFilterCount = [stageFilter, sourceFilter, serviceFilter, stateFilter, cityFilter, areaFilter, followupFilter].filter(
     (v) => v !== "all"
   ).length;
   const noFollowupCount = useMemo(() => leads.filter((lead) => lead.no_followup_48h).length, [leads]);
@@ -270,6 +273,7 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
       "Telefone",
       "Email",
       "Origem",
+      "Servico",
       "Procedimento",
       "Etapa",
       "Valor potencial",
@@ -296,6 +300,7 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
         lead.phone,
         lead.email ?? "",
         lead.source?.name ?? "",
+        lead.service?.name ?? "",
         lead.procedure ?? "",
         lead.stage?.name ?? "",
         lead.potential_value ?? "",
@@ -408,6 +413,14 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
                 </SelectItem>
               ))}
             </FilterSelect>
+            <FilterSelect label="Servico" value={serviceFilter} onValueChange={(v) => { setServiceFilter(v); setSelectedIds(new Set()); }}>
+              <SelectItem value="all">Todos os servicos</SelectItem>
+              {options.services.map((service) => (
+                <SelectItem key={service.id} value={service.id}>
+                  {service.name}
+                </SelectItem>
+              ))}
+            </FilterSelect>
             <FilterSelect label="Estado" value={stateFilter} onValueChange={(v) => { setStateFilter(v); setSelectedIds(new Set()); }}>
               <SelectItem value="all">Todos os estados</SelectItem>
               {locationOptions.states.map((state) => (
@@ -444,6 +457,7 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
                   setSearch("");
                   setStageFilter("all");
                   setSourceFilter("all");
+                  setServiceFilter("all");
                   setStateFilter("all");
                   setCityFilter("all");
                   setAreaFilter("all");
@@ -544,6 +558,7 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
                 {[
                   { label: "Lead", field: "name" as keyof LeadListItem },
                   { label: "Telefone", field: null },
+                  { label: "Servico", field: null },
                   { label: "Procedimento", field: "procedure" as keyof LeadListItem },
                   { label: "Etapa", field: null },
                   { label: "Origem", field: null },
@@ -640,6 +655,9 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
                           </span>
                         </div>
                       )}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-text-secondary">
+                      {lead.service?.name ?? "-"}
                     </td>
                     <td className="px-4 py-3 text-xs text-text-secondary">
                       {lead.procedure ?? "-"}

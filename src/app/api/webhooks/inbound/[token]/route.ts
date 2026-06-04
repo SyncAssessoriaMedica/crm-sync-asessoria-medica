@@ -5,7 +5,6 @@ import { sanitizePayload } from "@/lib/sanitize";
 import { createOrUpdateLeadByPhone } from "@/lib/lead-upsert";
 
 const DEFAULT_WEBHOOK_CUSTOM_MAPPINGS: Record<string, string> = {
-  servico: "servico",
   campanha: "campanha",
   conjunto: "conjunto",
   criativo: "criativo",
@@ -20,6 +19,7 @@ type WebhookConfigPayload = {
     phone?: string;
     email?: string;
     source?: string;
+    service_id?: string;
     procedure?: string;
     potential_value?: string;
     custom?: Record<string, string>;
@@ -87,6 +87,21 @@ async function resolveSource(admin: ReturnType<typeof createAdminClient>, organi
     .insert({ organization_id: organizationId, name, color: "#22c55e" })
     .select("id")
     .single();
+
+  return data?.id as string | undefined;
+}
+
+async function resolveService(admin: ReturnType<typeof createAdminClient>, organizationId: string, serviceId?: string) {
+  const id = toText(serviceId);
+  if (!id) return undefined;
+
+  const { data } = await admin
+    .from("clinic_services")
+    .select("id")
+    .eq("organization_id", organizationId)
+    .eq("id", id)
+    .eq("active", true)
+    .maybeSingle();
 
   return data?.id as string | undefined;
 }
@@ -215,6 +230,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
   try {
     const sourceId = await resolveSource(admin, organizationId, getByPath(body, config.mappings?.source));
+    const serviceId = await resolveService(admin, organizationId, config.mappings?.service_id);
     const potential = Number(getByPath(body, config.mappings?.potential_value));
     const leadResult = await createOrUpdateLeadByPhone(admin, {
       organizationId,
@@ -222,6 +238,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       phone,
       email: toText(getByPath(body, config.mappings?.email)) || null,
       sourceId: sourceId ?? null,
+      serviceId,
       procedure: toText(getByPath(body, config.mappings?.procedure)) || null,
       potentialValue: Number.isFinite(potential) && potential > 0 ? potential : null,
       status: "new",

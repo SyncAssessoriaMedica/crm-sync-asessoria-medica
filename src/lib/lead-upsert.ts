@@ -11,6 +11,7 @@ type LeadInput = {
   name?: string | null;
   email?: string | null;
   sourceId?: string | null;
+  serviceId?: string | null;
   procedure?: string | null;
   potentialValue?: number | null;
   status?: string;
@@ -51,6 +52,7 @@ async function buildUpdatePayload(
 
   if (input.email !== undefined) payload.email = input.email;
   if (input.sourceId !== undefined) payload.source_id = input.sourceId;
+  if (input.serviceId !== undefined) payload.service_id = input.serviceId;
   if (input.procedure !== undefined) payload.procedure = input.procedure;
   if (input.potentialValue !== undefined) payload.potential_value = input.potentialValue;
 
@@ -112,6 +114,7 @@ export async function createOrUpdateLeadByPhone(
       phone: input.phone,
       email: input.email ?? null,
       source_id: input.sourceId ?? null,
+      service_id: input.serviceId ?? null,
       procedure: input.procedure ?? null,
       potential_value: input.potentialValue ?? null,
       status: input.status ?? "new",

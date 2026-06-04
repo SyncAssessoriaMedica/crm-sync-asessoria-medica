@@ -22,7 +22,7 @@ import { AppointmentScheduler } from "@/components/leads/appointment-scheduler";
 import { cancelBhAutoReplyAction, markConversationReadAction, updateConversationStatusAction } from "./actions";
 import { updateLeadSourceAction } from "../leads/actions";
 import { MessageBubble } from "./message-media";
-import type { BhAutoReplyQueueItem, InboxConversation, InboxMessage, InboxSource } from "./types";
+import type { BhAutoReplyQueueItem, InboxConversation, InboxMessage, InboxService, InboxSource } from "./types";
 
 const MEDIA_LABELS: Record<string, string> = {
   image: "Imagem",
@@ -53,6 +53,7 @@ type InboxClientProps = {
   bhAutoRepliesByConversation: Record<string, BhAutoReplyQueueItem>;
   instances: { id: string; instance_name: string; phone_number: string | null; status: string }[];
   sources: InboxSource[];
+  services: InboxService[];
   initialSearch: string;
   initialActiveConversationId?: string;
   dateMode: "activity" | "created";
@@ -121,7 +122,7 @@ function ConversationItem({
   );
 }
 
-export function InboxClient({ organizationId, conversations, messagesByConversation, bhAutoRepliesByConversation, instances, sources, initialSearch, initialActiveConversationId, dateMode }: InboxClientProps) {
+export function InboxClient({ organizationId, conversations, messagesByConversation, bhAutoRepliesByConversation, instances, sources, services, initialSearch, initialActiveConversationId, dateMode }: InboxClientProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -130,6 +131,7 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
   const [activeConvId, setActiveConvId] = useState(initialActiveConversationId || conversations[0]?.id || "");
   const [search, setSearch] = useState(initialSearch);
   const [filter, setFilter] = useState<"all" | "unread" | "open" | "closed" | "no_followup_48h">("all");
+  const [serviceFilter, setServiceFilter] = useState("all");
   const [locallyReadIds, setLocallyReadIds] = useState<Set<string>>(new Set());
   const [cancelledBhIds, setCancelledBhIds] = useState<Set<string>>(new Set());
   const [localLeadSources, setLocalLeadSources] = useState<Record<string, string | null>>({});
@@ -143,6 +145,7 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
       const haystack = [
         lead?.name,
         lead?.phone,
+        lead?.service?.name,
         lead?.procedure,
         conversation.remote_jid,
         conversation.instance?.instance_name,
@@ -157,9 +160,10 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
         (filter === "unread" && conversation.unread_count > 0) ||
         (filter === "no_followup_48h" && needsFollowup48h(conversation)) ||
         conversation.status === filter;
-      return matchesSearch && matchesFilter;
+      const matchesService = serviceFilter === "all" || lead?.service_id === serviceFilter;
+      return matchesSearch && matchesFilter && matchesService;
     });
-  }, [conversations, filter, search]);
+  }, [conversations, filter, search, serviceFilter]);
 
   const activeConv =
     filteredConversations.find((conversation) => conversation.id === activeConvId) ??
@@ -364,6 +368,21 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
               </button>
             ))}
           </div>
+          {services.length > 0 && (
+            <Select value={serviceFilter} onValueChange={setServiceFilter}>
+              <SelectTrigger className="h-8 text-[11px]">
+                <SelectValue placeholder="Todos os servicos" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todos os servicos</SelectItem>
+                {services.map((service) => (
+                  <SelectItem key={service.id} value={service.id}>
+                    {service.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
         </div>
 
         <ScrollArea className="flex-1">
@@ -490,6 +509,7 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
               <div className="space-y-3">
                 <Info icon={<User />} label="Status" value={STATUS_LABELS[lead.status] ?? lead.status} />
                 {lead.stage?.name && <Info icon={<Tag />} label="Etapa" value={lead.stage.name} />}
+                {lead.service?.name && <Info icon={<Tag />} label="Servico" value={lead.service.name} />}
                 {lead.appointment_scheduled_at && (
                   <Info
                     icon={<Clock />}

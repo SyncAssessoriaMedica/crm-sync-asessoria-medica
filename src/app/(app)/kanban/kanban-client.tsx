@@ -37,6 +37,7 @@ export function KanbanClient({ leads, options, organizationName, periodLabel }: 
   const [items, setItems] = useState(leads);
   const [search, setSearch] = useState("");
   const [sourceFilter, setSourceFilter] = useState("all");
+  const [serviceFilter, setServiceFilter] = useState("all");
   const [draggingLeadId, setDraggingLeadId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -52,11 +53,13 @@ export function KanbanClient({ leads, options, organizationName, periodLabel }: 
         lead.name.toLowerCase().includes(query) ||
         lead.phone.includes(digits) ||
         (lead.email?.toLowerCase().includes(query) ?? false) ||
-        (lead.procedure?.toLowerCase().includes(query) ?? false);
+        (lead.procedure?.toLowerCase().includes(query) ?? false) ||
+        (lead.service?.name.toLowerCase().includes(query) ?? false);
       const matchesSource = sourceFilter === "all" || lead.source_id === sourceFilter;
-      return matchesSearch && matchesSource;
+      const matchesService = serviceFilter === "all" || lead.service_id === serviceFilter;
+      return matchesSearch && matchesSource && matchesService;
     });
-  }, [items, search, sourceFilter]);
+  }, [items, search, serviceFilter, sourceFilter]);
 
   const columns = useMemo<KanbanColumn[]>(() => {
     const stageColumns = options.stages.map((stage) => ({
@@ -159,7 +162,20 @@ export function KanbanClient({ leads, options, organizationName, periodLabel }: 
               ))}
             </SelectContent>
           </Select>
-          {(search || sourceFilter !== "all") && (
+          <Select value={serviceFilter} onValueChange={setServiceFilter}>
+            <SelectTrigger className="h-8 w-48 text-xs">
+              <SelectValue placeholder="Todos os servicos" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todos os servicos</SelectItem>
+              {options.services.map((service) => (
+                <SelectItem key={service.id} value={service.id}>
+                  {service.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {(search || sourceFilter !== "all" || serviceFilter !== "all") && (
             <Button
               type="button"
               size="sm"
@@ -167,6 +183,7 @@ export function KanbanClient({ leads, options, organizationName, periodLabel }: 
               onClick={() => {
                 setSearch("");
                 setSourceFilter("all");
+                setServiceFilter("all");
               }}
             >
               Limpar

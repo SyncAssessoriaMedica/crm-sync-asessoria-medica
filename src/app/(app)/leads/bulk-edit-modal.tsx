@@ -26,6 +26,7 @@ type BulkEditModalProps = {
 export function BulkEditModal({ open, count, leadIds, options, onClose, onSuccess }: BulkEditModalProps) {
   const [stageId, setStageId] = useState("__no_change__");
   const [sourceId, setSourceId] = useState("__no_change__");
+  const [serviceId, setServiceId] = useState("__no_change__");
   const [tagsToAdd, setTagsToAdd] = useState<string[]>([]);
   const [tagsToRemove, setTagsToRemove] = useState<string[]>([]);
   const [message, setMessage] = useState<string | null>(null);
@@ -52,6 +53,7 @@ export function BulkEditModal({ open, count, leadIds, options, onClose, onSucces
   function handleClose() {
     setStageId("__no_change__");
     setSourceId("__no_change__");
+    setServiceId("__no_change__");
     setTagsToAdd([]);
     setTagsToRemove([]);
     setMessage(null);
@@ -63,12 +65,14 @@ export function BulkEditModal({ open, count, leadIds, options, onClose, onSucces
 
     if (stageId !== "__no_change__") updates.stage_id = stageId === "__clear__" ? "" : stageId;
     if (sourceId !== "__no_change__") updates.source_id = sourceId === "__clear__" ? "" : sourceId;
+    if (serviceId !== "__no_change__") updates.service_id = serviceId === "__clear__" ? "" : serviceId;
     if (tagsToAdd.length) updates.tagsToAdd = tagsToAdd;
     if (tagsToRemove.length) updates.tagsToRemove = tagsToRemove;
 
     const hasAnyChange =
       stageId !== "__no_change__" ||
       sourceId !== "__no_change__" ||
+      serviceId !== "__no_change__" ||
       tagsToAdd.length > 0 ||
       tagsToRemove.length > 0;
 
@@ -146,6 +150,28 @@ export function BulkEditModal({ open, count, leadIds, options, onClose, onSucces
                 </SelectContent>
               </Select>
             </div>
+
+            {options.services.length > 0 && (
+              <div className="space-y-1.5 sm:col-span-2">
+                <p className="label-eyebrow text-text-muted">Servico</p>
+                <Select value={serviceId} onValueChange={setServiceId}>
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__no_change__">Nao alterar</SelectItem>
+                    <SelectItem value="__clear__">Remover servico</SelectItem>
+                    {options.services
+                      .filter((service) => service.active !== false)
+                      .map((service) => (
+                        <SelectItem key={service.id} value={service.id}>
+                          {service.name}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
           </div>
 
           {options.tags.length > 0 && (

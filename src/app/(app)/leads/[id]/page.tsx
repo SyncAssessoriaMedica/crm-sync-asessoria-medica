@@ -19,7 +19,7 @@ export default async function LeadDetailPage({
     return <AccessDenied />;
   }
 
-  const [leadResult, notesResult, eventsResult, tasksResult, sourcesResult, pipelinesResult, customFieldsResult, customValuesResult, leadTagsResult, orgTagsResult] =
+  const [leadResult, notesResult, eventsResult, tasksResult, sourcesResult, servicesResult, pipelinesResult, customFieldsResult, customValuesResult, leadTagsResult, orgTagsResult] =
     await Promise.all([
       admin
         .from("leads")
@@ -27,6 +27,7 @@ export default async function LeadDetailPage({
           `
           *,
           source:lead_sources(*),
+          service:clinic_services(*),
           stage:pipeline_stages(*)
         `
         )
@@ -54,6 +55,12 @@ export default async function LeadDetailPage({
         .eq("organization_id", organizationId)
         .order("name", { ascending: true }),
       admin
+        .from("clinic_services")
+        .select("*")
+        .eq("organization_id", organizationId)
+        .order("order", { ascending: true })
+        .order("name", { ascending: true }),
+      admin
         .from("pipelines")
         .select("id, pipeline_stages(*)")
         .eq("organization_id", organizationId)
@@ -63,6 +70,7 @@ export default async function LeadDetailPage({
         .from("custom_fields")
         .select("*")
         .eq("organization_id", organizationId)
+        .neq("key", "servico")
         .order("order", { ascending: true })
         .order("created_at", { ascending: true }),
       admin
@@ -94,6 +102,7 @@ export default async function LeadDetailPage({
 
   const options: LeadOptionData = {
     sources: (sourcesResult.data ?? []) as LeadOptionData["sources"],
+    services: (servicesResult.data ?? []) as LeadOptionData["services"],
     stages: ((pipelinesResult.data?.pipeline_stages ?? []) as LeadOptionData["stages"]).sort(
       (a, b) => a.order - b.order
     ),

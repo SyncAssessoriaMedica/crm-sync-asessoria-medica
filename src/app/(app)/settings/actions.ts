@@ -70,6 +70,7 @@ export async function updateClinicSettingsAction(formData: FormData): Promise<Ac
         served_cities: z.string().trim().max(4000).optional(),
         served_states: z.string().trim().max(400).optional(),
         service_area_notes: z.string().trim().max(1000).optional(),
+        services: z.string().trim().max(4000).optional(),
       })
       .safeParse({
         name: formData.get("name"),
@@ -83,6 +84,7 @@ export async function updateClinicSettingsAction(formData: FormData): Promise<Ac
         served_cities: asText(formData.get("served_cities")) || undefined,
         served_states: asText(formData.get("served_states")) || undefined,
         service_area_notes: asText(formData.get("service_area_notes")) || undefined,
+        services: asText(formData.get("services")) || undefined,
       });
 
     if (!parsed.success) {
@@ -120,12 +122,58 @@ export async function updateClinicSettingsAction(formData: FormData): Promise<Ac
 
     if (settingsError) return { ok: false, message: settingsError.message };
 
+    const nextServices = [...new Set(parseLines(parsed.data.services ?? ""))];
+    const { data: currentServices, error: servicesFetchError } = await admin
+      .from("clinic_services")
+      .select("id, name")
+      .eq("organization_id", organizationId);
+
+    if (servicesFetchError) return { ok: false, message: servicesFetchError.message };
+
+    const currentByName = new Map(
+      (currentServices ?? []).map((service) => [String(service.name).trim().toLowerCase(), service])
+    );
+    const nextNames = new Set(nextServices.map((name) => name.toLowerCase()));
+
+    for (const [index, serviceName] of nextServices.entries()) {
+      const existing = currentByName.get(serviceName.toLowerCase());
+      if (existing?.id) {
+        const { error } = await admin
+          .from("clinic_services")
+          .update({ name: serviceName, active: true, order: index })
+          .eq("id", existing.id)
+          .eq("organization_id", organizationId);
+        if (error) return { ok: false, message: error.message };
+      } else {
+        const { error } = await admin.from("clinic_services").insert({
+          organization_id: organizationId,
+          name: serviceName,
+          active: true,
+          order: index,
+        });
+        if (error) return { ok: false, message: error.message };
+      }
+    }
+
+    for (const service of currentServices ?? []) {
+      if (!nextNames.has(String(service.name).trim().toLowerCase())) {
+        const { error } = await admin
+          .from("clinic_services")
+          .update({ active: false })
+          .eq("id", service.id)
+          .eq("organization_id", organizationId);
+        if (error) return { ok: false, message: error.message };
+      }
+    }
+
     await refreshLeadLocationsForOrg(admin, organizationId, serviceArea);
 
     revalidatePath("/settings");
     revalidatePath("/dashboard");
     revalidatePath("/leads");
     revalidatePath("/inbox");
+    revalidatePath("/kanban");
+    revalidatePath("/admin");
     return { ok: true, message: "Dados da clinica salvos." };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "Erro ao salvar dados." };

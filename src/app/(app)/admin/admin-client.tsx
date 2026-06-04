@@ -115,6 +115,7 @@ type WebhookConfig = {
     phone?: string;
     email?: string;
     source?: string;
+    service_id?: string;
     procedure?: string;
     potential_value?: string;
     custom?: Record<string, string>;
@@ -181,6 +182,13 @@ type SourceRuleRow = {
   created_at: string;
 };
 
+type ClinicServiceRow = {
+  id: string;
+  name: string;
+  active: boolean;
+  order: number;
+};
+
 type BhAutoReplySettingsRow = {
   enabled: boolean;
   message_template: string;
@@ -221,6 +229,7 @@ export type AdminData = {
   pipelineStages: PipelineStageRow[];
   tags: TagRow[];
   sources: SourceRow[];
+  services: ClinicServiceRow[];
   sourceRules: SourceRuleRow[];
   bhAutoReplySettings: BhAutoReplySettingsRow;
   businessHours: OrgBusinessHours | null;
@@ -716,6 +725,7 @@ export function AdminClient({ data }: { data: AdminData }) {
                     config={config}
                     baseUrl={data.baseUrl}
                     customFields={data.customFields}
+                    services={data.services}
                     lastDelivery={data.lastDeliveryByToken[config.token] ?? null}
                     isPending={isPending}
                     onRun={runAction}
@@ -1486,6 +1496,7 @@ function WebhookConfigCard({
   config,
   baseUrl,
   customFields,
+  services,
   lastDelivery,
   isPending,
   onRun,
@@ -1495,6 +1506,7 @@ function WebhookConfigCard({
   config: WebhookConfig;
   baseUrl: string;
   customFields: CustomField[];
+  services: ClinicServiceRow[];
   lastDelivery: WebhookDelivery | null;
   isPending: boolean;
   onRun: (action: (formData: FormData) => Promise<{ ok: boolean; message: string; data?: unknown }>) => (formData: FormData) => void;
@@ -1504,7 +1516,6 @@ function WebhookConfigCard({
   const [showPayload, setShowPayload] = useState(false);
   const url = `${baseUrl}/api/webhooks/inbound/${config.token}`;
   const customDefault = JSON.stringify({
-    servico: "servico",
     campanha: "campanha",
     conjunto: "conjunto",
     criativo: "criativo",
@@ -1571,6 +1582,16 @@ function WebhookConfigCard({
             <Field label="Caminho do telefone" name="phone_path" placeholder="lead.phone" defaultValue={config.mappings.phone ?? ""} />
             <Field label="Caminho do email" name="email_path" placeholder="lead.email" defaultValue={config.mappings.email ?? ""} />
             <Field label="Caminho da origem" name="source_path" placeholder="utm.source" defaultValue={config.mappings.source ?? ""} />
+            <SelectField label="Servico marcado no lead" name="service_id" defaultValue={config.mappings.service_id ?? "none"}>
+              <SelectItem value="none">Sem servico fixo</SelectItem>
+              {services
+                .filter((service) => service.active !== false || service.id === config.mappings.service_id)
+                .map((service) => (
+                  <SelectItem key={service.id} value={service.id}>
+                    {service.name}{service.active === false ? " (inativo)" : ""}
+                  </SelectItem>
+                ))}
+            </SelectField>
             <Field label="Caminho do procedimento" name="procedure_path" placeholder="lead.procedure" defaultValue={config.mappings.procedure ?? ""} />
             <Field label="Caminho do valor" name="potential_value_path" placeholder="deal.value" defaultValue={config.mappings.potential_value ?? ""} />
           </div>
@@ -1584,10 +1605,10 @@ function WebhookConfigCard({
               name="custom_mappings"
               className="min-h-24 w-full rounded-lg border border-border bg-white px-3 py-2 font-mono text-xs outline-none focus:border-brand-green focus:ring-2 focus:ring-brand-green"
               defaultValue={customDefault}
-              placeholder='{"servico":"servico","campanha":"campanha","conjunto":"conjunto","criativo":"criativo"}'
+              placeholder='{"campanha":"campaign.name","conjunto":"adset.name","criativo":"ad.name"}'
             />
             <p className="text-[11px] text-text-muted">
-              Cada linha mapeia chave do campo no CRM para campo recebido no webhook. Se a chave ainda nao existir, o CRM cria automaticamente. Disponiveis: {customFields.map((field) => field.key).join(", ") || "nenhum"}.
+              Servico e marcado pelo seletor acima. Use este JSON para outros parametros recebidos pelo webhook. Se a chave ainda nao existir, o CRM cria automaticamente. Disponiveis: {customFields.filter((field) => field.key !== "servico").map((field) => field.key).join(", ") || "nenhum"}.
             </p>
           </div>
           <label className="flex items-center gap-2 text-sm text-text-secondary">

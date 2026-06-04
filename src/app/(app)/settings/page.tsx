@@ -42,11 +42,21 @@ export default async function SettingsPage() {
     return <AccessDenied />;
   }
 
-  const { data: settings } = await admin
-    .from("organization_settings")
-    .select("cnpj, city, state, scheduling_url, notification_preferences, business_hours, service_area")
-    .eq("organization_id", organizationId)
-    .maybeSingle();
+  const [settingsResult, servicesResult] = await Promise.all([
+    admin
+      .from("organization_settings")
+      .select("cnpj, city, state, scheduling_url, notification_preferences, business_hours, service_area")
+      .eq("organization_id", organizationId)
+      .maybeSingle(),
+    admin
+      .from("clinic_services")
+      .select("id, name, active, order")
+      .eq("organization_id", organizationId)
+      .order("order", { ascending: true })
+      .order("name", { ascending: true }),
+  ]);
+
+  const settings = settingsResult.data;
 
   const notificationPreferences =
     settings?.notification_preferences && typeof settings.notification_preferences === "object"
@@ -73,6 +83,7 @@ export default async function SettingsPage() {
       business_hours: parseBusinessHours(settings?.business_hours),
       service_area: parseServiceArea(settings?.service_area),
     },
+    services: servicesResult.data ?? [],
     user: {
       role: effectiveRole,
     },
