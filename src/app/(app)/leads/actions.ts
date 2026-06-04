@@ -842,3 +842,96 @@ export async function updateLeadsBulkAction(
     return { ok: false, message: error instanceof Error ? error.message : "Erro ao atualizar leads." };
   }
 }
+
+// ─── Import ───────────────────────────────────────────────────────────────────
+
+export type LeadImportRow = {
+  name: string;
+  phone: string;
+  email?: string;
+  procedure?: string;
+  observations?: string;
+  potential_value?: number | null;
+  source_name?: string;
+  service_name?: string;
+};
+
+function normalizeStr(str: string): string {
+  return str.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
+}
+
+export async function importLeadsAction(
+  rows: LeadImportRow[],
+  stageId?: string
+): Promise<{ ok: boolean; message: string; created: number; updated: number }> {
+  try {
+    const { admin, organizationId } = await getCurrentContext();
+    if (!rows.length) return { ok: false, message: "Nenhum lead para importar.", created: 0, updated: 0 };
+
+    const [{ data: sources }, { data: services }] = await Promise.all([
+      admin.from("lead_sources").select("id, name").eq("organization_id", organizationId),
+      admin.from("clinic_services").select("id, name").eq("organization_id", organizationId),
+    ]);
+
+    const sourceMap = new Map((sources ?? []).map((s) => [normalizeStr(s.name), s.id]));
+    const serviceMap = new Map((services ?? []).map((s) => [normalizeStr(s.name), s.id]));
+
+    const normalizedPhones = rows.map((r) => r.phone.replace(/\D/g, "")).filter(Boolean);
+    const { data: existingLeads } = await admin
+      .from("leads")
+      .select("id, phone")
+      .eq("organization_id", organizationId)
+      .in("phone", normalizedPhones);
+
+    const phoneToId = new Map((existingLeads ?? []).map((l) => [l.phone.replace(/\D/g, ""), l.id as string]));
+    const normalizedStageId = stageId || null;
+    const status = await getStatusForStage(admin, normalizedStageId);
+
+    const toCreate: object[] = [];
+    const toUpdate: Array<{ id: string; data: object }> = [];
+
+    for (const row of rows) {
+      const phone = row.phone.replace(/\D/g, "");
+      const payload = {
+        name: row.name.trim(),
+        phone,
+        email: row.email?.trim() || null,
+        procedure: row.procedure?.trim() || null,
+        observations: row.observations?.trim() || null,
+        potential_value: row.potential_value ?? null,
+        source_id: row.source_name ? (sourceMap.get(normalizeStr(row.source_name)) ?? null) : null,
+        service_id: row.service_name ? (serviceMap.get(normalizeStr(row.service_name)) ?? null) : null,
+        stage_id: normalizedStageId,
+        status,
+      };
+      const existingId = phoneToId.get(phone);
+      if (existingId) {
+        toUpdate.push({ id: existingId, data: payload });
+      } else {
+        toCreate.push({ ...payload, organization_id: organizationId });
+      }
+    }
+
+    if (toCreate.length) {
+      const { error } = await admin.from("leads").insert(toCreate);
+      if (error) throw new Error(`Erro ao criar leads: ${error.message}`);
+    }
+    for (const { id, data } of toUpdate) {
+      await admin.from("leads").update(data).eq("id", id).eq("organization_id", organizationId);
+    }
+
+    revalidatePath("/leads");
+    revalidatePath("/kanban");
+    revalidatePath("/dashboard");
+
+    const total = toCreate.length + toUpdate.length;
+    return {
+      ok: true,
+      message: `${total} lead${total !== 1 ? "s" : ""} importado${total !== 1 ? "s" : ""}: ${toCreate.length} novo${toCreate.length !== 1 ? "s" : ""}, ${toUpdate.length} atualizado${toUpdate.length !== 1 ? "s" : ""}.`,
+      created: toCreate.length,
+      updated: toUpdate.length,
+    };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao importar leads.", created: 0, updated: 0 };
+  }
+}

@@ -20,6 +20,7 @@ import {
   Plus,
   Search,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -52,6 +53,7 @@ import {
 } from "./actions";
 import { LeadForm } from "./lead-form";
 import { BulkEditModal } from "./bulk-edit-modal";
+import { ImportLeadsModal } from "./import-leads-modal";
 
 type LeadsClientProps = {
   leads: LeadListItem[];
@@ -77,6 +79,7 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [formMode, setFormMode] = useState<"create" | "edit" | null>(null);
   const [editingLead, setEditingLead] = useState<LeadListItem | undefined>();
+  const [importOpen, setImportOpen] = useState(false);
   const [editingCustomValues, setEditingCustomValues] = useState<Record<string, string>>({});
   const [message, setMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -356,6 +359,10 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
           <Button variant="secondary" size="sm" className="gap-1.5" onClick={() => exportCsv(sorted)}>
             <Download className="h-3.5 w-3.5" />
             Exportar
+          </Button>
+          <Button variant="secondary" size="sm" className="gap-1.5" onClick={() => setImportOpen(true)}>
+            <Upload className="h-3.5 w-3.5" />
+            Importar
           </Button>
           <Button size="sm" className="gap-1.5" onClick={() => setFormMode("create")}>
             <Plus className="h-3.5 w-3.5" />
@@ -769,6 +776,16 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
         onSuccess={(msg) => {
           setMessage(msg);
           clearSelection();
+        }}
+      />
+
+      <ImportLeadsModal
+        open={importOpen}
+        options={options}
+        onClose={() => setImportOpen(false)}
+        onSuccess={(msg) => {
+          setMessage(msg);
+          router.refresh();
         }}
       />
     </div>
