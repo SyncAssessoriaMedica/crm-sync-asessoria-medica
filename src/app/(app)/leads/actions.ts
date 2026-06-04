@@ -507,6 +507,14 @@ export async function updateLeadStageAction(leadId: string, stageId: string): Pr
 
     if (error) return { ok: false, message: error.message };
 
+    if (status === "scheduled") {
+      await admin.from("lead_events").insert({
+        lead_id: leadId,
+        event_type: "reached_scheduled_stage",
+        description: "Passou pela etapa de Agendamento.",
+      });
+    }
+
     revalidatePath("/leads");
     revalidatePath("/kanban");
     revalidatePath("/dashboard");
@@ -612,6 +620,12 @@ export async function markLeadScheduledAction(leadId: string, formData: FormData
       .eq("organization_id", organizationId);
 
     if (error) return { ok: false, message: error.message };
+
+    await admin.from("lead_events").insert({
+      lead_id: leadId,
+      event_type: "reached_scheduled_stage",
+      description: "Consulta agendada — passou pela etapa de Agendamento.",
+    });
 
     await insertAuditLog(admin, user.id, organizationId, "mark_appointment_scheduled", "lead", leadId, {
       previous_appointment_scheduled_at: lead.appointment_scheduled_at,
@@ -817,6 +831,15 @@ export async function updateLeadsBulkAction(
         .in("id", ownedIds)
         .eq("organization_id", organizationId);
       if (error) return { ok: false, message: error.message };
+
+      if (leadUpdates.status === "scheduled") {
+        const events = ownedIds.map((leadId) => ({
+          lead_id: leadId,
+          event_type: "reached_scheduled_stage",
+          description: "Passou pela etapa de Agendamento.",
+        }));
+        await admin.from("lead_events").insert(events);
+      }
     }
 
     if (updates.tagsToAdd?.length) {
@@ -840,6 +863,41 @@ export async function updateLeadsBulkAction(
     return { ok: true, message: `${ownedIds.length} lead(s) atualizado(s) com sucesso.` };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "Erro ao atualizar leads." };
+  }
+}
+
+// ─── Lead events ──────────────────────────────────────────────────────────────
+
+export async function deleteLeadEventAction(eventId: string, leadId: string): Promise<ActionResult> {
+  try {
+    const { admin, organizationId } = await getCurrentContext();
+    const { data: lead } = await admin
+      .from("leads")
+      .select("id")
+      .eq("id", leadId)
+      .eq("organization_id", organizationId)
+      .maybeSingle();
+    if (!lead) return { ok: false, message: "Lead nao encontrado." };
+
+    const { data: event } = await admin
+      .from("lead_events")
+      .select("id, event_type")
+      .eq("id", eventId)
+      .eq("lead_id", leadId)
+      .maybeSingle();
+    if (!event) return { ok: false, message: "Evento nao encontrado." };
+    if (event.event_type !== "reached_scheduled_stage") {
+      return { ok: false, message: "Este tipo de evento nao pode ser removido." };
+    }
+
+    const { error } = await admin.from("lead_events").delete().eq("id", eventId).eq("lead_id", leadId);
+    if (error) return { ok: false, message: error.message };
+
+    revalidatePath(`/leads/${leadId}`);
+    revalidatePath("/dashboard");
+    return { ok: true, message: "Evento removido do historico." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Erro ao remover evento." };
   }
 }
 

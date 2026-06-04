@@ -91,8 +91,8 @@ function variation(current: number, previous: number) {
   return ((current - previous) / previous) * 100;
 }
 
-function isScheduledStatus(status: LeadStatus) {
-  return ["scheduled", "attended", "closed_won", "closed_lost", "no_show"].includes(status);
+function wasScheduled(lead: DashboardLead, hasBeenScheduledIds: Set<string>) {
+  return lead.status === "scheduled" || hasBeenScheduledIds.has(lead.id);
 }
 
 function getResponseMode(value?: string): ResponseMode {
@@ -103,7 +103,7 @@ function getResponseMode(value?: string): ResponseMode {
 
 // ─── Metric helpers ───────────────────────────────────────────────────────────
 
-function buildDailyData(leads: DashboardLead[], start: Date, end: Date): DailyLeadsData[] {
+function buildDailyData(leads: DashboardLead[], start: Date, end: Date, hasBeenScheduledIds: Set<string>): DailyLeadsData[] {
   const days: DailyLeadsData[] = [];
   const cursor = startOfDay(start);
   while (cursor < end) {
@@ -113,7 +113,7 @@ function buildDailyData(leads: DashboardLead[], start: Date, end: Date): DailyLe
     days.push({
       date: label,
       leads: dayLeads.length,
-      scheduled: dayLeads.filter((lead) => isScheduledStatus(lead.status)).length,
+      scheduled: dayLeads.filter((lead) => wasScheduled(lead, hasBeenScheduledIds)).length,
     });
     cursor.setDate(cursor.getDate() + 1);
   }
@@ -552,6 +552,13 @@ export default async function DashboardPage({
       : Promise.resolve(emptyMsgs),
   ]);
 
+  // ── Scheduling history ──────────────────────────────────────────────────────
+  const allLeadIds = (leadsResult.data ?? []).map((l) => l.id as string);
+  const scheduledEventsResult = allLeadIds.length > 0
+    ? await admin.from("lead_events").select("lead_id").eq("event_type", "reached_scheduled_stage").in("lead_id", allLeadIds)
+    : { data: [] as { lead_id: string }[] };
+  const hasBeenScheduledIds = new Set((scheduledEventsResult.data ?? []).map((e) => e.lead_id as string));
+
   // ── Lead metrics ────────────────────────────────────────────────────────────
   const services = servicesResult.data ?? [];
   const allLeads = (leadsResult.data ?? []).map((lead) => ({
@@ -571,8 +578,8 @@ export default async function DashboardPage({
     inRange(lead.created_at, previousStart, currentStart)
   );
 
-  const scheduledCurrent = currentLeads.filter((lead) => isScheduledStatus(lead.status)).length;
-  const scheduledPrevious = previousLeads.filter((lead) => isScheduledStatus(lead.status)).length;
+  const scheduledCurrent = currentLeads.filter((lead) => wasScheduled(lead, hasBeenScheduledIds)).length;
+  const scheduledPrevious = previousLeads.filter((lead) => wasScheduled(lead, hasBeenScheduledIds)).length;
 
   const attendedCurrent = currentLeads.filter((lead) =>
     ["attended", "closed_won", "closed_lost"].includes(lead.status)
@@ -607,7 +614,7 @@ export default async function DashboardPage({
   }).length;
 
   // ── Chart data ──────────────────────────────────────────────────────────────
-  const dailyData = buildDailyData(currentLeads, currentStart, currentEnd);
+  const dailyData = buildDailyData(currentLeads, currentStart, currentEnd, hasBeenScheduledIds);
   const sourceData = buildSourceData(currentLeads);
   const locationData = buildServiceRegionData(currentLeads, serviceArea);
   const funnelData = buildFunnelData(currentLeads, stages);

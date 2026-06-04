@@ -64,6 +64,7 @@ import {
   addTaskAction,
   applyTagToLeadAction,
   deleteLeadAction,
+  deleteLeadEventAction,
   removeTagFromLeadAction,
   toggleTaskAction,
   updateLeadAction,
@@ -76,6 +77,7 @@ import { LeadForm } from "../lead-form";
 const EVENT_ICONS: Record<string, { icon: React.ElementType; color: string }> = {
   status_changed: { icon: Tag, color: "bg-brand-green-soft text-brand-green-dark" },
   stage_changed: { icon: Tag, color: "bg-brand-green-soft text-brand-green-dark" },
+  reached_scheduled_stage: { icon: Clock, color: "bg-blue-50 text-blue-600" },
   created: { icon: Clock, color: "bg-brand-green-soft text-brand-green-dark" },
   note: { icon: FileText, color: "bg-background-subtle text-text-secondary" },
   message: { icon: MessageSquare, color: "bg-blue-50 text-blue-600" },
@@ -95,9 +97,10 @@ type LeadDetailClientProps = {
   customValues: Record<string, string>;
 };
 
-export function LeadDetailClient({ lead, options, leadTags: initialLeadTags, notes, events, tasks, customValues }: LeadDetailClientProps) {
+export function LeadDetailClient({ lead, options, leadTags: initialLeadTags, notes, events: initialEvents, tasks, customValues }: LeadDetailClientProps) {
   const router = useRouter();
   const [leadTags, setLeadTags] = useState<TagItem[]>(initialLeadTags);
+  const [events, setEvents] = useState<LeadEventItem[]>(initialEvents);
   const [editOpen, setEditOpen] = useState(false);
   const [noteContent, setNoteContent] = useState("");
   const [taskTitle, setTaskTitle] = useState("");
@@ -558,6 +561,7 @@ export function LeadDetailClient({ lead, options, leadTags: initialLeadTags, not
                   {events.map((event, i) => {
                     const cfg = EVENT_ICONS[event.event_type] ?? EVENT_ICONS.note;
                     const Icon = cfg.icon;
+                    const isDeletable = event.event_type === "reached_scheduled_stage";
                     return (
                       <div key={event.id} className="flex gap-3 pb-5">
                         <div className="flex flex-col items-center">
@@ -566,9 +570,29 @@ export function LeadDetailClient({ lead, options, leadTags: initialLeadTags, not
                           </div>
                           {i < events.length - 1 && <div className="mt-1 h-full w-px bg-border" />}
                         </div>
-                        <div className="pb-1 pt-0.5">
-                          <p className="text-xs text-text-primary">{event.description}</p>
-                          <p className="mt-0.5 text-[10px] text-text-muted">{formatDateTime(event.created_at)}</p>
+                        <div className="flex flex-1 items-start justify-between gap-2 pb-1 pt-0.5">
+                          <div>
+                            <p className="text-xs text-text-primary">{event.description}</p>
+                            <p className="mt-0.5 text-[10px] text-text-muted">{formatDateTime(event.created_at)}</p>
+                          </div>
+                          {isDeletable && (
+                            <button
+                              type="button"
+                              title="Remover do histórico de agendamentos (corrige dados do dashboard)"
+                              className="mt-0.5 shrink-0 text-text-muted hover:text-danger-red transition-colors"
+                              onClick={() => {
+                                startTransition(async () => {
+                                  const result = await deleteLeadEventAction(event.id, lead.id);
+                                  if (result.ok) {
+                                    setEvents((prev) => prev.filter((e) => e.id !== event.id));
+                                  }
+                                  setMessage(result.message);
+                                });
+                              }}
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </button>
+                          )}
                         </div>
                       </div>
                     );
