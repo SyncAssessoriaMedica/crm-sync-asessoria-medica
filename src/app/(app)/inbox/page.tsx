@@ -1,3 +1,4 @@
+import { redirect } from "next/navigation";
 import { canAccessRoute } from "@/lib/permissions";
 import { getDateRangeFromParams } from "@/lib/date-range";
 import { getOrganizationContext } from "@/lib/organization-context";
@@ -173,23 +174,19 @@ export default async function InboxPage({
       return lead?.id === leadParam;
     });
     if (existingRow) {
-      selectedConversationId = existingRow.id;
+      redirect(`/inbox?conversation=${existingRow.id}`);
     } else {
       const { data: leadConversation } = await admin
         .from("conversations")
-        .select(CONVERSATION_SELECT)
+        .select("id")
         .eq("lead_id", leadParam)
         .eq("organization_id", organizationId)
         .order("updated_at", { ascending: false })
         .limit(1)
         .maybeSingle();
 
-      if (leadConversation) {
-        const instance = firstRelation((leadConversation as unknown as ConversationRow).instance);
-        if (!instance?.deleted_at) {
-          selectedConversationId = leadConversation.id;
-          rows = [leadConversation as unknown as ConversationRow, ...initialRows];
-        }
+      if (leadConversation?.id) {
+        redirect(`/inbox?conversation=${leadConversation.id}`);
       }
     }
   }
