@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { ChevronDown, Clock, DollarSign, Filter, Inbox, MapPin, Phone, Search, Tag, User, X } from "lucide-react";
+import { ChevronDown, Clock, DollarSign, Filter, Inbox, MapPin, MessageCircle, Phone, Search, Tag, User, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -441,9 +441,10 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
                     {STATUS_LABELS[lead.status] ?? lead.status}
                   </Badge>
                 )}
-                <Button variant="ghost" size="icon-sm" asChild>
-                  <a href={`https://wa.me/${cleanJid(activeConv.remote_jid)}`} target="_blank" rel="noreferrer">
-                    <Phone className="h-3.5 w-3.5" />
+                <Button variant="outline" size="sm" className="gap-1.5 border-green-500 text-green-700 hover:bg-green-50 hover:text-green-800 h-7 text-xs" asChild>
+                  <a href={`https://web.whatsapp.com/send?phone=${cleanJid(activeConv.remote_jid).replace(/\D/g, "")}`} target="_blank" rel="noreferrer">
+                    <MessageCircle className="h-3.5 w-3.5" />
+                    WhatsApp Web
                   </a>
                 </Button>
               </div>
@@ -571,6 +572,12 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
               )}
 
               <div className="space-y-2 pt-2">
+                <Button size="sm" className="w-full gap-1.5 text-xs border-green-500 text-green-700 hover:bg-green-50 hover:text-green-800" variant="outline" asChild>
+                  <a href={`https://web.whatsapp.com/send?phone=${cleanJid(activeConv?.remote_jid ?? "").replace(/\D/g, "")}`} target="_blank" rel="noreferrer">
+                    <MessageCircle className="h-3.5 w-3.5" />
+                    Abrir no WhatsApp Web
+                  </a>
+                </Button>
                 <AppointmentScheduler
                   leadId={lead.id}
                   appointmentScheduledAt={lead.appointment_scheduled_at}

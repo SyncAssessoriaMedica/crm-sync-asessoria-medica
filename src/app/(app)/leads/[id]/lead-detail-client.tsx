@@ -205,6 +205,12 @@ export function LeadDetailClient({ lead, options, leadTags: initialLeadTags, not
             onResult={(resultMessage) => setMessage(resultMessage)}
             onSuccess={() => router.refresh()}
           />
+          <Button variant="outline" size="sm" className="gap-1.5 border-green-500 text-green-700 hover:bg-green-50 hover:text-green-800" asChild>
+            <a href={`https://web.whatsapp.com/send?phone=${lead.phone.replace(/\D/g, "")}`} target="_blank" rel="noreferrer">
+              <MessageCircle className="h-3.5 w-3.5" />
+              WhatsApp Web
+            </a>
+          </Button>
           <Button variant="secondary" size="sm" className="gap-1.5" onClick={() => setEditOpen(true)}>
             <Edit2 className="h-3.5 w-3.5" />
             Editar
@@ -459,7 +465,7 @@ export function LeadDetailClient({ lead, options, leadTags: initialLeadTags, not
               </CardHeader>
               <CardContent className="space-y-4">
                 {webhookFields.length > 0 && (
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 gap-3">
                     {webhookFields.map((field) => (
                       <Meta key={field.id} label={field.name} value={formatCustomValue(customValues[field.id])} />
                     ))}

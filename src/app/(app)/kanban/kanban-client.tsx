@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useTransition } from "react";
 import Link from "next/link";
-import { CalendarCheck, GripVertical, MapPin, Phone, Search, UserRound } from "lucide-react";
+import { CalendarCheck, GripVertical, MapPin, MessageCircle, Phone, Search, UserRound } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -323,10 +323,22 @@ function LeadCard({
           >
             {lead.name}
           </Link>
-          <p className="mt-1 flex items-center gap-1 text-[11px] text-text-muted">
-            <Phone className="h-3 w-3" />
-            {formatPhone(lead.phone)}
-          </p>
+          <div className="mt-1 flex items-center gap-1.5">
+            <p className="flex items-center gap-1 text-[11px] text-text-muted">
+              <Phone className="h-3 w-3" />
+              {formatPhone(lead.phone)}
+            </p>
+            <a
+              href={`https://web.whatsapp.com/send?phone=${lead.phone.replace(/\D/g, "")}`}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="ml-auto flex h-5 w-5 items-center justify-center rounded-md text-green-600 hover:bg-green-50 hover:text-green-700"
+              title="Abrir no WhatsApp Web"
+            >
+              <MessageCircle className="h-3 w-3" />
+            </a>
+          </div>
         </div>
         <GripVertical className="mt-1 h-4 w-4 shrink-0 text-text-muted" />
       </div>
