@@ -11,13 +11,20 @@ export type InboxLead = {
   followup_paused: boolean;
   source_id: string | null;
   service_id: string | null;
+  stage_id: string | null;
   phone_ddd: string | null;
   detected_state: string | null;
   detected_city: string | null;
   service_area_status: "inside" | "possible" | "outside" | "unknown";
   source: { id?: string | null; name: string | null; active?: boolean | null } | null;
   service: { id?: string | null; name: string | null; active?: boolean | null } | null;
-  stage: { name: string | null } | null;
+  stage: { id: string | null; name: string | null } | null;
+};
+
+export type InboxStage = {
+  id: string;
+  name: string;
+  color: string | null;
 };
 
 export type InboxSource = {

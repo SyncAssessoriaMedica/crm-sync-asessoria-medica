@@ -20,9 +20,9 @@ import { LOCATION_STATUS_LABELS } from "@/lib/lead-location";
 import { cn, formatCurrency, formatDateTime, formatPhone, formatTimeAgo, getInitials } from "@/lib/utils";
 import { AppointmentScheduler } from "@/components/leads/appointment-scheduler";
 import { cancelBhAutoReplyAction, markConversationReadAction, updateConversationStatusAction } from "./actions";
-import { updateLeadSourceAction } from "../leads/actions";
+import { updateLeadSourceAction, updateLeadStageAction } from "../leads/actions";
 import { MessageBubble } from "./message-media";
-import type { BhAutoReplyQueueItem, InboxConversation, InboxMessage, InboxService, InboxSource } from "./types";
+import type { BhAutoReplyQueueItem, InboxConversation, InboxMessage, InboxService, InboxSource, InboxStage } from "./types";
 
 const MEDIA_LABELS: Record<string, string> = {
   image: "Imagem",
@@ -54,6 +54,7 @@ type InboxClientProps = {
   instances: { id: string; instance_name: string; phone_number: string | null; status: string }[];
   sources: InboxSource[];
   services: InboxService[];
+  stages: InboxStage[];
   initialSearch: string;
   initialActiveConversationId?: string;
   dateMode: "activity" | "created";
@@ -122,7 +123,7 @@ function ConversationItem({
   );
 }
 
-export function InboxClient({ organizationId, conversations, messagesByConversation, bhAutoRepliesByConversation, instances, sources, services, initialSearch, initialActiveConversationId, dateMode }: InboxClientProps) {
+export function InboxClient({ organizationId, conversations, messagesByConversation, bhAutoRepliesByConversation, instances, sources, services, stages, initialSearch, initialActiveConversationId, dateMode }: InboxClientProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -135,6 +136,7 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
   const [locallyReadIds, setLocallyReadIds] = useState<Set<string>>(new Set());
   const [cancelledBhIds, setCancelledBhIds] = useState<Set<string>>(new Set());
   const [localLeadSources, setLocalLeadSources] = useState<Record<string, string | null>>({});
+  const [localLeadStages, setLocalLeadStages] = useState<Record<string, string | null>>({});
   const [message, setMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
@@ -173,6 +175,9 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
   const lead = activeConv?.lead ?? null;
   const leadSourceValue = lead
     ? (localLeadSources[lead.id] !== undefined ? localLeadSources[lead.id] : lead.source_id) ?? "none"
+    : "none";
+  const leadStageValue = lead
+    ? (localLeadStages[lead.id] !== undefined ? localLeadStages[lead.id] : lead.stage_id) ?? "none"
     : "none";
   const activeInstance = activeConv?.instance ?? instances[0] ?? null;
   const noFollowupCount = useMemo(
@@ -280,6 +285,24 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
         activeConv.status === "closed" ? "open" : "closed"
       );
       setMessage(result.message);
+    });
+  }
+
+  function changeLeadStage(leadId: string, stageId: string) {
+    const nextStageId = stageId === "none" ? null : stageId;
+    setLocalLeadStages((prev) => ({ ...prev, [leadId]: nextStageId }));
+    startTransition(async () => {
+      const result = await updateLeadStageAction(leadId, nextStageId ?? "");
+      setMessage(result.message);
+      if (result.ok) {
+        router.refresh();
+      } else {
+        setLocalLeadStages((prev) => {
+          const next = { ...prev };
+          delete next[leadId];
+          return next;
+        });
+      }
     });
   }
 
@@ -509,7 +532,30 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
 
               <div className="space-y-3">
                 <Info icon={<User />} label="Status" value={STATUS_LABELS[lead.status] ?? lead.status} />
-                {lead.stage?.name && <Info icon={<Tag />} label="Etapa" value={lead.stage.name} />}
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2 text-[11px] text-text-muted">
+                    <ChevronDown className="h-3.5 w-3.5 rotate-270" />
+                    <span className="font-semibold uppercase tracking-wide">Etapa do funil</span>
+                  </div>
+                  <Select
+                    key={lead.id}
+                    value={leadStageValue}
+                    onValueChange={(stageId) => changeLeadStage(lead.id, stageId)}
+                    disabled={isPending}
+                  >
+                    <SelectTrigger className="h-8 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Sem etapa</SelectItem>
+                      {stages.map((stage) => (
+                        <SelectItem key={stage.id} value={stage.id}>
+                          {stage.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
                 {lead.service?.name && <Info icon={<Tag />} label="Servico" value={lead.service.name} />}
                 {lead.appointment_scheduled_at && (
                   <Info

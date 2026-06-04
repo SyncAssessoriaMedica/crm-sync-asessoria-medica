@@ -3,7 +3,7 @@ import { getDateRangeFromParams } from "@/lib/date-range";
 import { getOrganizationContext } from "@/lib/organization-context";
 import { AccessDenied } from "@/components/layout/access-denied";
 import { InboxClient } from "./inbox-client";
-import type { BhAutoReplyQueueItem, InboxConversation, InboxInstance, InboxLead, InboxMessage, InboxService, InboxSource } from "./types";
+import type { BhAutoReplyQueueItem, InboxConversation, InboxInstance, InboxLead, InboxMessage, InboxService, InboxSource, InboxStage } from "./types";
 
 type ConversationRow = Omit<InboxConversation, "lead" | "instance" | "last_message"> & {
   lead: InboxLead | InboxLead[] | null;
@@ -38,7 +38,7 @@ export default async function InboxPage({
     return <AccessDenied />;
   }
 
-  const [conversationsResult, instancesResult, sourcesResult, servicesResult] = await Promise.all([
+  const [conversationsResult, instancesResult, sourcesResult, servicesResult, stagesResult] = await Promise.all([
     admin
       .from("conversations")
       .select(
@@ -66,7 +66,8 @@ export default async function InboxPage({
           service_id,
           source:lead_sources(id, name, active),
           service:clinic_services(id, name, active),
-          stage:pipeline_stages(name)
+          stage_id,
+          stage:pipeline_stages(id, name)
         ),
         instance:whatsapp_instances(id, instance_name, phone_number, status, deleted_at)
       `
@@ -91,6 +92,12 @@ export default async function InboxPage({
     admin
       .from("clinic_services")
       .select("id, name, active, order")
+      .eq("organization_id", organizationId)
+      .order("order", { ascending: true })
+      .order("name", { ascending: true }),
+    admin
+      .from("pipeline_stages")
+      .select("id, name, color")
       .eq("organization_id", organizationId)
       .order("order", { ascending: true })
       .order("name", { ascending: true }),
@@ -141,7 +148,8 @@ export default async function InboxPage({
           service_id,
           source:lead_sources(id, name, active),
           service:clinic_services(id, name, active),
-          stage:pipeline_stages(name)
+          stage_id,
+          stage:pipeline_stages(id, name)
         ),
         instance:whatsapp_instances(id, instance_name, phone_number, status, deleted_at)
       `
@@ -221,6 +229,7 @@ export default async function InboxPage({
       instances={(instancesResult.data ?? []) as InboxInstance[]}
       sources={(sourcesResult.data ?? []) as InboxSource[]}
       services={(servicesResult.data ?? []) as InboxService[]}
+      stages={(stagesResult.data ?? []) as InboxStage[]}
       initialSearch={params?.q ?? ""}
       initialActiveConversationId={selectedConversationId}
       dateMode={dateMode}

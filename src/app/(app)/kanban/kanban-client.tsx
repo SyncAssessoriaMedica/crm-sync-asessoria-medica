@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useTransition } from "react";
 import Link from "next/link";
-import { CalendarCheck, GripVertical, MapPin, MessageCircle, Phone, Search, UserRound } from "lucide-react";
+import { CalendarCheck, GripVertical, Inbox, MapPin, MessageCircle, Phone, Search, UserRound } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -205,7 +205,7 @@ export function KanbanClient({ leads, options, organizationName, periodLabel }: 
         </div>
       )}
 
-      <div className="min-h-[620px] overflow-x-auto pb-3">
+      <div className="min-h-[620px] overflow-x-scroll pb-3">
         <div className="flex min-w-max gap-4">
           {columns.map((column) => (
             <section
@@ -370,9 +370,9 @@ function LeadCard({
         {lead.potential_value ? <Badge variant="outline">{formatCurrency(lead.potential_value)}</Badge> : null}
       </div>
 
-      <div className="mt-3">
+      <div className="mt-3 flex items-center gap-2">
         <Select value={lead.stage_id ?? NO_STAGE_ID} onValueChange={onStageChange} disabled={disabled}>
-          <SelectTrigger className="h-8 text-xs">
+          <SelectTrigger className="h-8 flex-1 text-xs">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -384,6 +384,14 @@ function LeadCard({
             ))}
           </SelectContent>
         </Select>
+        <Link
+          href={`/inbox?q=${lead.phone.replace(/\D/g, "")}`}
+          onClick={(e) => e.stopPropagation()}
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-background-subtle text-text-muted hover:border-brand-green/40 hover:text-brand-green-dark"
+          title="Ver conversa no Inbox"
+        >
+          <Inbox className="h-3.5 w-3.5" />
+        </Link>
       </div>
     </article>
   );
