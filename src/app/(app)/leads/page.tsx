@@ -144,6 +144,7 @@ export default async function LeadsPage({
     <LeadsClient
       leads={leads}
       options={options}
+      organizationId={organizationId}
       organizationName={organization?.name ?? "Sync Marketing"}
       periodLabel={range.label}
       role={userRole}

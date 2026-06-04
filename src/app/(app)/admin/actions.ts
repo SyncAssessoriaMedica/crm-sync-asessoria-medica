@@ -14,6 +14,12 @@ type ActionResult = { ok: true; message: string; data?: unknown } | { ok: false;
 
 const roles = ["super_admin", "gestor_sync", "admin_clinica", "atendente", "leitura"] as const;
 const fieldTypes = ["text", "number", "date", "select", "multiselect", "boolean", "url"] as const;
+const DEFAULT_WEBHOOK_CUSTOM_MAPPINGS = {
+  servico: "servico",
+  campanha: "campanha",
+  conjunto: "conjunto",
+  criativo: "criativo",
+} as const;
 
 async function getContext() {
   const context = await getOrganizationContext();
@@ -683,7 +689,7 @@ export async function createInboundWebhookAction(formData: FormData): Promise<Ac
           source: "",
           procedure: "",
           potential_value: "",
-          custom: {},
+          custom: DEFAULT_WEBHOOK_CUSTOM_MAPPINGS,
         },
       },
       processed: true,
@@ -702,11 +708,11 @@ export async function updateInboundWebhookAction(formData: FormData): Promise<Ac
     const name = asText(formData.get("name")) || "Webhook";
     if (!token) return { ok: false, message: "Webhook nao encontrado." };
 
-    let custom: Record<string, string> = {};
+    let custom: Record<string, string> = { ...DEFAULT_WEBHOOK_CUSTOM_MAPPINGS };
     const rawCustom = asText(formData.get("custom_mappings"));
     if (rawCustom) {
       try {
-        custom = JSON.parse(rawCustom) as Record<string, string>;
+        custom = { ...DEFAULT_WEBHOOK_CUSTOM_MAPPINGS, ...(JSON.parse(rawCustom) as Record<string, string>) };
       } catch {
         return { ok: false, message: "Campos customizados precisam estar em JSON valido." };
       }

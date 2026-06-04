@@ -1503,7 +1503,13 @@ function WebhookConfigCard({
 }) {
   const [showPayload, setShowPayload] = useState(false);
   const url = `${baseUrl}/api/webhooks/inbound/${config.token}`;
-  const customDefault = JSON.stringify(config.mappings.custom ?? {}, null, 2);
+  const customDefault = JSON.stringify({
+    servico: "servico",
+    campanha: "campanha",
+    conjunto: "conjunto",
+    criativo: "criativo",
+    ...(config.mappings.custom ?? {}),
+  }, null, 2);
 
   return (
     <Card className={!config.active ? "opacity-70" : undefined}>
@@ -1578,10 +1584,10 @@ function WebhookConfigCard({
               name="custom_mappings"
               className="min-h-24 w-full rounded-lg border border-border bg-white px-3 py-2 font-mono text-xs outline-none focus:border-brand-green focus:ring-2 focus:ring-brand-green"
               defaultValue={customDefault}
-              placeholder='{"especialidade_desejada": "payload.specialty"}'
+              placeholder='{"servico":"servico","campanha":"campanha","conjunto":"conjunto","criativo":"criativo"}'
             />
             <p className="text-[11px] text-text-muted">
-              Use a chave tecnica do campo customizado. Disponiveis: {customFields.map((field) => field.key).join(", ") || "nenhum"}.
+              Cada linha mapeia chave do campo no CRM para campo recebido no webhook. Se a chave ainda nao existir, o CRM cria automaticamente. Disponiveis: {customFields.map((field) => field.key).join(", ") || "nenhum"}.
             </p>
           </div>
           <label className="flex items-center gap-2 text-sm text-text-secondary">

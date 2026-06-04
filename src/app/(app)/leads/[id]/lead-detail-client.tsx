@@ -81,6 +81,8 @@ const EVENT_ICONS: Record<string, { icon: React.ElementType; color: string }> = 
   message: { icon: MessageSquare, color: "bg-blue-50 text-blue-600" },
 };
 
+const DEFAULT_WEBHOOK_FIELD_KEYS = ["servico", "campanha", "conjunto", "criativo"];
+
 type TagItem = { id: string; name: string; color: string };
 
 type LeadDetailClientProps = {
@@ -103,6 +105,10 @@ export function LeadDetailClient({ lead, options, leadTags: initialLeadTags, not
   const [message, setMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const [followupPaused, setFollowupPaused] = useState(lead.followup_paused);
+  const webhookFields = options.customFields.filter((field) => DEFAULT_WEBHOOK_FIELD_KEYS.includes(field.key));
+  const otherCustomFields = options.customFields.filter((field) => !DEFAULT_WEBHOOK_FIELD_KEYS.includes(field.key));
+  const hasWebhookData = webhookFields.some((field) => formatCustomValue(customValues[field.id]));
+  const hasOtherCustomData = otherCustomFields.some((field) => formatCustomValue(customValues[field.id]));
 
   function exportLead() {
     const row = [
@@ -344,16 +350,6 @@ export function LeadDetailClient({ lead, options, leadTags: initialLeadTags, not
                 <Meta label="Valor Pot." value={lead.potential_value ? formatCurrency(lead.potential_value) : undefined} strong />
                 <Meta label="Valor Fechado" value={lead.closed_value ? formatCurrency(lead.closed_value) : undefined} strong />
               </div>
-              {options.customFields.length > 0 && (
-                <>
-                  <Separator />
-                  <div className="grid grid-cols-2 gap-3">
-                    {options.customFields.map((field) => (
-                      <Meta key={field.id} label={field.name} value={formatCustomValue(customValues[field.id])} />
-                    ))}
-                  </div>
-                </>
-              )}
               {options.tags.length > 0 && (
                 <>
                   <Separator />
@@ -447,6 +443,47 @@ export function LeadDetailClient({ lead, options, leadTags: initialLeadTags, not
                   <p className="label-eyebrow">Potencial de Receita</p>
                   <p className="text-lg font-black text-text-primary">{formatCurrency(lead.potential_value)}</p>
                 </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {(webhookFields.length > 0 || otherCustomFields.length > 0) && (
+            <Card>
+              <CardHeader className="pb-2">
+                <p className="label-eyebrow text-text-muted">Dados recebidos</p>
+                <h2 className="text-sm font-black text-text-primary">Parametros do lead</h2>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {webhookFields.length > 0 && (
+                  <div className="grid grid-cols-2 gap-3">
+                    {webhookFields.map((field) => (
+                      <Meta key={field.id} label={field.name} value={formatCustomValue(customValues[field.id])} />
+                    ))}
+                  </div>
+                )}
+                {!hasWebhookData && webhookFields.length > 0 && (
+                  <p className="rounded-lg border border-border bg-background-subtle px-3 py-2 text-xs text-text-muted">
+                    Nenhum parametro padrao recebido para este lead.
+                  </p>
+                )}
+                {otherCustomFields.length > 0 && (
+                  <>
+                    {webhookFields.length > 0 && <Separator />}
+                    <div>
+                      <p className="label-eyebrow mb-2 text-text-muted">Outros campos</p>
+                      <div className="grid grid-cols-2 gap-3">
+                        {otherCustomFields.map((field) => (
+                          <Meta key={field.id} label={field.name} value={formatCustomValue(customValues[field.id])} />
+                        ))}
+                      </div>
+                    </div>
+                    {!hasOtherCustomData && (
+                      <p className="rounded-lg border border-border bg-background-subtle px-3 py-2 text-xs text-text-muted">
+                        Nenhum outro campo preenchido.
+                      </p>
+                    )}
+                  </>
+                )}
               </CardContent>
             </Card>
           )}

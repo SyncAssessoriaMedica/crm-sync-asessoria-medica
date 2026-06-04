@@ -4,6 +4,13 @@ import { checkRateLimit, getRateLimitKey } from "@/lib/rate-limit";
 import { sanitizePayload } from "@/lib/sanitize";
 import { createOrUpdateLeadByPhone } from "@/lib/lead-upsert";
 
+const DEFAULT_WEBHOOK_CUSTOM_MAPPINGS: Record<string, string> = {
+  servico: "servico",
+  campanha: "campanha",
+  conjunto: "conjunto",
+  criativo: "criativo",
+};
+
 type WebhookConfigPayload = {
   token?: string;
   name?: string;
@@ -56,6 +63,14 @@ function normalizePhone(value: unknown) {
   return toText(value).replace(/\D/g, "");
 }
 
+function labelFromKey(key: string) {
+  return key
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
 async function resolveSource(admin: ReturnType<typeof createAdminClient>, organizationId: string, sourceValue: unknown) {
   const name = toText(sourceValue) || "Webhook";
   const { data: existing } = await admin
@@ -83,16 +98,41 @@ async function saveCustomFields(
   payload: unknown,
   customMappings?: Record<string, string>
 ) {
-  if (!customMappings || Object.keys(customMappings).length === 0) return;
+  const mappings = { ...DEFAULT_WEBHOOK_CUSTOM_MAPPINGS, ...(customMappings ?? {}) };
+  if (Object.keys(mappings).length === 0) return;
   const { data: fields } = await admin
     .from("custom_fields")
     .select("id, key")
     .eq("organization_id", organizationId);
 
+  const fieldsByKey = new Map((fields ?? []).map((field) => [field.key, field]));
+  const missingKeys = Object.keys(mappings).filter((key) => !fieldsByKey.has(key));
+
+  if (missingKeys.length > 0) {
+    const { data: createdFields } = await admin
+      .from("custom_fields")
+      .insert(
+        missingKeys.map((key, index) => ({
+          organization_id: organizationId,
+          name: labelFromKey(key),
+          key,
+          field_type: "text",
+          required: false,
+          order: 300 + index,
+        }))
+      )
+      .select("id, key");
+
+    for (const field of createdFields ?? []) {
+      fieldsByKey.set(field.key, field);
+    }
+  }
+
   const rows: Array<{ lead_id: string; field_id: string; value: string }> = [];
-  for (const field of fields ?? []) {
-    const path = customMappings[field.key];
+  for (const [key, path] of Object.entries(mappings)) {
+    const field = fieldsByKey.get(key);
     if (!path) continue;
+    if (!field?.id) continue;
     const value = getByPath(payload, path);
     if (value === undefined || value === null || value === "") continue;
     rows.push({

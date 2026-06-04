@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   AlertCircle,
   ChevronDown,
@@ -40,6 +41,7 @@ import {
 } from "@/components/ui/select";
 import { cn, formatCurrency, formatDate, formatPhone, getInitials } from "@/lib/utils";
 import { LOCATION_STATUS_LABELS } from "@/lib/lead-location";
+import { createClient } from "@/lib/supabase/client";
 import type { LeadListItem, LeadOptionData } from "./types";
 import {
   createLeadAction,
@@ -54,12 +56,14 @@ import { BulkEditModal } from "./bulk-edit-modal";
 type LeadsClientProps = {
   leads: LeadListItem[];
   options: LeadOptionData;
+  organizationId: string;
   organizationName: string;
   periodLabel: string;
   role: string;
 };
 
-export function LeadsClient({ leads, options, organizationName, periodLabel, role }: LeadsClientProps) {
+export function LeadsClient({ leads, options, organizationId, organizationName, periodLabel, role }: LeadsClientProps) {
+  const router = useRouter();
   const [search, setSearch] = useState("");
   const [stageFilter, setStageFilter] = useState("all");
   const [sourceFilter, setSourceFilter] = useState("all");
@@ -75,6 +79,45 @@ export function LeadsClient({ leads, options, organizationName, periodLabel, rol
   const [editingCustomValues, setEditingCustomValues] = useState<Record<string, string>>({});
   const [message, setMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+
+  useEffect(() => {
+    const supabase = createClient();
+    let refreshTimer: number | null = null;
+
+    const refreshSoon = () => {
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        if (document.visibilityState === "visible") router.refresh();
+      }, 500);
+    };
+
+    const channel = supabase
+      .channel(`leads-live-${organizationId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "leads", filter: `organization_id=eq.${organizationId}` },
+        refreshSoon
+      )
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "webhook_events", filter: `organization_id=eq.${organizationId}` },
+        refreshSoon
+      )
+      .subscribe();
+
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") router.refresh();
+    }, 20_000);
+    const onFocus = () => router.refresh();
+    window.addEventListener("focus", onFocus);
+
+    return () => {
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+      void supabase.removeChannel(channel);
+    };
+  }, [organizationId, router]);
 
   // ── Bulk selection ──────────────────────────────────────────────────────────
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
