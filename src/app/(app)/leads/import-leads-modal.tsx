@@ -153,6 +153,8 @@ export function ImportLeadsModal({ open, options, onClose, onSuccess }: ImportLe
   const [rawRows, setRawRows] = useState<RawRow[]>([]);
   const [mapping, setMapping] = useState<Record<string, string>>({});
   const [stageId, setStageId] = useState("none");
+  const [globalSourceId, setGlobalSourceId] = useState("none");
+  const [globalServiceId, setGlobalServiceId] = useState("none");
   const [parseError, setParseError] = useState<string | null>(null);
   const [isParsing, setIsParsing] = useState(false);
   const [result, setResult] = useState<{ created: number; updated: number; message: string } | null>(null);
@@ -165,6 +167,8 @@ export function ImportLeadsModal({ open, options, onClose, onSuccess }: ImportLe
     setRawRows([]);
     setMapping({});
     setStageId("none");
+    setGlobalSourceId("none");
+    setGlobalServiceId("none");
     setParseError(null);
     setResult(null);
   }, []);
@@ -227,8 +231,10 @@ export function ImportLeadsModal({ open, options, onClose, onSuccess }: ImportLe
 
   function handleImport() {
     const finalStageId = stageId === "none" ? undefined : stageId;
+    const finalSourceId = globalSourceId === "none" ? undefined : globalSourceId;
+    const finalServiceId = globalServiceId === "none" ? undefined : globalServiceId;
     startTransition(async () => {
-      const res = await importLeadsAction(valid, finalStageId);
+      const res = await importLeadsAction(valid, finalStageId, finalSourceId, finalServiceId);
       if (res.ok) {
         setResult({ created: res.created, updated: res.updated, message: res.message });
         onSuccess(res.message);
@@ -393,21 +399,6 @@ export function ImportLeadsModal({ open, options, onClose, onSuccess }: ImportLe
                 </div>
               </div>
 
-              <div>
-                <p className="mb-2 text-xs font-semibold text-text-primary">Etapa do funil (todos os leads)</p>
-                <Select value={stageId} onValueChange={setStageId}>
-                  <SelectTrigger className="h-8 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">Sem etapa</SelectItem>
-                    {options.stages.map((stage) => (
-                      <SelectItem key={stage.id} value={stage.id}>{stage.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
               {!canProceedStep2 && (
                 <div className="flex items-center gap-2 rounded-lg border border-warning-amber/30 bg-warning-amber/10 px-3 py-2 text-xs font-medium text-warning-amber">
                   <AlertCircle className="h-3.5 w-3.5 shrink-0" />
@@ -430,6 +421,54 @@ export function ImportLeadsModal({ open, options, onClose, onSuccess }: ImportLe
                 </div>
               ) : (
                 <>
+                  <div className="rounded-lg border border-border bg-background-subtle p-3">
+                    <p className="mb-3 text-xs font-semibold text-text-primary">Aplicar a todos os leads</p>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="space-y-1">
+                        <p className="label-eyebrow text-text-muted">Etapa do funil</p>
+                        <Select value={stageId} onValueChange={setStageId}>
+                          <SelectTrigger className="h-8 text-xs">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="none">Sem etapa</SelectItem>
+                            {options.stages.map((s) => (
+                              <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1">
+                        <p className="label-eyebrow text-text-muted">Origem</p>
+                        <Select value={globalSourceId} onValueChange={setGlobalSourceId}>
+                          <SelectTrigger className="h-8 text-xs">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="none">Sem origem</SelectItem>
+                            {options.sources.filter((s) => s.active !== false).map((s) => (
+                              <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1">
+                        <p className="label-eyebrow text-text-muted">Serviço</p>
+                        <Select value={globalServiceId} onValueChange={setGlobalServiceId}>
+                          <SelectTrigger className="h-8 text-xs">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="none">Sem serviço</SelectItem>
+                            {options.services.filter((s) => s.active !== false).map((s) => (
+                              <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="grid grid-cols-3 gap-3">
                     <div className="rounded-lg border border-border bg-background-subtle p-3 text-center">
                       <p className="text-2xl font-black text-text-primary">{valid.length}</p>

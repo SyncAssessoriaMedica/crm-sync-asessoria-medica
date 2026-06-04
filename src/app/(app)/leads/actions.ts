@@ -863,7 +863,9 @@ function normalizeStr(str: string): string {
 
 export async function importLeadsAction(
   rows: LeadImportRow[],
-  stageId?: string
+  stageId?: string,
+  globalSourceId?: string,
+  globalServiceId?: string,
 ): Promise<{ ok: boolean; message: string; created: number; updated: number }> {
   try {
     const { admin, organizationId } = await getCurrentContext();
@@ -900,8 +902,12 @@ export async function importLeadsAction(
         procedure: row.procedure?.trim() || null,
         observations: row.observations?.trim() || null,
         potential_value: row.potential_value ?? null,
-        source_id: row.source_name ? (sourceMap.get(normalizeStr(row.source_name)) ?? null) : null,
-        service_id: row.service_name ? (serviceMap.get(normalizeStr(row.service_name)) ?? null) : null,
+        source_id: row.source_name
+          ? (sourceMap.get(normalizeStr(row.source_name)) ?? globalSourceId ?? null)
+          : (globalSourceId ?? null),
+        service_id: row.service_name
+          ? (serviceMap.get(normalizeStr(row.service_name)) ?? globalServiceId ?? null)
+          : (globalServiceId ?? null),
         stage_id: normalizedStageId,
         status,
       };
