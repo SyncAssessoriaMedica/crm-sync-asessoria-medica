@@ -12,7 +12,10 @@ import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -29,7 +32,7 @@ type Step = 1 | 2 | 3;
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-const FIELD_OPTIONS: { value: string; label: string }[] = [
+const BASE_FIELD_OPTIONS: { value: string; label: string }[] = [
   { value: "ignore", label: "Ignorar" },
   { value: "name", label: "Nome *" },
   { value: "phone", label: "Telefone *" },
@@ -101,17 +104,28 @@ function buildMappedLeads(
 
   for (const row of rawRows) {
     const lead: Partial<LeadImportRow> = {};
+    const customFieldValues: Record<string, string> = {};
+
     for (const [col, field] of Object.entries(mapping)) {
       if (field === "ignore") continue;
       const val = row[col]?.toString().trim();
       if (!val) continue;
-      if (field === "potential_value") {
+
+      if (field.startsWith("custom:")) {
+        const fieldId = field.slice(7);
+        customFieldValues[fieldId] = val;
+      } else if (field === "potential_value") {
         const num = parseFloat(val.replace(/[^\d.,]/g, "").replace(",", "."));
         if (!isNaN(num)) lead.potential_value = num;
       } else {
         (lead as Record<string, string>)[field] = val;
       }
     }
+
+    if (Object.keys(customFieldValues).length > 0) {
+      lead.customFieldValues = customFieldValues;
+    }
+
     if (lead.name && lead.phone) {
       valid.push(lead as LeadImportRow);
     } else {
@@ -170,7 +184,18 @@ export function ImportLeadsModal({ open, options, onClose, onSuccess }: ImportLe
       setHeaders(h);
       setRawRows(r);
       const initialMapping: Record<string, string> = {};
-      for (const col of h) initialMapping[col] = autoDetectField(col);
+      for (const col of h) {
+        // First try standard field detection
+        const standard = autoDetectField(col);
+        if (standard !== "ignore") {
+          initialMapping[col] = standard;
+          continue;
+        }
+        // Then try matching against custom field names
+        const n = normalizeStr(col);
+        const matchedCustom = options.customFields.find((f) => normalizeStr(f.name) === n || normalizeStr(f.key) === n);
+        initialMapping[col] = matchedCustom ? `custom:${matchedCustom.id}` : "ignore";
+      }
       setMapping(initialMapping);
       setStep(2);
     } catch (err) {
@@ -336,9 +361,25 @@ export function ImportLeadsModal({ open, options, onClose, onSuccess }: ImportLe
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
-                                {FIELD_OPTIONS.map((opt) => (
-                                  <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
-                                ))}
+                                <SelectGroup>
+                                  <SelectLabel className="text-[10px]">Campos padrão</SelectLabel>
+                                  {BASE_FIELD_OPTIONS.map((opt) => (
+                                    <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                                  ))}
+                                </SelectGroup>
+                                {options.customFields.length > 0 && (
+                                  <>
+                                    <SelectSeparator />
+                                    <SelectGroup>
+                                      <SelectLabel className="text-[10px]">Parâmetros customizados</SelectLabel>
+                                      {options.customFields.map((field) => (
+                                        <SelectItem key={field.id} value={`custom:${field.id}`}>
+                                          {field.name}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectGroup>
+                                  </>
+                                )}
                               </SelectContent>
                             </Select>
                           </td>

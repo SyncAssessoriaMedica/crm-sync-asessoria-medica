@@ -854,6 +854,7 @@ export type LeadImportRow = {
   potential_value?: number | null;
   source_name?: string;
   service_name?: string;
+  customFieldValues?: Record<string, string>; // field_id → value
 };
 
 function normalizeStr(str: string): string {
@@ -918,6 +919,30 @@ export async function importLeadsAction(
     }
     for (const { id, data } of toUpdate) {
       await admin.from("leads").update(data).eq("id", id).eq("organization_id", organizationId);
+    }
+
+    // Save custom field values for rows that have them
+    const hasCustomFields = rows.some((r) => r.customFieldValues && Object.keys(r.customFieldValues).length > 0);
+    if (hasCustomFields) {
+      const allPhones = rows.map((r) => r.phone.replace(/\D/g, "")).filter(Boolean);
+      const { data: allLeads } = await admin
+        .from("leads")
+        .select("id, phone")
+        .eq("organization_id", organizationId)
+        .in("phone", allPhones);
+      const freshPhoneToId = new Map((allLeads ?? []).map((l) => [l.phone.replace(/\D/g, ""), l.id as string]));
+      const cfValues: Array<{ lead_id: string; field_id: string; value: string | null }> = [];
+      for (const row of rows) {
+        if (!row.customFieldValues) continue;
+        const leadId = freshPhoneToId.get(row.phone.replace(/\D/g, ""));
+        if (!leadId) continue;
+        for (const [fieldId, value] of Object.entries(row.customFieldValues)) {
+          cfValues.push({ lead_id: leadId, field_id: fieldId, value: value || null });
+        }
+      }
+      if (cfValues.length) {
+        await admin.from("custom_field_values").upsert(cfValues, { onConflict: "lead_id,field_id" });
+      }
     }
 
     revalidatePath("/leads");
