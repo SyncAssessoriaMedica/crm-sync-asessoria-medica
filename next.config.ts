@@ -11,8 +11,8 @@ const securityHeaders = [
   { key: "X-Frame-Options", value: "SAMEORIGIN" },
   // Limits which referrer information is sent in cross-origin requests.
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-  // Disables browser features not used by the app.
-  { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=()" },
+  // Voice recording needs microphone access, restricted to this app's own origin.
+  { key: "Permissions-Policy", value: "camera=(), microphone=(self), geolocation=(), payment=()" },
   // HSTS: tells browsers to only connect via HTTPS for 2 years.
   // Vercel enforces HTTPS in production so this is always appropriate here.
   { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains; preload" },
