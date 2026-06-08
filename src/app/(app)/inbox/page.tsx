@@ -21,6 +21,14 @@ function getDateMode(value?: string): InboxDateMode {
   return value === "created" ? "created" : "activity";
 }
 
+function phoneToRemoteJid(phone: string | null | undefined) {
+  let digits = (phone ?? "").replace(/\D/g, "");
+  if ((digits.length === 10 || digits.length === 11) && !digits.startsWith("55")) {
+    digits = `55${digits}`;
+  }
+  return digits ? `${digits}@s.whatsapp.net` : null;
+}
+
 export const dynamic = "force-dynamic";
 
 export default async function InboxPage({
@@ -187,6 +195,72 @@ export default async function InboxPage({
 
       if (leadConversation?.id) {
         redirect(`/inbox?conversation=${leadConversation.id}`);
+      }
+
+      const instances = ((instancesResult.data ?? []) as InboxInstance[]).filter((instance) => !instance.deleted_at);
+      const selectedInstance =
+        instances.find((instance) => instance.status === "connected") ??
+        instances[0] ??
+        null;
+
+      if (selectedInstance?.id) {
+        const { data: lead } = await admin
+          .from("leads")
+          .select("id, phone")
+          .eq("id", leadParam)
+          .eq("organization_id", organizationId)
+          .maybeSingle();
+
+        const remoteJid = phoneToRemoteJid(lead?.phone);
+
+        if (lead?.id && remoteJid) {
+          const { data: existingByPhone } = await admin
+            .from("conversations")
+            .select("id, lead_id")
+            .eq("instance_id", selectedInstance.id)
+            .eq("remote_jid", remoteJid)
+            .maybeSingle();
+
+          if (existingByPhone?.id) {
+            if (!existingByPhone.lead_id) {
+              await admin.from("conversations").update({ lead_id: lead.id }).eq("id", existingByPhone.id);
+            }
+            redirect(`/inbox?conversation=${existingByPhone.id}`);
+          }
+
+          const { data: createdConversation, error: createConversationError } = await admin
+            .from("conversations")
+            .insert({
+              organization_id: organizationId,
+              instance_id: selectedInstance.id,
+              lead_id: lead.id,
+              remote_jid: remoteJid,
+              unread_count: 0,
+              status: "open",
+            })
+            .select("id")
+            .maybeSingle();
+
+          if (createdConversation?.id) {
+            redirect(`/inbox?conversation=${createdConversation.id}`);
+          }
+
+          if (createConversationError?.code === "23505") {
+            const { data: racedConversation } = await admin
+              .from("conversations")
+              .select("id, lead_id")
+              .eq("instance_id", selectedInstance.id)
+              .eq("remote_jid", remoteJid)
+              .maybeSingle();
+
+            if (racedConversation?.id) {
+              if (!racedConversation.lead_id) {
+                await admin.from("conversations").update({ lead_id: lead.id }).eq("id", racedConversation.id);
+              }
+              redirect(`/inbox?conversation=${racedConversation.id}`);
+            }
+          }
+        }
       }
     }
   }

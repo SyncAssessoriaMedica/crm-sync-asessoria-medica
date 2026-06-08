@@ -692,13 +692,11 @@ export function LeadsClient({
                                 <MessageCircle /> Abrir WhatsApp
                               </a>
                             </DropdownMenuItem>
-                            {lead.inbox_conversation_id && (
-                              <DropdownMenuItem asChild>
-                                <Link href={`/inbox?conversation=${lead.inbox_conversation_id}`}>
-                                  <Inbox /> Abrir conversa no Inbox
-                                </Link>
-                              </DropdownMenuItem>
-                            )}
+                            <DropdownMenuItem asChild>
+                              <Link href={lead.inbox_conversation_id ? `/inbox?conversation=${lead.inbox_conversation_id}` : `/inbox?lead=${lead.id}`}>
+                                <Inbox /> Abrir conversa no Inbox
+                              </Link>
+                            </DropdownMenuItem>
                             <DropdownMenuItem onClick={() => exportCsv([lead])}>
                               <Download /> Exportar este lead
                             </DropdownMenuItem>
