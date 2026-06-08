@@ -24,6 +24,7 @@ import {
   type ServiceAreaSettings,
 } from "@/lib/lead-location";
 import { getOrganizationContext } from "@/lib/organization-context";
+import { fetchAllRows } from "@/lib/supabase-pagination";
 import { cn, formatCurrency, formatNumber, formatPercent } from "@/lib/utils";
 import type { ConversionFunnelItem, DailyLeadsData, LeadStatus, LeadsByLocation, LeadsBySource } from "@/lib/types";
 
@@ -52,6 +53,12 @@ type DashboardLead = {
   detected_state: string | null;
   phone_ddd: string | null;
   service_area_status: "inside" | "possible" | "outside" | "unknown";
+};
+
+type DashboardLeadRow = Omit<DashboardLead, "source" | "service" | "stage"> & {
+  source: DashboardLead["source"] | NonNullable<DashboardLead["source"]>[];
+  service: DashboardLead["service"] | NonNullable<DashboardLead["service"]>[];
+  stage: DashboardLead["stage"] | NonNullable<DashboardLead["stage"]>[];
 };
 
 type StageOption = {
@@ -464,17 +471,19 @@ export default async function DashboardPage({
   // Batch 1 — all independent queries in parallel
   const [leadsResult, tasksResult, openConvsResult, allConvsResult, pipelinesResult, settingsResult, servicesResult] =
     await Promise.all([
-      admin
-        .from("leads")
-        .select(
-          `id, source_id, service_id, stage_id, status, potential_value, closed_value, created_at, last_interaction_at,
-           detected_city, detected_state, phone_ddd, service_area_status,
-           source:lead_sources(name),
-           service:clinic_services(id, name, active),
-           stage:pipeline_stages(id, name, order)`
-        )
-        .eq("organization_id", organizationId)
-        .order("created_at", { ascending: false }),
+      fetchAllRows<DashboardLeadRow>(() =>
+        admin
+          .from("leads")
+          .select(
+            `id, source_id, service_id, stage_id, status, potential_value, closed_value, created_at, last_interaction_at,
+             detected_city, detected_state, phone_ddd, service_area_status,
+             source:lead_sources(name),
+             service:clinic_services(id, name, active),
+             stage:pipeline_stages(id, name, order)`
+          )
+          .eq("organization_id", organizationId)
+          .order("created_at", { ascending: false })
+      ),
       admin
         .from("lead_tasks")
         .select("id, due_at, completed_at, lead:leads!inner(id, organization_id)")

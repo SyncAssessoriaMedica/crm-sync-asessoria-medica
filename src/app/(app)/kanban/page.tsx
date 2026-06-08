@@ -1,6 +1,7 @@
 import { canAccessRoute } from "@/lib/permissions";
 import { getDateRangeFromParams } from "@/lib/date-range";
 import { getOrganizationContext } from "@/lib/organization-context";
+import { fetchAllRows } from "@/lib/supabase-pagination";
 import { AccessDenied } from "@/components/layout/access-denied";
 import { KanbanClient } from "./kanban-client";
 import type { LeadListItem, LeadOptionData } from "../leads/types";
@@ -22,22 +23,24 @@ export default async function KanbanPage({
   }
 
   const [leadsResult, sourcesResult, servicesResult, pipelinesResult] = await Promise.all([
-    admin
-      .from("leads")
-      .select(
+    fetchAllRows<LeadListItem>(() =>
+      admin
+        .from("leads")
+        .select(
+          `
+          *,
+          source:lead_sources(*),
+          service:clinic_services(*),
+          stage:pipeline_stages(*),
+          lead_tags(tags(*)),
+          custom_field_values(field_id, value)
         `
-        *,
-        source:lead_sources(*),
-        service:clinic_services(*),
-        stage:pipeline_stages(*),
-        lead_tags(tags(*)),
-        custom_field_values(field_id, value)
-      `
-      )
-      .eq("organization_id", organizationId)
-      .gte("created_at", range.start.toISOString())
-      .lt("created_at", range.end.toISOString())
-      .order("updated_at", { ascending: false }),
+        )
+        .eq("organization_id", organizationId)
+        .gte("created_at", range.start.toISOString())
+        .lt("created_at", range.end.toISOString())
+        .order("updated_at", { ascending: false })
+    ),
     admin
       .from("lead_sources")
       .select("*")
