@@ -1,9 +1,29 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { ChevronDown, Clock, DollarSign, Filter, Inbox, MapPin, MessageCircle, Search, Tag, User, X } from "lucide-react";
+import {
+  AlertCircle,
+  ChevronDown,
+  Clock,
+  DollarSign,
+  FileText,
+  Filter,
+  ImageIcon,
+  Inbox,
+  MapPin,
+  MessageCircle,
+  Mic,
+  Paperclip,
+  Search,
+  Send,
+  Smile,
+  Tag,
+  User,
+  Video,
+  X,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -19,10 +39,25 @@ import { createClient } from "@/lib/supabase/client";
 import { LOCATION_STATUS_LABELS } from "@/lib/lead-location";
 import { cn, formatCurrency, formatDateTime, formatPhone, formatTimeAgo, getInitials } from "@/lib/utils";
 import { AppointmentScheduler } from "@/components/leads/appointment-scheduler";
-import { cancelBhAutoReplyAction, markConversationReadAction, updateConversationStatusAction } from "./actions";
+import {
+  cancelBhAutoReplyAction,
+  markConversationReadAction,
+  retryInboxMessageAction,
+  sendInboxMessageAction,
+  updateConversationStatusAction,
+} from "./actions";
 import { updateLeadSourceAction, updateLeadStageAction } from "../leads/actions";
 import { MessageBubble } from "./message-media";
-import type { BhAutoReplyQueueItem, InboxConversation, InboxMessage, InboxService, InboxSource, InboxStage } from "./types";
+import type {
+  BhAutoReplyQueueItem,
+  InboxConversation,
+  InboxMessage,
+  InboxService,
+  InboxSource,
+  InboxStage,
+} from "./types";
+
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 const MEDIA_LABELS: Record<string, string> = {
   image: "Imagem",
@@ -46,6 +81,22 @@ const STATUS_LABELS: Record<string, string> = {
 
 const FOLLOWUP_CUTOFF_MS = 48 * 60 * 60 * 1000;
 
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type AttachmentType = "image" | "audio" | "video" | "document" | "sticker";
+
+type ComposerAttachment = {
+  type: AttachmentType;
+  file: File;
+  localUrl: string;
+  uploadedUrl?: string;
+  mimetype: string;
+  filename: string;
+  size: number;
+  uploadStatus: "uploading" | "uploaded" | "failed";
+  error?: string;
+};
+
 type InboxClientProps = {
   organizationId: string;
   conversations: InboxConversation[];
@@ -59,6 +110,8 @@ type InboxClientProps = {
   initialActiveConversationId?: string;
   dateMode: "activity" | "created";
 };
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function cleanJid(remoteJid: string) {
   return remoteJid.replace("@s.whatsapp.net", "").replace("@c.us", "");
@@ -75,6 +128,45 @@ function needsFollowup48h(conversation: InboxConversation) {
   if (!lastMessage || conversation.status !== "open") return false;
   return lastMessage.direction === "inbound" && Date.now() - new Date(lastMessage.created_at).getTime() > FOLLOWUP_CUTOFF_MS;
 }
+
+function mergeMessages(
+  serverMessages: InboxMessage[],
+  optimisticMessages: InboxMessage[],
+  statusOverrides: Record<string, { send_status: InboxMessage["send_status"]; send_error: string | null }>
+): InboxMessage[] {
+  // Server messages whose client_message_id we already have — don't duplicate optimistic
+  const serverClientIds = new Set(serverMessages.map((m) => m.client_message_id).filter(Boolean) as string[]);
+
+  const result: InboxMessage[] = serverMessages.map((m) => {
+    const override = statusOverrides[m.id];
+    return override ? { ...m, ...override } : m;
+  });
+
+  // Only include optimistic messages not yet confirmed by server
+  for (const opt of optimisticMessages) {
+    if (!opt.client_message_id || !serverClientIds.has(opt.client_message_id)) {
+      const override = statusOverrides[opt.id];
+      result.push(override ? { ...opt, ...override } : opt);
+    }
+  }
+
+  result.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  return result;
+}
+
+const ACCEPT_BY_TYPE: Record<AttachmentType, string> = {
+  image: "image/jpeg,image/png,image/webp",
+  audio: "audio/ogg,audio/mpeg,audio/mp3,audio/wav,audio/webm,audio/mp4,audio/x-m4a",
+  video: "video/mp4,video/webm,video/3gpp,video/quicktime",
+  document:
+    "application/pdf,text/plain,text/csv,application/zip,application/msword," +
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document," +
+    "application/vnd.ms-excel," +
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  sticker: "image/webp",
+};
+
+// ─── ConversationItem ─────────────────────────────────────────────────────────
 
 function ConversationItem({
   conversation,
@@ -123,12 +215,414 @@ function ConversationItem({
   );
 }
 
-export function InboxClient({ organizationId, conversations, messagesByConversation, bhAutoRepliesByConversation, instances, sources, services, stages, initialSearch, initialActiveConversationId, dateMode }: InboxClientProps) {
+// ─── AttachmentPreview ────────────────────────────────────────────────────────
+
+function AttachmentPreview({
+  attachment,
+  onRemove,
+}: {
+  attachment: ComposerAttachment;
+  onRemove: () => void;
+}) {
+  const isUploading = attachment.uploadStatus === "uploading";
+  const isFailed = attachment.uploadStatus === "failed";
+
+  return (
+    <div className="relative mb-2 rounded-lg border border-border bg-background-subtle p-2">
+      <button
+        type="button"
+        onClick={onRemove}
+        className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-text-muted text-white hover:bg-danger-red"
+        aria-label="Remover anexo"
+      >
+        <X className="h-2.5 w-2.5" />
+      </button>
+
+      {attachment.type === "image" && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={attachment.localUrl}
+          alt="Preview"
+          className="max-h-28 max-w-full rounded object-contain"
+        />
+      )}
+      {attachment.type === "sticker" && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={attachment.localUrl}
+          alt="Figurinha"
+          className="h-20 w-20 object-contain"
+        />
+      )}
+      {attachment.type === "audio" && (
+        <div className="flex items-center gap-2">
+          <Mic className="h-4 w-4 shrink-0 text-brand-green-dark" />
+          <span className="truncate text-xs font-medium text-text-secondary">{attachment.filename}</span>
+        </div>
+      )}
+      {attachment.type === "video" && (
+        <div className="flex items-center gap-2">
+          <Video className="h-4 w-4 shrink-0 text-brand-green-dark" />
+          <span className="truncate text-xs font-medium text-text-secondary">{attachment.filename}</span>
+        </div>
+      )}
+      {attachment.type === "document" && (
+        <div className="flex items-center gap-2">
+          <FileText className="h-4 w-4 shrink-0 text-brand-green-dark" />
+          <div className="min-w-0">
+            <p className="truncate text-xs font-medium text-text-secondary">{attachment.filename}</p>
+            <p className="text-[10px] text-text-muted">{(attachment.size / 1024).toFixed(0)} KB</p>
+          </div>
+        </div>
+      )}
+
+      {isUploading && (
+        <div className="mt-1 flex items-center gap-1 text-[10px] text-text-muted">
+          <span className="inline-block h-2 w-2 animate-spin rounded-full border border-brand-green border-t-transparent" />
+          Enviando arquivo...
+        </div>
+      )}
+      {isFailed && (
+        <div className="mt-1 flex items-center gap-1 text-[10px] text-danger-red">
+          <AlertCircle className="h-3 w-3" />
+          {attachment.error ?? "Falha no upload"}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Composer ─────────────────────────────────────────────────────────────────
+
+function Composer({
+  activeConvId,
+  isConnected,
+  onOptimisticAdd,
+  onOptimisticUpdate,
+}: {
+  activeConvId: string;
+  isConnected: boolean;
+  onOptimisticAdd: (message: InboxMessage) => void;
+  onOptimisticUpdate: (clientMessageId: string, patch: Partial<InboxMessage>) => void;
+}) {
+  const [draftText, setDraftText] = useState("");
+  const [attachment, setAttachment] = useState<ComposerAttachment | null>(null);
+  const [sending, setSending] = useState(false);
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const attachTypeRef = useRef<AttachmentType>("image");
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const attachMenuRef = useRef<HTMLDivElement>(null);
+  const attachmentUrlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    attachmentUrlRef.current = attachment?.localUrl ?? null;
+  }, [attachment?.localUrl]);
+
+  // Cleanup the currently selected preview when the composer unmounts.
+  useEffect(() => {
+    return () => {
+      if (attachmentUrlRef.current?.startsWith("blob:")) {
+        URL.revokeObjectURL(attachmentUrlRef.current);
+      }
+    };
+  }, []);
+
+  // Close attach menu on outside click
+  useEffect(() => {
+    if (!attachMenuOpen) return;
+    function handleOutside(e: MouseEvent) {
+      if (attachMenuRef.current && !attachMenuRef.current.contains(e.target as Node)) {
+        setAttachMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, [attachMenuOpen]);
+
+  function openFilePicker(type: AttachmentType) {
+    attachTypeRef.current = type;
+    setAttachMenuOpen(false);
+    if (fileInputRef.current) {
+      fileInputRef.current.accept = ACCEPT_BY_TYPE[type];
+      fileInputRef.current.value = "";
+      fileInputRef.current.click();
+    }
+  }
+
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const type = attachTypeRef.current;
+    const localUrl = URL.createObjectURL(file);
+    if (attachment?.localUrl.startsWith("blob:")) URL.revokeObjectURL(attachment.localUrl);
+    const newAttachment: ComposerAttachment = {
+      type,
+      file,
+      localUrl,
+      mimetype: file.type || "application/octet-stream",
+      filename: file.name,
+      size: file.size,
+      uploadStatus: "uploading",
+    };
+    setAttachment(newAttachment);
+
+    // Upload immediately
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("type", type);
+      const res = await fetch("/api/inbox/upload-media", { method: "POST", body: form });
+      const json = (await res.json()) as { ok: boolean; url?: string; mimetype?: string; filename?: string; error?: string };
+
+      if (!json.ok || !json.url) {
+        setAttachment((prev) =>
+          prev?.localUrl === localUrl
+            ? { ...prev, uploadStatus: "failed", error: json.error ?? "Falha no upload" }
+            : prev
+        );
+      } else {
+        setAttachment((prev) =>
+          prev?.localUrl === localUrl
+            ? {
+                ...prev,
+                uploadStatus: "uploaded",
+                uploadedUrl: json.url,
+                mimetype: json.mimetype ?? prev.mimetype,
+                filename: json.filename ?? prev.filename,
+              }
+            : prev
+        );
+      }
+    } catch {
+      setAttachment((prev) =>
+        prev?.localUrl === localUrl
+          ? { ...prev, uploadStatus: "failed", error: "Erro de rede no upload" }
+          : prev
+      );
+    }
+  }
+
+  function removeAttachment() {
+    if (attachment?.localUrl.startsWith("blob:")) URL.revokeObjectURL(attachment.localUrl);
+    setAttachment(null);
+  }
+
+  const canSend =
+    isConnected &&
+    !sending &&
+    (!attachment || attachment.uploadStatus === "uploaded") &&
+    (draftText.trim().length > 0 || attachment !== null);
+
+  async function handleSend() {
+    if (!canSend) return;
+
+    const clientMessageId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const trimmedText = draftText.trim();
+    const hasAttachment = attachment && attachment.uploadStatus === "uploaded";
+    const sentLocalUrl = hasAttachment ? attachment.localUrl : null;
+
+    const messageType = hasAttachment ? attachment.type : "text";
+
+    // Build optimistic message with a temporary ID
+    const optimistic: InboxMessage = {
+      id: `opt-${clientMessageId}`,
+      conversation_id: activeConvId,
+      direction: "outbound",
+      message_type: messageType as InboxMessage["message_type"],
+      content: trimmedText || null,
+      media_url: hasAttachment ? attachment.localUrl : null,
+      media_mimetype: hasAttachment ? attachment.mimetype : null,
+      media_filename: hasAttachment ? attachment.filename : null,
+      media_duration: null,
+      created_at: now,
+      delivered_at: null,
+      read_at: null,
+      send_status: "sending",
+      send_error: null,
+      client_message_id: clientMessageId,
+    };
+
+    onOptimisticAdd(optimistic);
+
+    // Clear composer
+    setDraftText("");
+    setAttachment(null);
+    setSending(true);
+
+    const result = await sendInboxMessageAction({
+      conversationId: activeConvId,
+      clientMessageId,
+      messageType: messageType as "text" | "image" | "audio" | "video" | "document" | "sticker",
+      text: trimmedText || null,
+      mediaUrl: hasAttachment ? attachment.uploadedUrl : null,
+      mediaMimetype: hasAttachment ? attachment.mimetype : null,
+      mediaFilename: hasAttachment ? attachment.filename : null,
+      mediaDuration: null,
+    });
+
+    setSending(false);
+
+    if (result.data) {
+      onOptimisticUpdate(clientMessageId, {
+        id: result.data.id,
+        send_status: result.data.send_status,
+        send_error: result.data.send_error,
+        media_url: result.data.media_url,
+      });
+      if (sentLocalUrl?.startsWith("blob:")) URL.revokeObjectURL(sentLocalUrl);
+    } else {
+      onOptimisticUpdate(clientMessageId, {
+        send_status: "failed",
+        send_error: result.message,
+      });
+    }
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      void handleSend();
+    }
+  }
+
+  const disabledReason = !isConnected
+    ? "WhatsApp desconectado"
+    : attachment?.uploadStatus === "uploading"
+    ? "Aguardando upload..."
+    : attachment?.uploadStatus === "failed"
+    ? "Falha no upload do arquivo"
+    : sending
+    ? "Enviando..."
+    : null;
+
+  return (
+    <div className="border-t border-border bg-white px-3 pb-3 pt-2">
+      {attachment && (
+        <AttachmentPreview attachment={attachment} onRemove={removeAttachment} />
+      )}
+
+      {!isConnected && (
+        <div className="mb-2 flex items-center gap-1.5 rounded-lg bg-warning-amber/10 px-3 py-2 text-[11px] font-medium text-warning-amber">
+          <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+          WhatsApp desconectado — reconecte a instância para enviar mensagens.
+        </div>
+      )}
+
+      <div className="flex items-end gap-2">
+        {/* Attach button */}
+        <div className="relative" ref={attachMenuRef}>
+          <button
+            type="button"
+            onClick={() => setAttachMenuOpen((v) => !v)}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border text-text-muted hover:bg-background-subtle hover:text-text-secondary"
+            aria-label="Anexar arquivo"
+            disabled={!isConnected}
+          >
+            <Paperclip className="h-4 w-4" />
+          </button>
+
+          {attachMenuOpen && (
+            <div className="absolute bottom-10 left-0 z-20 flex flex-col overflow-hidden rounded-xl border border-border bg-white shadow-lg">
+              {(
+                [
+                  ["image", ImageIcon, "Imagem"],
+                  ["audio", Mic, "Áudio"],
+                  ["video", Video, "Vídeo"],
+                  ["document", FileText, "Documento"],
+                  ["sticker", Smile, "Figurinha"],
+                ] as const
+              ).map(([type, Icon, label]) => (
+                <button
+                  key={type}
+                  type="button"
+                  onClick={() => openFilePicker(type)}
+                  className="flex items-center gap-2 px-4 py-2 text-left text-xs hover:bg-background-subtle"
+                >
+                  <Icon className="h-3.5 w-3.5 text-brand-green-dark" />
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Text input */}
+        <textarea
+          ref={textareaRef}
+          value={draftText}
+          onChange={(e) => setDraftText(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={isConnected ? "Escreva uma mensagem... (Enter envia)" : "WhatsApp desconectado"}
+          disabled={!isConnected || sending}
+          rows={1}
+          className={cn(
+            "flex-1 resize-none rounded-lg border border-border bg-background-subtle px-3 py-2 text-xs leading-relaxed text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-brand-green",
+            "min-h-[2rem] max-h-28 overflow-y-auto",
+            (!isConnected || sending) && "opacity-60 cursor-not-allowed"
+          )}
+          style={{ height: "auto" }}
+          onInput={(e) => {
+            const el = e.currentTarget;
+            el.style.height = "auto";
+            el.style.height = `${Math.min(el.scrollHeight, 112)}px`;
+          }}
+        />
+
+        {/* Send button */}
+        <button
+          type="button"
+          onClick={() => void handleSend()}
+          disabled={!canSend}
+          title={disabledReason ?? "Enviar"}
+          className={cn(
+            "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors",
+            canSend
+              ? "bg-brand-green text-white hover:bg-brand-green-dark"
+              : "bg-border text-text-muted cursor-not-allowed"
+          )}
+          aria-label="Enviar"
+        >
+          <Send className="h-4 w-4" />
+        </button>
+      </div>
+
+      {/* Hidden file input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        className="hidden"
+        onChange={handleFileChange}
+      />
+    </div>
+  );
+}
+
+// ─── InboxClient ──────────────────────────────────────────────────────────────
+
+export function InboxClient({
+  organizationId,
+  conversations,
+  messagesByConversation,
+  bhAutoRepliesByConversation,
+  instances,
+  sources,
+  services,
+  stages,
+  initialSearch,
+  initialActiveConversationId,
+  dateMode,
+}: InboxClientProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const markedReadRef = useRef<Set<string>>(new Set());
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const prevConvIdRef = useRef<string>("");
+
   const [activeConvId, setActiveConvId] = useState(initialActiveConversationId || conversations[0]?.id || "");
   const [search, setSearch] = useState(initialSearch);
   const [filter, setFilter] = useState<"all" | "unread" | "open" | "closed" | "no_followup_48h">("all");
@@ -139,6 +633,13 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
   const [localLeadStages, setLocalLeadStages] = useState<Record<string, string | null>>({});
   const [message, setMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+
+  // Optimistic messages (per conversation)
+  const [optimisticMessages, setOptimisticMessages] = useState<InboxMessage[]>([]);
+  // Status overrides for retry tracking (keyed by message id OR optimistic id)
+  const [statusOverrides, setStatusOverrides] = useState<
+    Record<string, { send_status: InboxMessage["send_status"]; send_error: string | null }>
+  >({});
 
   const filteredConversations = useMemo(() => {
     const term = search.toLowerCase().trim();
@@ -168,10 +669,23 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
   }, [conversations, filter, search, serviceFilter]);
 
   const activeConv =
-    filteredConversations.find((conversation) => conversation.id === activeConvId) ??
+    filteredConversations.find((c) => c.id === activeConvId) ??
     filteredConversations[0] ??
     null;
-  const messages = activeConv ? messagesByConversation[activeConv.id] ?? [] : [];
+
+  const serverMessages = useMemo(
+    () => (activeConv ? messagesByConversation[activeConv.id] ?? [] : []),
+    [activeConv, messagesByConversation]
+  );
+  const activeOptimistic = useMemo(
+    () => optimisticMessages.filter((m) => m.conversation_id === activeConv?.id),
+    [optimisticMessages, activeConv?.id]
+  );
+  const visibleMessages = useMemo(
+    () => mergeMessages(serverMessages, activeOptimistic, statusOverrides),
+    [serverMessages, activeOptimistic, statusOverrides]
+  );
+
   const lead = activeConv?.lead ?? null;
   const leadSourceValue = lead
     ? (localLeadSources[lead.id] !== undefined ? localLeadSources[lead.id] : lead.source_id) ?? "none"
@@ -180,33 +694,25 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
     ? (localLeadStages[lead.id] !== undefined ? localLeadStages[lead.id] : lead.stage_id) ?? "none"
     : "none";
   const activeInstance = activeConv?.instance ?? instances[0] ?? null;
+  const isConnected = activeInstance?.status === "connected";
   const noFollowupCount = useMemo(
-    () => conversations.filter((conversation) => needsFollowup48h(conversation)).length,
+    () => conversations.filter((c) => needsFollowup48h(c)).length,
     [conversations]
   );
   const conversationIdsKey = useMemo(
-    () => conversations.map((conversation) => conversation.id).sort().join(","),
+    () => conversations.map((c) => c.id).sort().join(","),
     [conversations]
   );
 
-  function changeDateMode(nextMode: "activity" | "created") {
-    const params = new URLSearchParams(searchParams.toString());
-    if (nextMode === "activity") {
-      params.delete("dateMode");
-    } else {
-      params.set("dateMode", nextMode);
-    }
-    const query = params.toString();
-    router.push(query ? `${pathname}?${query}` : pathname);
-  }
+  // Auto-scroll to bottom when messages change or conversation switches
+  useEffect(() => {
+    if (!messagesEndRef.current) return;
+    const behavior = prevConvIdRef.current === (activeConv?.id ?? "") ? "smooth" : "instant";
+    prevConvIdRef.current = activeConv?.id ?? "";
+    messagesEndRef.current.scrollIntoView({ behavior, block: "end" });
+  }, [activeConv?.id, visibleMessages.length]);
 
-  function selectConversation(conversationId: string) {
-    setActiveConvId(conversationId);
-    const params = new URLSearchParams(searchParams.toString());
-    params.set("conversation", conversationId);
-    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
-  }
-
+  // Realtime + periodic refresh
   useEffect(() => {
     const scheduleRefresh = () => {
       if (refreshTimerRef.current) return;
@@ -220,30 +726,13 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
     const conversationIds = new Set(conversationIdsKey.split(",").filter(Boolean));
     const channel = supabase
       .channel(`inbox-live-${organizationId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "conversations",
-          filter: `organization_id=eq.${organizationId}`,
-        },
-        scheduleRefresh
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "messages",
-        },
-        (payload) => {
-          const nextConversationId =
-            (payload.new as { conversation_id?: string } | null)?.conversation_id ??
-            (payload.old as { conversation_id?: string } | null)?.conversation_id;
-          if (!nextConversationId || conversationIds.has(nextConversationId)) scheduleRefresh();
-        }
-      )
+      .on("postgres_changes", { event: "*", schema: "public", table: "conversations", filter: `organization_id=eq.${organizationId}` }, scheduleRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, (payload) => {
+        const nextConversationId =
+          (payload.new as { conversation_id?: string } | null)?.conversation_id ??
+          (payload.old as { conversation_id?: string } | null)?.conversation_id;
+        if (!nextConversationId || conversationIds.has(nextConversationId)) scheduleRefresh();
+      })
       .subscribe();
 
     const interval = window.setInterval(() => {
@@ -254,43 +743,41 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
     window.addEventListener("focus", onFocus);
 
     return () => {
-      if (refreshTimerRef.current) {
-        clearTimeout(refreshTimerRef.current);
-        refreshTimerRef.current = null;
-      }
+      if (refreshTimerRef.current) { clearTimeout(refreshTimerRef.current); refreshTimerRef.current = null; }
       window.clearInterval(interval);
       window.removeEventListener("focus", onFocus);
       void supabase.removeChannel(channel);
     };
   }, [conversationIdsKey, organizationId, router]);
 
-  // Auto-mark conversation as read when it becomes active or when unread_count increases
+  // Auto-mark as read
   useEffect(() => {
     if (!activeConv) return;
-
-    if (activeConv.unread_count === 0) {
-      // Server confirmed read — clear dedup block so future inbound messages auto-mark again
-      markedReadRef.current.delete(activeConv.id);
-      return;
-    }
-
-    // Prevent duplicate calls for the same (id, unread_count) cycle
+    if (activeConv.unread_count === 0) { markedReadRef.current.delete(activeConv.id); return; }
     if (markedReadRef.current.has(activeConv.id)) return;
     markedReadRef.current.add(activeConv.id);
-
-    // Optimistic: remove badge immediately without waiting for server refresh
     setLocallyReadIds((prev) => new Set([...prev, activeConv.id]));
-
     void markConversationReadAction(activeConv.id);
   }, [activeConv?.id, activeConv?.unread_count]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function changeDateMode(nextMode: "activity" | "created") {
+    const params = new URLSearchParams(searchParams.toString());
+    if (nextMode === "activity") { params.delete("dateMode"); } else { params.set("dateMode", nextMode); }
+    const query = params.toString();
+    router.push(query ? `${pathname}?${query}` : pathname);
+  }
+
+  function selectConversation(conversationId: string) {
+    setActiveConvId(conversationId);
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("conversation", conversationId);
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  }
 
   function toggleClosed() {
     if (!activeConv) return;
     startTransition(async () => {
-      const result = await updateConversationStatusAction(
-        activeConv.id,
-        activeConv.status === "closed" ? "open" : "closed"
-      );
+      const result = await updateConversationStatusAction(activeConv.id, activeConv.status === "closed" ? "open" : "closed");
       setMessage(result.message);
     });
   }
@@ -301,15 +788,8 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
     startTransition(async () => {
       const result = await updateLeadStageAction(leadId, nextStageId ?? "");
       setMessage(result.message);
-      if (result.ok) {
-        router.refresh();
-      } else {
-        setLocalLeadStages((prev) => {
-          const next = { ...prev };
-          delete next[leadId];
-          return next;
-        });
-      }
+      if (result.ok) { router.refresh(); }
+      else { setLocalLeadStages((prev) => { const next = { ...prev }; delete next[leadId]; return next; }); }
     });
   }
 
@@ -319,20 +799,76 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
     startTransition(async () => {
       const result = await updateLeadSourceAction(leadId, nextSourceId ?? "");
       setMessage(result.message);
-      if (result.ok) {
-        router.refresh();
-      } else {
-        setLocalLeadSources((prev) => {
-          const next = { ...prev };
-          delete next[leadId];
-          return next;
-        });
-      }
+      if (result.ok) { router.refresh(); }
+      else { setLocalLeadSources((prev) => { const next = { ...prev }; delete next[leadId]; return next; }); }
     });
   }
 
+  const handleOptimisticAdd = useCallback((msg: InboxMessage) => {
+    setOptimisticMessages((prev) => [...prev, msg]);
+  }, []);
+
+  const handleOptimisticUpdate = useCallback(
+    (clientMessageId: string, patch: Partial<InboxMessage>) => {
+      setOptimisticMessages((prev) =>
+        prev.map((m) => {
+          if (m.client_message_id !== clientMessageId) return m;
+          // If the server returned a real ID, update it so proxy URLs work
+          return { ...m, ...patch };
+        })
+      );
+    },
+    []
+  );
+
+  const handleRetry = useCallback(async (failedMessage: InboxMessage) => {
+    // Optimistic: mark as sending
+    if (failedMessage.id.startsWith("opt-")) {
+      // Pure client-side message that was never persisted — re-send via action
+      setStatusOverrides((prev) => ({ ...prev, [failedMessage.id]: { send_status: "sending", send_error: null } }));
+      const result = await sendInboxMessageAction({
+        conversationId: failedMessage.conversation_id,
+        clientMessageId: failedMessage.client_message_id!,
+        messageType: failedMessage.message_type as "text" | "image" | "audio" | "video" | "document" | "sticker",
+        text: failedMessage.content,
+        mediaUrl: failedMessage.media_url,
+        mediaMimetype: failedMessage.media_mimetype,
+        mediaFilename: failedMessage.media_filename,
+        mediaDuration: failedMessage.media_duration,
+      });
+      if (result.data) {
+        handleOptimisticUpdate(failedMessage.client_message_id!, {
+          id: result.data.id,
+          send_status: result.data.send_status,
+          send_error: result.data.send_error,
+        });
+      } else {
+        setStatusOverrides((prev) => ({
+          ...prev,
+          [failedMessage.id]: { send_status: "failed", send_error: result.message },
+        }));
+      }
+    } else {
+      // DB-persisted message — use retryInboxMessageAction
+      setStatusOverrides((prev) => ({ ...prev, [failedMessage.id]: { send_status: "sending", send_error: null } }));
+      const result = await retryInboxMessageAction(failedMessage.id);
+      if (result.data) {
+        setStatusOverrides((prev) => ({
+          ...prev,
+          [failedMessage.id]: { send_status: result.data!.send_status, send_error: result.data!.send_error },
+        }));
+      } else {
+        setStatusOverrides((prev) => ({
+          ...prev,
+          [failedMessage.id]: { send_status: "failed", send_error: result.message },
+        }));
+      }
+    }
+  }, [handleOptimisticUpdate]);
+
   return (
     <div className="-m-6 flex h-[calc(100vh-3.5rem)] overflow-hidden">
+      {/* ── Left sidebar: conversation list ── */}
       <div className="flex w-72 shrink-0 flex-col border-r border-border bg-white">
         <div className="space-y-2 border-b border-border p-3">
           <div className="flex items-center justify-between">
@@ -340,7 +876,7 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
             <Button
               variant={filter === "unread" ? "outline" : "ghost"}
               size="icon-sm"
-              onClick={() => setFilter((value) => (value === "unread" ? "all" : "unread"))}
+              onClick={() => setFilter((v) => (v === "unread" ? "all" : "unread"))}
             >
               <Filter className="h-3.5 w-3.5" />
             </Button>
@@ -351,15 +887,12 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
               type="text"
               placeholder="Buscar conversa..."
               value={search}
-              onChange={(event) => setSearch(event.target.value)}
+              onChange={(e) => setSearch(e.target.value)}
               className="h-7 w-full rounded-lg border border-border bg-background-subtle pl-7 pr-3 text-[11px] placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-brand-green"
             />
           </div>
           <div className="grid grid-cols-2 gap-1 rounded-lg border border-border bg-background-subtle p-1">
-            {[
-              ["activity", "Ativas"],
-              ["created", "Iniciadas"],
-            ].map(([value, label]) => (
+            {[["activity", "Ativas"], ["created", "Iniciadas"]].map(([value, label]) => (
               <button
                 key={value}
                 type="button"
@@ -405,10 +938,8 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">Todos os servicos</SelectItem>
-                {services.map((service) => (
-                  <SelectItem key={service.id} value={service.id}>
-                    {service.name}
-                  </SelectItem>
+                {services.map((s) => (
+                  <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -423,13 +954,13 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
               <p className="mt-1 text-[11px] text-text-muted">As conversas aparecerao aqui quando a Evolution API gravar mensagens.</p>
             </div>
           )}
-          {filteredConversations.map((conversation) => (
+          {filteredConversations.map((c) => (
             <ConversationItem
-              key={conversation.id}
-              conversation={conversation}
-              isActive={conversation.id === activeConv?.id}
-              locallyRead={locallyReadIds.has(conversation.id)}
-              onClick={() => selectConversation(conversation.id)}
+              key={c.id}
+              conversation={c}
+              isActive={c.id === activeConv?.id}
+              locallyRead={locallyReadIds.has(c.id)}
+              onClick={() => selectConversation(c.id)}
             />
           ))}
         </ScrollArea>
@@ -450,9 +981,11 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
         </div>
       </div>
 
+      {/* ── Center: chat area ── */}
       <div className="flex flex-1 flex-col bg-background-subtle">
         {activeConv ? (
           <>
+            {/* Header */}
             <div className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-white px-4">
               <div className="flex h-8 w-8 items-center justify-center rounded-full bg-brand-green-soft text-sm font-bold text-brand-green-deep">
                 {getInitials(lead?.name ?? cleanJid(activeConv.remote_jid))}
@@ -461,9 +994,7 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
                 <p className="text-sm font-semibold leading-none text-text-primary">
                   {lead?.name ?? "Contato sem lead vinculado"}
                 </p>
-                <p className="mt-0.5 text-[11px] text-text-muted">
-                  {formatPhone(cleanJid(activeConv.remote_jid))}
-                </p>
+                <p className="mt-0.5 text-[11px] text-text-muted">{formatPhone(cleanJid(activeConv.remote_jid))}</p>
               </div>
               <div className="flex items-center gap-2">
                 {lead?.status && (
@@ -486,27 +1017,27 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
               </div>
             )}
 
+            {/* Messages */}
             <ScrollArea className="flex-1 p-4">
               <div className="space-y-2 pb-4">
-                {messages.length === 0 && (
+                {visibleMessages.length === 0 && (
                   <div className="py-12 text-center text-xs text-text-muted">Nenhuma mensagem salva nesta conversa.</div>
                 )}
-                {messages.map((item) => (
-                  <MessageBubble key={item.id} message={item} />
+                {visibleMessages.map((item) => (
+                  <MessageBubble key={item.id} message={item} onRetry={handleRetry} />
                 ))}
+                <div ref={messagesEndRef} />
               </div>
             </ScrollArea>
 
-            <div className="border-t border-border bg-white p-3">
-              <div className="flex items-center gap-2 rounded-lg border border-border bg-background-subtle px-3 py-2">
-                <p className="flex-1 text-xs text-text-muted">
-                  Envio de mensagens sera habilitado quando a Evolution API estiver conectada para envio.
-                </p>
-                <Button size="sm" disabled className="h-7 text-xs">
-                  Enviar
-                </Button>
-              </div>
-            </div>
+            {/* Composer */}
+            <Composer
+              key={activeConv.id}
+              activeConvId={activeConv.id}
+              isConnected={isConnected}
+              onOptimisticAdd={handleOptimisticAdd}
+              onOptimisticUpdate={handleOptimisticUpdate}
+            />
           </>
         ) : (
           <div className="flex flex-1 flex-col items-center justify-center text-center">
@@ -517,6 +1048,7 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
         )}
       </div>
 
+      {/* ── Right sidebar: lead card ── */}
       <div className="flex w-64 shrink-0 flex-col overflow-y-auto border-l border-border bg-white">
         <div className="border-b border-border p-4">
           <p className="label-eyebrow">Ficha do Lead</p>
@@ -556,20 +1088,14 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
                     <SelectContent>
                       <SelectItem value="none">Sem etapa</SelectItem>
                       {stages.map((stage) => (
-                        <SelectItem key={stage.id} value={stage.id}>
-                          {stage.name}
-                        </SelectItem>
+                        <SelectItem key={stage.id} value={stage.id}>{stage.name}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 </div>
                 {lead.service?.name && <Info icon={<Tag />} label="Servico" value={lead.service.name} />}
                 {lead.appointment_scheduled_at && (
-                  <Info
-                    icon={<Clock />}
-                    label="Consulta agendada"
-                    value={formatDateTime(lead.appointment_scheduled_at)}
-                  />
+                  <Info icon={<Clock />} label="Consulta agendada" value={formatDateTime(lead.appointment_scheduled_at)} />
                 )}
                 {(lead.detected_city || lead.detected_state || lead.phone_ddd) && (
                   <Info
@@ -579,9 +1105,7 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
                       [lead.detected_city, lead.detected_state].filter(Boolean).join(" / "),
                       lead.phone_ddd ? `DDD ${lead.phone_ddd}` : null,
                       LOCATION_STATUS_LABELS[lead.service_area_status] ?? null,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")}
+                    ].filter(Boolean).join(" · ")}
                   />
                 )}
                 <div className="space-y-1.5">
@@ -601,10 +1125,10 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
                     <SelectContent>
                       <SelectItem value="none">Sem origem</SelectItem>
                       {sources
-                        .filter((source) => source.active !== false || source.id === lead.source_id)
-                        .map((source) => (
-                          <SelectItem key={source.id} value={source.id}>
-                            {source.name}{source.active === false ? " (inativa)" : ""}
+                        .filter((s) => s.active !== false || s.id === lead.source_id)
+                        .map((s) => (
+                          <SelectItem key={s.id} value={s.id}>
+                            {s.name}{s.active === false ? " (inativa)" : ""}
                           </SelectItem>
                         ))}
                     </SelectContent>
@@ -653,10 +1177,7 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
                 {(() => {
                   const bhItem = activeConv ? bhAutoRepliesByConversation[activeConv.id] : null;
                   if (!bhItem || cancelledBhIds.has(bhItem.id)) return null;
-                  const scheduledTime = new Date(bhItem.scheduled_for).toLocaleTimeString("pt-BR", {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  });
+                  const scheduledTime = new Date(bhItem.scheduled_for).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
                   return (
                     <div className="flex items-start gap-1.5 rounded-lg border border-warning-amber/30 bg-warning-amber/10 px-2.5 py-2 text-[10px]">
                       <Clock className="mt-0.5 h-3 w-3 shrink-0 text-warning-amber" />
@@ -670,9 +1191,7 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
                         onClick={() => {
                           startTransition(async () => {
                             const result = await cancelBhAutoReplyAction(bhItem.id);
-                            if (result.ok) {
-                              setCancelledBhIds((prev) => new Set([...prev, bhItem.id]));
-                            }
+                            if (result.ok) setCancelledBhIds((prev) => new Set([...prev, bhItem.id]));
                             setMessage(result.message);
                           });
                         }}

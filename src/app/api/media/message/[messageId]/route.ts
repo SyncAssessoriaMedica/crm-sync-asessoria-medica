@@ -194,9 +194,12 @@ export async function GET(
       return NextResponse.json({ error: "Media unavailable" }, { status: 502 });
     }
 
-    const contentType  = message.media_mimetype ?? "audio/ogg; codecs=opus";
-    const rawFilename  = message.media_filename ?? `audio.${storagePath.split(".").pop() ?? "ogg"}`;
-    const disposition  = buildContentDisposition("inline", rawFilename);
+    const ext          = storagePath.split(".").pop() ?? "bin";
+    const defaultName  = `${message.message_type ?? "file"}.${ext}`;
+    const contentType  = message.media_mimetype ?? "application/octet-stream";
+    const rawFilename  = message.media_filename ?? defaultName;
+    const isDoc        = message.message_type === "document";
+    const disposition  = buildContentDisposition(isDoc ? "attachment" : "inline", rawFilename);
 
     return new NextResponse(fileData, {
       status: 200,

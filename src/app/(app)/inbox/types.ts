@@ -63,6 +63,9 @@ export type InboxMessage = {
   created_at: string;
   delivered_at: string | null;
   read_at: string | null;
+  send_status: "pending" | "sending" | "sent" | "failed";
+  send_error: string | null;
+  client_message_id: string | null;
 };
 
 export type InboxConversation = {

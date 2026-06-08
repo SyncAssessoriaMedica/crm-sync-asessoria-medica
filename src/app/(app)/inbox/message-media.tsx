@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CheckCheck, FileText, MapPin, X } from "lucide-react";
+import { AlertCircle, CheckCheck, Clock, FileText, Loader2, MapPin, RefreshCw, X } from "lucide-react";
 import { cn, formatDateTime } from "@/lib/utils";
 import type { InboxMessage } from "./types";
 
@@ -45,10 +45,16 @@ function proxyUrl(messageId: string) {
   return `/api/media/message/${messageId}`;
 }
 
+function localOrProxy(message: InboxMessage): string {
+  // Optimistic messages may have a blob URL stored in media_url
+  if (message.media_url?.startsWith("blob:")) return message.media_url;
+  return proxyUrl(message.id);
+}
+
 function ImageContent({ message }: { message: InboxMessage }) {
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [failed, setFailed] = useState(false);
-  const url = proxyUrl(message.id);
+  const url = localOrProxy(message);
 
   if (failed) {
     return <p className="px-3 py-2 text-xs italic text-text-muted">Imagem indisponível</p>;
@@ -87,7 +93,16 @@ function ImageContent({ message }: { message: InboxMessage }) {
 function AudioContent({ message }: { message: InboxMessage }) {
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  const url = proxyUrl(message.id);
+  const url = localOrProxy(message);
+
+  // Optimistic (no media_url yet) or sending: show skeleton
+  if (!message.media_url && message.send_status === "sending") {
+    return (
+      <div className="px-3 py-2">
+        <div className="h-8 w-full animate-pulse rounded bg-black/10" />
+      </div>
+    );
+  }
 
   if (failed) {
     return (
@@ -125,7 +140,11 @@ function AudioContent({ message }: { message: InboxMessage }) {
 
 function VideoContent({ message }: { message: InboxMessage }) {
   const [failed, setFailed] = useState(false);
-  const url = proxyUrl(message.id);
+  const url = localOrProxy(message);
+
+  if (!message.media_url && message.send_status === "sending") {
+    return <div className="h-40 w-full animate-pulse bg-black/10" />;
+  }
 
   if (failed) {
     return <p className="px-3 py-2 text-xs italic text-text-muted">Vídeo indisponível</p>;
@@ -162,20 +181,23 @@ function DocumentContent({ message }: { message: InboxMessage }) {
           <p className="text-[10px] text-text-muted">{friendlyMime(message.media_mimetype)}</p>
         )}
       </div>
-      <a
-        href={url}
-        download={filename}
-        className="shrink-0 rounded-md bg-brand-green-soft px-2 py-1 text-[10px] font-semibold text-brand-green-dark hover:bg-brand-green/10"
-      >
-        Baixar
-      </a>
+      {/* Don't render download link for optimistic/sending messages */}
+      {message.send_status === "sent" && (
+        <a
+          href={url}
+          download={filename}
+          className="shrink-0 rounded-md bg-brand-green-soft px-2 py-1 text-[10px] font-semibold text-brand-green-dark hover:bg-brand-green/10"
+        >
+          Baixar
+        </a>
+      )}
     </div>
   );
 }
 
 function StickerContent({ message }: { message: InboxMessage }) {
   const [failed, setFailed] = useState(false);
-  const url = proxyUrl(message.id);
+  const url = localOrProxy(message);
 
   if (failed) {
     return <div className="p-2 text-3xl">🙂</div>;
@@ -240,23 +262,79 @@ function friendlyMime(mime: string): string {
     "application/msword": "Word",
     "application/vnd.ms-excel": "Excel",
     "text/plain": "Texto",
+    "text/csv": "CSV",
+    "application/zip": "ZIP",
   };
   return map[mime] ?? mime.split("/")[1]?.toUpperCase() ?? mime;
+}
+
+// ─── Send status footer ────────────────────────────────────────────────────────
+
+function SendStatusFooter({
+  message,
+  onRetry,
+}: {
+  message: InboxMessage;
+  onRetry?: (message: InboxMessage) => void;
+}) {
+  const isSent = message.direction === "outbound";
+  if (!isSent) return null;
+
+  const status = message.send_status ?? "sent";
+  const time = formatDateTime(message.created_at).split(", ")[1] ?? formatDateTime(message.created_at);
+
+  return (
+    <div className="flex flex-col items-end gap-0.5 px-3 pb-2 pt-0.5">
+      {status === "failed" && (
+        <div className="flex items-center gap-1">
+          {message.send_error && (
+            <span className="text-[10px] text-danger-red/80" title={message.send_error}>
+              {message.send_error.slice(0, 60)}
+            </span>
+          )}
+          {onRetry && (
+            <button
+              onClick={() => onRetry(message)}
+              className="flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] font-semibold text-danger-red hover:bg-danger-red/10"
+              title="Tentar novamente"
+            >
+              <RefreshCw className="h-2.5 w-2.5" />
+              Tentar novamente
+            </button>
+          )}
+        </div>
+      )}
+      <div className="flex items-center gap-1 text-[10px] text-brand-green-deep/60">
+        <span>{time}</span>
+        {status === "sending" && <Loader2 className="h-2.5 w-2.5 animate-spin text-brand-green-deep/40" />}
+        {status === "failed" && <AlertCircle className="h-2.5 w-2.5 text-danger-red" />}
+        {(status === "sent" || status === "pending") && <CheckCheck className="h-2.5 w-2.5 text-brand-green" />}
+      </div>
+    </div>
+  );
 }
 
 // ─── MessageBubble ─────────────────────────────────────────────────────────────
 
 const KNOWN_TYPES = new Set(["text", "image", "audio", "video", "document", "sticker", "location"]);
 
-export function MessageBubble({ message }: { message: InboxMessage }) {
+export function MessageBubble({
+  message,
+  onRetry,
+}: {
+  message: InboxMessage;
+  onRetry?: (message: InboxMessage) => void;
+}) {
   const isSent = message.direction === "outbound";
+  const isFailed = message.send_status === "failed";
 
   return (
     <div className={cn("flex", isSent ? "justify-end" : "justify-start")}>
       <div
         className={cn(
           "max-w-[75%] overflow-hidden text-xs leading-relaxed",
-          isSent ? "bubble-sent text-text-primary" : "bubble-received text-text-primary"
+          isSent ? "bubble-sent text-text-primary" : "bubble-received text-text-primary",
+          isFailed && "opacity-80 ring-1 ring-danger-red/30"
         )}
       >
         {message.message_type === "text" && (
@@ -274,15 +352,27 @@ export function MessageBubble({ message }: { message: InboxMessage }) {
           </p>
         )}
 
-        <div
-          className={cn(
-            "flex items-center gap-1 px-3 pb-2 pt-0.5 text-[10px]",
-            isSent ? "justify-end text-brand-green-deep/60" : "text-text-muted"
-          )}
-        >
-          <span>{formatDateTime(message.created_at).split(", ")[1] ?? formatDateTime(message.created_at)}</span>
-          {isSent && <CheckCheck className="h-2.5 w-2.5 text-brand-green" />}
-        </div>
+        {isSent ? (
+          <SendStatusFooter message={message} onRetry={onRetry} />
+        ) : (
+          <div className="flex items-center gap-1 px-3 pb-2 pt-0.5 text-[10px] text-text-muted">
+            <span>{formatDateTime(message.created_at).split(", ")[1] ?? formatDateTime(message.created_at)}</span>
+            {/* sending state for outbound-only, inbound never shows status */}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Sending skeleton bubble ───────────────────────────────────────────────────
+
+export function SendingIndicator() {
+  return (
+    <div className="flex justify-end">
+      <div className="flex items-center gap-1.5 rounded-2xl bg-brand-green-soft px-3 py-2 text-xs text-text-muted">
+        <Clock className="h-3 w-3 text-brand-green-dark/60" />
+        <span>Enviando...</span>
       </div>
     </div>
   );
