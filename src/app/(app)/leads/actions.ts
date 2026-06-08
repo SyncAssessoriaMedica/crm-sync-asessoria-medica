@@ -919,6 +919,22 @@ function normalizeStr(str: string): string {
   return str.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
 }
 
+function normalizePhone(phone: string): string {
+  return phone.replace(/\D/g, "");
+}
+
+function dedupeLeadImportRowsByPhone(rows: LeadImportRow[]): LeadImportRow[] {
+  const phoneToRow = new Map<string, LeadImportRow>();
+
+  for (const row of rows) {
+    const phone = normalizePhone(row.phone);
+    if (!phone) continue;
+    phoneToRow.set(phone, row);
+  }
+
+  return Array.from(phoneToRow.values());
+}
+
 export async function importLeadsAction(
   rows: LeadImportRow[],
   stageId?: string,
@@ -928,6 +944,10 @@ export async function importLeadsAction(
   try {
     const { admin, organizationId } = await getCurrentContext();
     if (!rows.length) return { ok: false, message: "Nenhum lead para importar.", created: 0, updated: 0 };
+    const importRows = dedupeLeadImportRowsByPhone(rows);
+    if (!importRows.length) {
+      return { ok: false, message: "Nenhum lead com telefone válido para importar.", created: 0, updated: 0 };
+    }
 
     const [{ data: sources }, { data: services }] = await Promise.all([
       admin.from("lead_sources").select("id, name").eq("organization_id", organizationId),
@@ -937,22 +957,22 @@ export async function importLeadsAction(
     const sourceMap = new Map((sources ?? []).map((s) => [normalizeStr(s.name), s.id]));
     const serviceMap = new Map((services ?? []).map((s) => [normalizeStr(s.name), s.id]));
 
-    const normalizedPhones = rows.map((r) => r.phone.replace(/\D/g, "")).filter(Boolean);
+    const normalizedPhones = importRows.map((r) => normalizePhone(r.phone)).filter(Boolean);
     const { data: existingLeads } = await admin
       .from("leads")
       .select("id, phone")
       .eq("organization_id", organizationId)
       .in("phone", normalizedPhones);
 
-    const phoneToId = new Map((existingLeads ?? []).map((l) => [l.phone.replace(/\D/g, ""), l.id as string]));
+    const phoneToId = new Map((existingLeads ?? []).map((l) => [normalizePhone(l.phone), l.id as string]));
     const normalizedStageId = stageId || null;
     const status = await getStatusForStage(admin, normalizedStageId);
 
     const toCreate: object[] = [];
     const toUpdate: Array<{ id: string; data: object }> = [];
 
-    for (const row of rows) {
-      const phone = row.phone.replace(/\D/g, "");
+    for (const row of importRows) {
+      const phone = normalizePhone(row.phone);
       const payload = {
         name: row.name.trim(),
         phone,
@@ -986,19 +1006,19 @@ export async function importLeadsAction(
     }
 
     // Save custom field values for rows that have them
-    const hasCustomFields = rows.some((r) => r.customFieldValues && Object.keys(r.customFieldValues).length > 0);
+    const hasCustomFields = importRows.some((r) => r.customFieldValues && Object.keys(r.customFieldValues).length > 0);
     if (hasCustomFields) {
-      const allPhones = rows.map((r) => r.phone.replace(/\D/g, "")).filter(Boolean);
+      const allPhones = importRows.map((r) => normalizePhone(r.phone)).filter(Boolean);
       const { data: allLeads } = await admin
         .from("leads")
         .select("id, phone")
         .eq("organization_id", organizationId)
         .in("phone", allPhones);
-      const freshPhoneToId = new Map((allLeads ?? []).map((l) => [l.phone.replace(/\D/g, ""), l.id as string]));
+      const freshPhoneToId = new Map((allLeads ?? []).map((l) => [normalizePhone(l.phone), l.id as string]));
       const cfValues: Array<{ lead_id: string; field_id: string; value: string | null }> = [];
-      for (const row of rows) {
+      for (const row of importRows) {
         if (!row.customFieldValues) continue;
-        const leadId = freshPhoneToId.get(row.phone.replace(/\D/g, ""));
+        const leadId = freshPhoneToId.get(normalizePhone(row.phone));
         if (!leadId) continue;
         for (const [fieldId, value] of Object.entries(row.customFieldValues)) {
           cfValues.push({ lead_id: leadId, field_id: fieldId, value: value || null });
@@ -1014,9 +1034,14 @@ export async function importLeadsAction(
     revalidatePath("/dashboard");
 
     const total = toCreate.length + toUpdate.length;
+    const duplicateCount = rows.length - importRows.length;
+    const duplicateMessage =
+      duplicateCount > 0
+        ? ` ${duplicateCount} duplicado${duplicateCount !== 1 ? "s" : ""} por telefone ignorado${duplicateCount !== 1 ? "s" : ""}, mantendo o último registro da planilha.`
+        : "";
     return {
       ok: true,
-      message: `${total} lead${total !== 1 ? "s" : ""} importado${total !== 1 ? "s" : ""}: ${toCreate.length} novo${toCreate.length !== 1 ? "s" : ""}, ${toUpdate.length} atualizado${toUpdate.length !== 1 ? "s" : ""}.`,
+      message: `${total} lead${total !== 1 ? "s" : ""} importado${total !== 1 ? "s" : ""}: ${toCreate.length} novo${toCreate.length !== 1 ? "s" : ""}, ${toUpdate.length} atualizado${toUpdate.length !== 1 ? "s" : ""}.${duplicateMessage}`,
       created: toCreate.length,
       updated: toUpdate.length,
     };

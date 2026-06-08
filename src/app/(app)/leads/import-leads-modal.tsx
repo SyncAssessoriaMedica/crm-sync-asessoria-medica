@@ -137,6 +137,22 @@ function buildMappedLeads(
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
+function normalizePhone(phone: string): string {
+  return phone.replace(/\D/g, "");
+}
+
+function dedupeLeadsByPhone(leads: LeadImportRow[]): LeadImportRow[] {
+  const phoneToLead = new Map<string, LeadImportRow>();
+
+  for (const lead of leads) {
+    const phone = normalizePhone(lead.phone);
+    if (!phone) continue;
+    phoneToLead.set(phone, lead);
+  }
+
+  return Array.from(phoneToLead.values());
+}
+
 type ImportLeadsModalProps = {
   open: boolean;
   options: LeadOptionData;
@@ -228,6 +244,8 @@ export function ImportLeadsModal({ open, options, onClose, onSuccess }: ImportLe
   const canProceedStep2 = hasName && hasPhone;
 
   const { valid, invalidCount } = step >= 3 ? buildMappedLeads(rawRows, mapping) : { valid: [], invalidCount: 0 };
+  const dedupedValid = step >= 3 ? dedupeLeadsByPhone(valid) : [];
+  const duplicateCount = valid.length - dedupedValid.length;
 
   function handleImport() {
     const finalStageId = stageId === "none" ? undefined : stageId;
@@ -475,7 +493,7 @@ export function ImportLeadsModal({ open, options, onClose, onSuccess }: ImportLe
                       <p className="mt-0.5 text-[11px] text-text-muted">leads válidos</p>
                     </div>
                     <div className="rounded-lg border border-border bg-background-subtle p-3 text-center">
-                      <p className="text-2xl font-black text-brand-green-dark">{valid.length - (invalidCount)}</p>
+                      <p className="text-2xl font-black text-brand-green-dark">{dedupedValid.length}</p>
                       <p className="mt-0.5 text-[11px] text-text-muted">para importar</p>
                     </div>
                     <div className={cn("rounded-lg border p-3 text-center", invalidCount > 0 ? "border-warning-amber/30 bg-warning-amber/10" : "border-border bg-background-subtle")}>
@@ -484,9 +502,16 @@ export function ImportLeadsModal({ open, options, onClose, onSuccess }: ImportLe
                     </div>
                   </div>
 
-                  {valid.length > 0 && (
+                  {duplicateCount > 0 && (
+                    <div className="flex items-center gap-2 rounded-lg border border-warning-amber/30 bg-warning-amber/10 px-3 py-2 text-xs font-medium text-warning-amber">
+                      <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                      Duplicados por telefone: {duplicateCount}. Vale sempre o último lead da planilha.
+                    </div>
+                  )}
+
+                  {dedupedValid.length > 0 && (
                     <div>
-                      <p className="mb-2 text-xs font-semibold text-text-primary">Prévia (primeiros {Math.min(valid.length, 5)} leads)</p>
+                      <p className="mb-2 text-xs font-semibold text-text-primary">Prévia (primeiros {Math.min(dedupedValid.length, 5)} leads)</p>
                       <div className="overflow-x-auto rounded-lg border border-border">
                         <table className="w-full text-[11px]">
                           <thead>
@@ -498,7 +523,7 @@ export function ImportLeadsModal({ open, options, onClose, onSuccess }: ImportLe
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-border">
-                            {valid.slice(0, 5).map((lead, i) => (
+                            {dedupedValid.slice(0, 5).map((lead, i) => (
                               <tr key={i} className="bg-white">
                                 <td className="max-w-[120px] truncate px-2 py-1.5 font-medium text-text-primary">{lead.name}</td>
                                 <td className="px-2 py-1.5 text-text-secondary">{lead.phone}</td>
@@ -512,7 +537,7 @@ export function ImportLeadsModal({ open, options, onClose, onSuccess }: ImportLe
                     </div>
                   )}
 
-                  {valid.length === 0 && (
+                  {dedupedValid.length === 0 && (
                     <div className="flex items-center gap-2 rounded-lg border border-danger-red/20 bg-danger-soft px-3 py-2 text-xs text-danger-red">
                       <AlertCircle className="h-3.5 w-3.5 shrink-0" />
                       Nenhum lead válido encontrado. Verifique o mapeamento de colunas.
@@ -553,10 +578,10 @@ export function ImportLeadsModal({ open, options, onClose, onSuccess }: ImportLe
               {step === 3 && (
                 <Button
                   size="sm"
-                  disabled={isPending || valid.length === 0}
+                  disabled={isPending || dedupedValid.length === 0}
                   onClick={handleImport}
                 >
-                  {isPending ? "Importando..." : `Importar ${valid.length} lead${valid.length !== 1 ? "s" : ""}`}
+                  {isPending ? "Importando..." : `Importar ${dedupedValid.length} lead${dedupedValid.length !== 1 ? "s" : ""}`}
                 </Button>
               )}
             </div>
