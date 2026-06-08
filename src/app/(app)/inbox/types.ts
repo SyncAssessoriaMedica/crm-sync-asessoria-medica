@@ -66,6 +66,9 @@ export type InboxMessage = {
   send_status: "pending" | "sending" | "sent" | "failed";
   send_error: string | null;
   client_message_id: string | null;
+  media_status: "pending" | "ready" | "failed" | null;
+  media_error: string | null;
+  media_attempts: number | null;
 };
 
 export type InboxConversation = {

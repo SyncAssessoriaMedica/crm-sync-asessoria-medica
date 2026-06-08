@@ -45,19 +45,87 @@ function proxyUrl(messageId: string) {
   return `/api/media/message/${messageId}`;
 }
 
+function retryUrl(messageId: string) {
+  return `/api/media/message/${messageId}/retry`;
+}
+
 function localOrProxy(message: InboxMessage): string {
   // Optimistic messages may have a blob URL stored in media_url
   if (message.media_url?.startsWith("blob:")) return message.media_url;
   return proxyUrl(message.id);
 }
 
-function ImageContent({ message }: { message: InboxMessage }) {
+// Returns true when an inbound media is being downloaded asynchronously.
+// We must NOT render media elements in this state — the proxy returns 202 JSON,
+// which would trigger onError immediately and permanently mark as failed.
+function isMediaPending(msg: InboxMessage): boolean {
+  if (msg.media_status === "pending") return true;
+  // Outbound CRM-sent: controlled by send_status, not media_status
+  if (msg.direction === "outbound") return false;
+  // Inbound with no media_url and no final status → still processing (safety)
+  return msg.media_url === null && msg.media_status === null;
+}
+
+function isMediaFailed(msg: InboxMessage): boolean {
+  return msg.media_status === "failed";
+}
+
+function MediaRetryButton({ messageId, onRetry }: { messageId: string; onRetry?: () => void }) {
+  const [retrying, setRetrying] = useState(false);
+
+  async function handleClick() {
+    if (retrying) return;
+    setRetrying(true);
+    try {
+      await fetch(retryUrl(messageId), { method: "POST" });
+    } catch { /* ignore */ }
+    onRetry?.();
+    setRetrying(false);
+  }
+
+  return (
+    <button
+      onClick={handleClick}
+      disabled={retrying}
+      className="mt-1 flex items-center gap-1 text-[10px] font-medium text-brand-green-dark underline underline-offset-2 hover:no-underline disabled:opacity-60"
+    >
+      {retrying && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
+      Tentar novamente
+    </button>
+  );
+}
+
+function ImageContent({
+  message,
+  onMediaRetry,
+}: {
+  message: InboxMessage;
+  onMediaRetry?: () => void;
+}) {
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [failed, setFailed] = useState(false);
   const url = localOrProxy(message);
 
-  if (failed) {
-    return <p className="px-3 py-2 text-xs italic text-text-muted">Imagem indisponível</p>;
+  // Outbound CRM-sent skeleton
+  if (!message.media_url && message.send_status === "sending") {
+    return <div className="max-h-52 w-full animate-pulse bg-black/10" style={{ height: "160px" }} />;
+  }
+
+  // Inbound pending — don't attempt to load, show skeleton
+  if (isMediaPending(message)) {
+    return <div className="max-h-52 w-full animate-pulse bg-black/10" style={{ height: "160px" }} />;
+  }
+
+  // Inbound failed — show error + retry
+  if (isMediaFailed(message) || failed) {
+    return (
+      <div className="px-3 py-2">
+        <p className="text-xs italic text-text-muted">Imagem indisponível</p>
+        {(isMediaFailed(message) && onMediaRetry) && (
+          <MediaRetryButton messageId={message.id} onRetry={onMediaRetry} />
+        )}
+      </div>
+    );
   }
 
   return (
@@ -90,16 +158,41 @@ function ImageContent({ message }: { message: InboxMessage }) {
   );
 }
 
-function AudioContent({ message }: { message: InboxMessage }) {
+function AudioContent({
+  message,
+  onMediaRetry,
+}: {
+  message: InboxMessage;
+  onMediaRetry?: () => void;
+}) {
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const url = localOrProxy(message);
 
-  // Optimistic (no media_url yet) or sending: show skeleton
+  // Outbound CRM-sent skeleton
   if (!message.media_url && message.send_status === "sending") {
     return (
       <div className="px-3 py-2">
         <div className="h-8 w-full animate-pulse rounded bg-black/10" />
+      </div>
+    );
+  }
+
+  // Inbound pending
+  if (isMediaPending(message)) {
+    return (
+      <div className="px-3 py-2">
+        <div className="h-8 w-full animate-pulse rounded bg-black/10" />
+      </div>
+    );
+  }
+
+  // Inbound failed
+  if (isMediaFailed(message)) {
+    return (
+      <div className="px-3 py-2">
+        <p className="text-xs italic text-text-muted">Áudio indisponível</p>
+        {onMediaRetry && <MediaRetryButton messageId={message.id} onRetry={onMediaRetry} />}
       </div>
     );
   }
@@ -138,12 +231,34 @@ function AudioContent({ message }: { message: InboxMessage }) {
   );
 }
 
-function VideoContent({ message }: { message: InboxMessage }) {
+function VideoContent({
+  message,
+  onMediaRetry,
+}: {
+  message: InboxMessage;
+  onMediaRetry?: () => void;
+}) {
   const [failed, setFailed] = useState(false);
   const url = localOrProxy(message);
 
+  // Outbound CRM-sent skeleton
   if (!message.media_url && message.send_status === "sending") {
     return <div className="h-40 w-full animate-pulse bg-black/10" />;
+  }
+
+  // Inbound pending
+  if (isMediaPending(message)) {
+    return <div className="h-40 w-full animate-pulse bg-black/10" />;
+  }
+
+  // Inbound failed
+  if (isMediaFailed(message)) {
+    return (
+      <div className="px-3 py-2">
+        <p className="text-xs italic text-text-muted">Vídeo indisponível</p>
+        {onMediaRetry && <MediaRetryButton messageId={message.id} onRetry={onMediaRetry} />}
+      </div>
+    );
   }
 
   if (failed) {
@@ -166,9 +281,43 @@ function VideoContent({ message }: { message: InboxMessage }) {
   );
 }
 
-function DocumentContent({ message }: { message: InboxMessage }) {
+function DocumentContent({
+  message,
+  onMediaRetry,
+}: {
+  message: InboxMessage;
+  onMediaRetry?: () => void;
+}) {
   const url = proxyUrl(message.id);
   const filename = message.media_filename ?? "Documento";
+
+  // Inbound pending
+  if (isMediaPending(message)) {
+    return (
+      <div className="flex items-center gap-2 px-3 py-2">
+        <div className="flex h-9 w-9 shrink-0 animate-pulse items-center justify-center rounded-lg bg-black/10" />
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <div className="h-3 w-32 animate-pulse rounded bg-black/10" />
+          <div className="h-2.5 w-16 animate-pulse rounded bg-black/10" />
+        </div>
+      </div>
+    );
+  }
+
+  // Inbound failed
+  if (isMediaFailed(message)) {
+    return (
+      <div className="flex items-center gap-2 px-3 py-2">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-danger-red/10 text-danger-red">
+          <FileText className="h-4 w-4" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-xs italic text-text-muted">Documento indisponível</p>
+          {onMediaRetry && <MediaRetryButton messageId={message.id} onRetry={onMediaRetry} />}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex items-center gap-2 px-3 py-2">
@@ -195,12 +344,31 @@ function DocumentContent({ message }: { message: InboxMessage }) {
   );
 }
 
-function StickerContent({ message }: { message: InboxMessage }) {
+function StickerContent({
+  message,
+  onMediaRetry,
+}: {
+  message: InboxMessage;
+  onMediaRetry?: () => void;
+}) {
   const [failed, setFailed] = useState(false);
   const url = localOrProxy(message);
 
-  if (failed) {
-    return <div className="p-2 text-3xl">🙂</div>;
+  // Inbound pending
+  if (isMediaPending(message)) {
+    return <div className="h-24 w-24 animate-pulse rounded bg-black/10 p-1" />;
+  }
+
+  // Inbound failed
+  if (isMediaFailed(message) || failed) {
+    return (
+      <div className="p-2">
+        <div className="text-2xl">🙂</div>
+        {isMediaFailed(message) && onMediaRetry && (
+          <MediaRetryButton messageId={message.id} onRetry={onMediaRetry} />
+        )}
+      </div>
+    );
   }
 
   return (
@@ -321,12 +489,15 @@ const KNOWN_TYPES = new Set(["text", "image", "audio", "video", "document", "sti
 export function MessageBubble({
   message,
   onRetry,
+  onMediaRetry,
 }: {
   message: InboxMessage;
   onRetry?: (message: InboxMessage) => void;
+  onMediaRetry?: (messageId: string) => void;
 }) {
   const isSent = message.direction === "outbound";
   const isFailed = message.send_status === "failed";
+  const mediaRetryFn = onMediaRetry ? () => onMediaRetry(message.id) : undefined;
 
   return (
     <div className={cn("flex", isSent ? "justify-end" : "justify-start")}>
@@ -340,11 +511,21 @@ export function MessageBubble({
         {message.message_type === "text" && (
           <p className="px-3 pt-2 whitespace-pre-wrap">{message.content}</p>
         )}
-        {message.message_type === "image" && <ImageContent message={message} />}
-        {message.message_type === "audio" && <AudioContent message={message} />}
-        {message.message_type === "video" && <VideoContent message={message} />}
-        {message.message_type === "document" && <DocumentContent message={message} />}
-        {message.message_type === "sticker" && <StickerContent message={message} />}
+        {message.message_type === "image" && (
+          <ImageContent message={message} onMediaRetry={mediaRetryFn} />
+        )}
+        {message.message_type === "audio" && (
+          <AudioContent message={message} onMediaRetry={mediaRetryFn} />
+        )}
+        {message.message_type === "video" && (
+          <VideoContent message={message} onMediaRetry={mediaRetryFn} />
+        )}
+        {message.message_type === "document" && (
+          <DocumentContent message={message} onMediaRetry={mediaRetryFn} />
+        )}
+        {message.message_type === "sticker" && (
+          <StickerContent message={message} onMediaRetry={mediaRetryFn} />
+        )}
         {message.message_type === "location" && <LocationContent message={message} />}
         {!KNOWN_TYPES.has(message.message_type) && (
           <p className="px-3 pt-2 italic text-text-muted">
@@ -357,7 +538,6 @@ export function MessageBubble({
         ) : (
           <div className="flex items-center gap-1 px-3 pb-2 pt-0.5 text-[10px] text-text-muted">
             <span>{formatDateTime(message.created_at).split(", ")[1] ?? formatDateTime(message.created_at)}</span>
-            {/* sending state for outbound-only, inbound never shows status */}
           </div>
         )}
       </div>

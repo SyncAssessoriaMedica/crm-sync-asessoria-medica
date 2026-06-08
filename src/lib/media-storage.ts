@@ -31,6 +31,36 @@ function mimeExtension(mime: string, mediaType: string): string {
   return ({ audio: "ogg", image: "jpg", video: "mp4", document: "bin", sticker: "webp" }[mediaType] ?? "bin");
 }
 
+// Handles three response shapes Evolution may return:
+//   { base64: "..." }
+//   { data: { base64: "..." } }
+//   { base64: "data:image/jpeg;base64,..." }  (data URI prefix)
+function extractBase64(json: unknown): string | null {
+  if (!json || typeof json !== "object") return null;
+  const r = json as Record<string, unknown>;
+  let raw: unknown = r.base64;
+  if ((raw === null || raw === undefined) && r.data && typeof r.data === "object") {
+    raw = (r.data as Record<string, unknown>).base64;
+  }
+  if (typeof raw !== "string" || !raw) return null;
+  // Strip data-URI prefix (data:image/jpeg;base64,...)
+  const semiColon = raw.indexOf(";base64,");
+  if (semiColon !== -1) return raw.slice(semiColon + 8);
+  return raw;
+}
+
+function extractMimetype(json: unknown, mediaType: string): string {
+  const fallback = MIME_DEFAULTS[mediaType] ?? "application/octet-stream";
+  if (!json || typeof json !== "object") return fallback;
+  const r = json as Record<string, unknown>;
+  if (typeof r.mimetype === "string" && r.mimetype) return r.mimetype;
+  if (r.data && typeof r.data === "object") {
+    const d = r.data as Record<string, unknown>;
+    if (typeof d.mimetype === "string" && d.mimetype) return d.mimetype;
+  }
+  return fallback;
+}
+
 export type MediaStoreResult = { url: string; mimetype: string };
 
 /**
@@ -49,9 +79,12 @@ export async function fetchAndStoreWhatsAppMedia(
   evolutionMsgId: string,
   mediaType: string
 ): Promise<MediaStoreResult | null> {
-  const baseUrl = process.env.EVOLUTION_API_URL;
+  const rawBase = process.env.EVOLUTION_API_URL;
   const apiKey  = process.env.EVOLUTION_API_KEY;
-  if (!baseUrl || !apiKey) return null;
+  if (!rawBase || !apiKey) return null;
+
+  // Normalize: remove trailing slashes and /manager suffix
+  const baseUrl = rawBase.replace(/\/+$/, "").replace(/\/manager$/, "");
 
   try {
     const res = await fetch(
@@ -76,17 +109,24 @@ export async function fetchAndStoreWhatsAppMedia(
       return null;
     }
 
-    const json = await res.json() as { base64?: string; mimetype?: string };
-    if (!json.base64) {
-      console.error("[media] getBase64 empty response msgId:", evolutionMsgId, "type:", mediaType);
+    const json = await res.json() as unknown;
+
+    const b64 = extractBase64(json);
+    if (!b64 || b64.length < 4) {
+      console.error("[media] getBase64 missing/empty base64 msgId:", evolutionMsgId, "type:", mediaType);
       return null;
     }
 
-    const mimeRaw     = json.mimetype ?? MIME_DEFAULTS[mediaType] ?? "application/octet-stream";
+    const mimeRaw     = extractMimetype(json, mediaType);
     const ext         = mimeExtension(mimeRaw, mediaType);
     const storagePath = `${organizationId}/${mediaType}/${evolutionMsgId}.${ext}`;
 
-    const buffer = Buffer.from(json.base64, "base64");
+    const buffer = Buffer.from(b64, "base64");
+    if (buffer.length < 4) {
+      console.error("[media] decoded buffer too small msgId:", evolutionMsgId);
+      return null;
+    }
+
     const { error: uploadErr } = await admin.storage
       .from("media")
       .upload(storagePath, buffer, { contentType: mimeRaw, upsert: false });

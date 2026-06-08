@@ -443,6 +443,9 @@ function Composer({
       send_status: "sending",
       send_error: null,
       client_message_id: clientMessageId,
+      media_status: null,
+      media_error: null,
+      media_attempts: null,
     };
 
     onOptimisticAdd(optimistic);
@@ -821,6 +824,40 @@ export function InboxClient({
     []
   );
 
+  // Detect pending inbound media in the active conversation.
+  // While any message is still downloading, poll every 2s for up to 30s so the
+  // UI updates even if the Supabase Realtime message arrives late or is missed.
+  const hasPendingMedia = useMemo(
+    () => visibleMessages.some(
+      (m) => m.direction !== "outbound" && (
+        m.media_status === "pending" ||
+        (m.media_url === null && m.media_status === null && ["image", "audio", "video", "document", "sticker"].includes(m.message_type))
+      )
+    ),
+    [visibleMessages]
+  );
+
+  useEffect(() => {
+    if (!hasPendingMedia) return;
+    const startTime = Date.now();
+    const timer = setInterval(() => {
+      if (Date.now() - startTime > 30_000) { clearInterval(timer); return; }
+      router.refresh();
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [hasPendingMedia, router]);
+
+  // Retry failed inbound media: calls the retry API endpoint, then refreshes.
+  const handleMediaRetry = useCallback(
+    async (messageId: string) => {
+      try {
+        await fetch(`/api/media/message/${messageId}/retry`, { method: "POST" });
+      } catch { /* ignore */ }
+      router.refresh();
+    },
+    [router]
+  );
+
   const handleRetry = useCallback(async (failedMessage: InboxMessage) => {
     // Optimistic: mark as sending
     if (failedMessage.id.startsWith("opt-")) {
@@ -1024,7 +1061,7 @@ export function InboxClient({
                   <div className="py-12 text-center text-xs text-text-muted">Nenhuma mensagem salva nesta conversa.</div>
                 )}
                 {visibleMessages.map((item) => (
-                  <MessageBubble key={item.id} message={item} onRetry={handleRetry} />
+                  <MessageBubble key={item.id} message={item} onRetry={handleRetry} onMediaRetry={handleMediaRetry} />
                 ))}
                 <div ref={messagesEndRef} />
               </div>

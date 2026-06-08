@@ -86,6 +86,53 @@ const ALLOWED_MESSAGE_TYPES = new Set(["text", "image", "audio", "video", "docum
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+// Fields that must never be stored (large preview blobs).
+const STRIP_MEDIA_PAYLOAD_KEYS = new Set([
+  "jpegThumbnail", "thumbnail", "waveform",
+]);
+
+// Recursively sanitise a media payload for storage. Strips large strings that
+// look like base64 blobs and the known large/sensitive keys above. Everything
+// else (including mediaKey which Evolution needs for decryption) is kept so
+// the retry endpoint can replay the original call.
+function sanitizeMediaPayload(obj: unknown, depth = 0): unknown {
+  if (depth > 6 || obj === null || obj === undefined) return obj;
+  if (typeof obj === "string") {
+    if (obj.length > 512 && !obj.startsWith("http")) return "[STRIPPED]";
+    return obj;
+  }
+  if (typeof obj === "number" || typeof obj === "boolean") return obj;
+  if (Array.isArray(obj)) {
+    if (obj.length > 32) return "[ARRAY_TRUNCATED]";
+    return obj.map((item) => sanitizeMediaPayload(item, depth + 1));
+  }
+  if (typeof obj === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+      if (STRIP_MEDIA_PAYLOAD_KEYS.has(key)) continue;
+      result[key] = sanitizeMediaPayload(value, depth + 1);
+    }
+    return result;
+  }
+  return obj;
+}
+
+// Unwrap WhatsApp message envelope types so media detection works correctly.
+// Evolution can deliver media inside ephemeralMessage, viewOnce, or
+// documentWithCaptionMessage wrappers. We recurse until we reach the real type.
+function unwrapMessage(message: Record<string, unknown>): Record<string, unknown> {
+  const eph = message.ephemeralMessage as Record<string, unknown> | undefined;
+  if (eph?.message) return unwrapMessage(eph.message as Record<string, unknown>);
+
+  const vo = (message.viewOnceMessage ?? message.viewOnceMessageV2) as Record<string, unknown> | undefined;
+  if (vo?.message) return unwrapMessage(vo.message as Record<string, unknown>);
+
+  const dwc = message.documentWithCaptionMessage as Record<string, unknown> | undefined;
+  if (dwc?.message) return unwrapMessage(dwc.message as Record<string, unknown>);
+
+  return message;
+}
+
 function isGroupMessage(remoteJid: string) {
   return remoteJid.includes("@g.us");
 }
@@ -142,7 +189,8 @@ async function logWebhook(
 // ─── Message content extraction ───────────────────────────────────────────────
 
 function getMessageContent(data: NonNullable<EvolutionPayload["data"]>) {
-  const message = (data.message ?? {}) as Record<string, unknown>;
+  // Unwrap ephemeral/viewOnce/documentWithCaption envelopes before detection
+  const message = unwrapMessage((data.message ?? {}) as Record<string, unknown>);
   const messageType = data.messageType ?? "text";
 
   if (typeof message.conversation === "string") {
@@ -656,6 +704,15 @@ async function handleMessageEvent(admin: SupabaseAdmin, payload: NormalizedPaylo
   const conversation = await resolveConversation(admin, instance.organization_id, instance.id, remoteJid, lead.id);
   const messageContent = getMessageContent(data);
 
+  const STORABLE_TYPES = new Set(["audio", "image", "video", "document", "sticker"]);
+  const isStorable = STORABLE_TYPES.has(messageContent.type);
+
+  // Store minimal webhook payload for retry without thumbnails/binary hashes.
+  // media_payload is only set for storable types; never include base64 blobs.
+  const mediaPayload = isStorable
+    ? sanitizeMediaPayload({ key: data.key, message: data.message, messageType: data.messageType })
+    : null;
+
   const messagePayload = {
     conversation_id: conversation.id,
     evolution_msg_id: evolutionMessageId,
@@ -667,6 +724,9 @@ async function handleMessageEvent(admin: SupabaseAdmin, payload: NormalizedPaylo
     media_filename: messageContent.mediaFilename ?? null,
     media_duration: messageContent.mediaDuration ?? null,
     created_at: getTimestamp(data),
+    // media_status tracks the async download lifecycle for storable types
+    media_status: isStorable ? "pending" : null,
+    media_payload: mediaPayload,
   };
 
   const { data: insertedMessage, error: messageError } = await admin
@@ -703,8 +763,7 @@ async function handleMessageEvent(admin: SupabaseAdmin, payload: NormalizedPaylo
 
     // All WhatsApp media is AES-CBC encrypted. Fetch + decrypt via Evolution after
     // the response so Evolution doesn't retry the webhook while we wait.
-    const STORABLE_TYPES = new Set(["audio", "image", "video", "document", "sticker"]);
-    if (STORABLE_TYPES.has(messageContent.type)) {
+    if (isStorable) {
       const msgId    = insertedMessage.id;
       const mediaType = messageContent.type;
       after(async () => {
@@ -719,7 +778,28 @@ async function handleMessageEvent(admin: SupabaseAdmin, payload: NormalizedPaylo
         if (stored) {
           await admin
             .from("messages")
-            .update({ media_url: stored.url, media_mimetype: stored.mimetype })
+            .update({
+              media_url:      stored.url,
+              media_mimetype: stored.mimetype,
+              media_status:   "ready",
+              media_error:    null,
+              media_attempts: 1,
+            })
+            .eq("id", msgId);
+        } else {
+          // Increment attempts (read-then-write; single writer, race-safe enough)
+          const { data: cur } = await admin
+            .from("messages")
+            .select("media_attempts")
+            .eq("id", msgId)
+            .single();
+          await admin
+            .from("messages")
+            .update({
+              media_status:   "failed",
+              media_error:    "Falha ao baixar midia da Evolution.",
+              media_attempts: (cur?.media_attempts ?? 0) + 1,
+            })
             .eq("id", msgId);
         }
       });

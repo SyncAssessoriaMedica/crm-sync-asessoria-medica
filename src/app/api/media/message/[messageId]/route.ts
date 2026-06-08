@@ -137,11 +137,11 @@ export async function GET(
   // 2. Load message
   const { data: message } = await admin
     .from("messages")
-    .select("id, conversation_id, media_url, media_mimetype, media_filename, message_type")
+    .select("id, conversation_id, media_url, media_mimetype, media_filename, message_type, media_status")
     .eq("id", messageId)
-    .single();
+    .maybeSingle();
 
-  if (!message?.media_url) {
+  if (!message) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
@@ -179,6 +179,20 @@ export async function GET(
 
   if (!effectiveRole || !canAccessInbox(effectiveRole)) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  // Async media download not finished yet — tell the client to wait
+  if (message.media_status === "pending") {
+    return NextResponse.json({ status: "pending" }, { status: 202 });
+  }
+
+  // Download permanently failed
+  if (message.media_status === "failed") {
+    return NextResponse.json({ status: "failed", error: "Media download failed" }, { status: 422 });
+  }
+
+  if (!message.media_url) {
+    return NextResponse.json({ error: "Media not available" }, { status: 404 });
   }
 
   // 5. Supabase Storage path — no SSRF guard needed, served via admin client
