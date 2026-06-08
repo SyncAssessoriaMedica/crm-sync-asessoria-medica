@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getOrganizationContext } from "@/lib/organization-context";
-import { buildLocationPayloadForOrg } from "@/lib/lead-location";
+import { buildLocationPayload, buildLocationPayloadForOrg, getOrganizationServiceArea } from "@/lib/lead-location";
 import { createAdminClient } from "@/lib/supabase/server";
 import type { LeadStatus } from "@/lib/types";
 
@@ -960,13 +960,17 @@ export async function importLeadsAction(
     const normalizedPhones = importRows.map((r) => normalizePhone(r.phone)).filter(Boolean);
     const { data: existingLeads } = await admin
       .from("leads")
-      .select("id, phone")
+      .select("id, phone, location_manually_edited")
       .eq("organization_id", organizationId)
       .in("phone", normalizedPhones);
 
     const phoneToId = new Map((existingLeads ?? []).map((l) => [normalizePhone(l.phone), l.id as string]));
+    const phoneToManualLocation = new Map(
+      (existingLeads ?? []).map((l) => [normalizePhone(l.phone), l.location_manually_edited === true])
+    );
     const normalizedStageId = stageId || null;
     const status = await getStatusForStage(admin, normalizedStageId);
+    const serviceArea = await getOrganizationServiceArea(admin, organizationId);
 
     const toCreate: object[] = [];
     const toUpdate: Array<{ id: string; data: object }> = [];
@@ -991,9 +995,19 @@ export async function importLeadsAction(
       };
       const existingId = phoneToId.get(phone);
       if (existingId) {
-        toUpdate.push({ id: existingId, data: payload });
+        toUpdate.push({
+          id: existingId,
+          data: {
+            ...payload,
+            ...buildLocationPayload(phone, serviceArea, phoneToManualLocation.get(phone) === true),
+          },
+        });
       } else {
-        toCreate.push({ ...payload, organization_id: organizationId });
+        toCreate.push({
+          ...payload,
+          ...buildLocationPayload(phone, serviceArea),
+          organization_id: organizationId,
+        });
       }
     }
 
