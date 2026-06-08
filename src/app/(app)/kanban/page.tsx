@@ -140,6 +140,7 @@ export default async function KanbanPage({
 
   return (
     <KanbanClient
+      key={`${range.start.toISOString()}-${range.end.toISOString()}-${sourceFilter}-${serviceFilter}-${q}`}
       initialColumns={initialColumns}
       options={options}
       organizationName={organization?.name ?? "Sync Marketing"}

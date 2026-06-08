@@ -17,6 +17,17 @@ function firstRelation<T>(value: T | T[] | null): T | null {
   return Array.isArray(value) ? value[0] ?? null : value;
 }
 
+function mergeConversationRows(rows: ConversationRow[], extraRows: ConversationRow[]) {
+  const seen = new Set(rows.map((row) => row.id));
+  const merged = [...rows];
+  for (const row of extraRows) {
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    merged.push(row);
+  }
+  return merged;
+}
+
 function getDateMode(value?: string): InboxDateMode {
   return value === "created" ? "created" : "activity";
 }
@@ -124,6 +135,8 @@ export default async function InboxPage({
 
   const selectedConversationId = params?.conversation ?? "";
   const leadParam = params?.lead ?? "";
+  const searchTerm = (params?.q ?? "").trim();
+  const searchDigits = searchTerm.replace(/\D/g, "");
   const initialRows = ((conversationsResult.data ?? []) as unknown as ConversationRow[]).filter((conversation) => {
     const instance = firstRelation(conversation.instance);
     return !instance?.deleted_at;
@@ -159,6 +172,56 @@ export default async function InboxPage({
     ),
     instance:whatsapp_instances(id, instance_name, phone_number, status, deleted_at)
   `;
+
+  if (searchTerm) {
+    const leadConditions = [`name.ilike.%${searchTerm}%`, `procedure.ilike.%${searchTerm}%`];
+    if (searchDigits.length >= 4) leadConditions.push(`phone.ilike.%${searchDigits}%`);
+
+    const [{ data: matchingLeads }, remoteConversationResult] = await Promise.all([
+      admin
+        .from("leads")
+        .select("id")
+        .eq("organization_id", organizationId)
+        .or(leadConditions.join(","))
+        .limit(50),
+      searchDigits.length >= 4
+        ? admin
+            .from("conversations")
+            .select(CONVERSATION_SELECT)
+            .eq("organization_id", organizationId)
+            .not("lead_id", "is", null)
+            .gte(dateColumn, range.start.toISOString())
+            .lt(dateColumn, range.end.toISOString())
+            .ilike("remote_jid", `%${searchDigits}%`)
+            .order(dateColumn, { ascending: false })
+            .limit(50)
+        : Promise.resolve({ data: [] as ConversationRow[] }),
+    ]);
+
+    const leadIds = ((matchingLeads ?? []) as { id: string }[]).map((lead) => lead.id);
+    const { data: leadConversationRows } = leadIds.length
+      ? await admin
+          .from("conversations")
+          .select(CONVERSATION_SELECT)
+          .eq("organization_id", organizationId)
+          .not("lead_id", "is", null)
+          .gte(dateColumn, range.start.toISOString())
+          .lt(dateColumn, range.end.toISOString())
+          .in("lead_id", leadIds)
+          .order(dateColumn, { ascending: false })
+          .limit(50)
+      : { data: [] as ConversationRow[] };
+
+    const searchRows = [
+      ...(((remoteConversationResult.data ?? []) as unknown as ConversationRow[])),
+      ...(((leadConversationRows ?? []) as unknown as ConversationRow[])),
+    ].filter((conversation) => {
+      const instance = firstRelation(conversation.instance);
+      return !instance?.deleted_at;
+    });
+
+    rows = mergeConversationRows(searchRows, rows);
+  }
 
   if (selectedConversationId && !initialRows.some((conversation) => conversation.id === selectedConversationId)) {
     const { data: selectedConversation } = await admin

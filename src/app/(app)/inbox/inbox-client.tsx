@@ -117,6 +117,10 @@ function cleanJid(remoteJid: string) {
   return remoteJid.replace("@s.whatsapp.net", "").replace("@c.us", "");
 }
 
+function onlyDigits(value: string) {
+  return value.replace(/\D/g, "");
+}
+
 function lastMessagePreview(message: InboxMessage | null) {
   if (!message) return "Conversa iniciada";
   if (message.message_type !== "text") return MEDIA_LABELS[message.message_type] ?? message.message_type;
@@ -646,6 +650,7 @@ export function InboxClient({
 
   const filteredConversations = useMemo(() => {
     const term = search.toLowerCase().trim();
+    const termDigits = onlyDigits(term);
     return conversations.filter((conversation) => {
       const lead = conversation.lead;
       const haystack = [
@@ -660,7 +665,17 @@ export function InboxClient({
         .filter(Boolean)
         .join(" ")
         .toLowerCase();
-      const matchesSearch = term === "" || haystack.includes(term);
+      const digitHaystack = [
+        lead?.phone,
+        conversation.remote_jid,
+      ]
+        .filter(Boolean)
+        .map((value) => onlyDigits(String(value)))
+        .join(" ");
+      const matchesSearch =
+        term === "" ||
+        haystack.includes(term) ||
+        (termDigits.length >= 4 && digitHaystack.includes(termDigits));
       const matchesFilter =
         filter === "all" ||
         (filter === "unread" && conversation.unread_count > 0) ||

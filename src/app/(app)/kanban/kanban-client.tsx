@@ -49,6 +49,15 @@ type KanbanClientProps = {
   currentFilters: { source: string; service: string; q: string };
 };
 
+function toColumnState(columns: KanbanColumnData[]): ColumnState[] {
+  return columns.map((col) => ({
+    ...col,
+    offset: col.leads.length,
+    hasMore: col.leads.length === 50,
+    loading: false,
+  }));
+}
+
 export function KanbanClient({
   initialColumns,
   options,
@@ -63,14 +72,7 @@ export function KanbanClient({
   const [navPending, startNavTransition] = useTransition();
   const [movePending, startMoveTransition] = useTransition();
 
-  const [columns, setColumns] = useState<ColumnState[]>(() =>
-    initialColumns.map((col) => ({
-      ...col,
-      offset: col.leads.length,
-      hasMore: col.leads.length === 50,
-      loading: false,
-    }))
-  );
+  const [columns, setColumns] = useState<ColumnState[]>(() => toColumnState(initialColumns));
   const [message, setMessage] = useState<string | null>(null);
   const [draggingLeadId, setDraggingLeadId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
