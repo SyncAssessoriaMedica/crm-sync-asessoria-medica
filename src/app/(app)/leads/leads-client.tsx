@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -100,7 +100,6 @@ export function LeadsClient({
   leads,
   options,
   locationOptions,
-  organizationId,
   organizationName,
   periodLabel,
   role,
@@ -193,11 +192,12 @@ export function LeadsClient({
   const allVisibleSelected = visibleIds.length > 0 && selectedVisible.length === visibleIds.length;
   const someSelected = selectedVisible.length > 0 && !allVisibleSelected;
 
-  // Drive indeterminate state imperatively
-  if (selectAllRef.current) {
+  // Drive the select-all checkbox indeterminate state outside render.
+  useEffect(() => {
+    if (!selectAllRef.current) return;
     selectAllRef.current.checked = allVisibleSelected;
     selectAllRef.current.indeterminate = someSelected;
-  }
+  }, [allVisibleSelected, someSelected]);
 
   const selectedCount = selectedVisible.length;
 
