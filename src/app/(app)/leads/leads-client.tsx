@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   AlertCircle,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ChevronUp,
   ChevronsUpDown,
   Copy,
@@ -42,7 +44,6 @@ import {
 } from "@/components/ui/select";
 import { cn, formatCurrency, formatDate, formatPhone, getInitials } from "@/lib/utils";
 import { LOCATION_STATUS_LABELS } from "@/lib/lead-location";
-import { createClient } from "@/lib/supabase/client";
 import type { LeadListItem, LeadOptionData } from "./types";
 import {
   createLeadAction,
@@ -55,127 +56,150 @@ import { LeadForm } from "./lead-form";
 import { BulkEditModal } from "./bulk-edit-modal";
 import { ImportLeadsModal } from "./import-leads-modal";
 
+type EnrichedLead = LeadListItem & {
+  no_followup_48h: boolean;
+  inbox_conversation_id: string | null;
+};
+
+type PaginationInfo = {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  from: number;
+  to: number;
+};
+
+type FilterState = {
+  q: string;
+  stage: string;
+  source: string;
+  service: string;
+  state: string;
+  city: string;
+  area: string;
+  followup: string;
+  sort: string;
+  dir: string;
+};
+
 type LeadsClientProps = {
-  leads: LeadListItem[];
+  leads: EnrichedLead[];
   options: LeadOptionData;
+  locationOptions: { states: string[]; cities: string[] };
   organizationId: string;
   organizationName: string;
   periodLabel: string;
   role: string;
+  pagination: PaginationInfo;
+  filters: FilterState;
+  noFollowupCount: number;
 };
 
-export function LeadsClient({ leads, options, organizationId, organizationName, periodLabel, role }: LeadsClientProps) {
+export function LeadsClient({
+  leads,
+  options,
+  locationOptions,
+  organizationId,
+  organizationName,
+  periodLabel,
+  role,
+  pagination,
+  filters,
+  noFollowupCount,
+}: LeadsClientProps) {
   const router = useRouter();
-  const [search, setSearch] = useState("");
-  const [stageFilter, setStageFilter] = useState("all");
-  const [sourceFilter, setSourceFilter] = useState("all");
-  const [serviceFilter, setServiceFilter] = useState("all");
-  const [stateFilter, setStateFilter] = useState("all");
-  const [cityFilter, setCityFilter] = useState("all");
-  const [areaFilter, setAreaFilter] = useState("all");
-  const [followupFilter, setFollowupFilter] = useState("all");
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [sortField, setSortField] = useState<keyof LeadListItem>("created_at");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const searchParams = useSearchParams();
+  const [isPending, startTransition] = useTransition();
+
+  // Local state only for UI that doesn't need URL persistence
+  const [searchInput, setSearchInput] = useState(filters.q);
+  const searchDebounceRef = useRef<number | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(
+    !!(filters.stage || filters.source || filters.service || filters.state || filters.city || filters.area || filters.followup)
+  );
   const [formMode, setFormMode] = useState<"create" | "edit" | null>(null);
   const [editingLead, setEditingLead] = useState<LeadListItem | undefined>();
   const [importOpen, setImportOpen] = useState(false);
   const [editingCustomValues, setEditingCustomValues] = useState<Record<string, string>>({});
   const [message, setMessage] = useState<string | null>(null);
-  const [isPending, startTransition] = useTransition();
-
-  useEffect(() => {
-    const supabase = createClient();
-    let refreshTimer: number | null = null;
-
-    const refreshSoon = () => {
-      if (refreshTimer) window.clearTimeout(refreshTimer);
-      refreshTimer = window.setTimeout(() => {
-        if (document.visibilityState === "visible") router.refresh();
-      }, 500);
-    };
-
-    const channel = supabase
-      .channel(`leads-live-${organizationId}`)
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "leads", filter: `organization_id=eq.${organizationId}` },
-        refreshSoon
-      )
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "webhook_events", filter: `organization_id=eq.${organizationId}` },
-        refreshSoon
-      )
-      .subscribe();
-
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") router.refresh();
-    }, 20_000);
-    const onFocus = () => router.refresh();
-    window.addEventListener("focus", onFocus);
-
-    return () => {
-      if (refreshTimer) window.clearTimeout(refreshTimer);
-      window.clearInterval(interval);
-      window.removeEventListener("focus", onFocus);
-      void supabase.removeChannel(channel);
-    };
-  }, [organizationId, router]);
-
-  // ── Bulk selection ──────────────────────────────────────────────────────────
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkEditOpen, setBulkEditOpen] = useState(false);
   const selectAllRef = useRef<HTMLInputElement>(null);
 
   const canBulkDelete = ["super_admin", "gestor_sync", "admin_clinica"].includes(role);
 
-  const filtered = useMemo(() => {
-    const normalizedSearch = search.toLowerCase().trim();
-    return leads.filter((lead) => {
-      const matchesSearch =
-        normalizedSearch === "" ||
-        lead.name.toLowerCase().includes(normalizedSearch) ||
-        lead.phone.includes(normalizedSearch.replace(/\D/g, "")) ||
-        (lead.email?.toLowerCase().includes(normalizedSearch) ?? false) ||
-        (lead.procedure?.toLowerCase().includes(normalizedSearch) ?? false) ||
-        (lead.service?.name.toLowerCase().includes(normalizedSearch) ?? false);
-      const matchesStage = stageFilter === "all" || lead.stage_id === stageFilter;
-      const matchesSource = sourceFilter === "all" || lead.source_id === sourceFilter;
-      const matchesService = serviceFilter === "all" || lead.service_id === serviceFilter;
-      const matchesState = stateFilter === "all" || lead.detected_state === stateFilter;
-      const matchesCity = cityFilter === "all" || lead.detected_city === cityFilter;
-      const matchesArea = areaFilter === "all" || lead.service_area_status === areaFilter;
-      const matchesFollowup = followupFilter === "all" || lead.no_followup_48h === true;
-      return matchesSearch && matchesStage && matchesSource && matchesService && matchesState && matchesCity && matchesArea && matchesFollowup;
-    });
-  }, [areaFilter, cityFilter, followupFilter, leads, search, serviceFilter, sourceFilter, stageFilter, stateFilter]);
+  // ── URL navigation helpers ────────────────────────────────────────────────
+  function navigateFilter(updates: Record<string, string | number | undefined>) {
+    const next = new URLSearchParams(searchParams.toString());
+    next.delete("page"); // always reset to page 1 on filter change
+    for (const [key, value] of Object.entries(updates)) {
+      if (value === undefined || value === "" || value === "all") {
+        next.delete(key);
+      } else {
+        next.set(key, String(value));
+      }
+    }
+    startTransition(() => router.replace(`?${next.toString()}`));
+  }
 
-  const sorted = useMemo(() => {
-    return [...filtered].sort((a, b) => {
-      const aVal = a[sortField] ?? "";
-      const bVal = b[sortField] ?? "";
-      if (aVal < bVal) return sortDir === "asc" ? -1 : 1;
-      if (aVal > bVal) return sortDir === "asc" ? 1 : -1;
-      return 0;
-    });
-  }, [filtered, sortDir, sortField]);
+  function navigatePage(newPage: number) {
+    const next = new URLSearchParams(searchParams.toString());
+    if (newPage <= 1) {
+      next.delete("page");
+    } else {
+      next.set("page", String(newPage));
+    }
+    startTransition(() => router.push(`?${next.toString()}`));
+  }
 
-  // Drive the select-all checkbox indeterminate state
-  useEffect(() => {
-    if (!selectAllRef.current) return;
-    const visibleIds = sorted.map((l) => l.id);
-    const selectedVisible = visibleIds.filter((id) => selectedIds.has(id));
-    const allSelected = visibleIds.length > 0 && selectedVisible.length === visibleIds.length;
-    const someSelected = selectedVisible.length > 0 && !allSelected;
-    selectAllRef.current.checked = allSelected;
+  // ── Search with debounce ──────────────────────────────────────────────────
+  function handleSearchChange(value: string) {
+    setSearchInput(value);
+    if (searchDebounceRef.current) window.clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = window.setTimeout(() => {
+      navigateFilter({ q: value });
+    }, 400);
+  }
+
+  // ── Sort ──────────────────────────────────────────────────────────────────
+  function handleSort(field: string) {
+    const newDir = filters.sort === field && filters.dir === "asc" ? "desc" : "asc";
+    navigateFilter({ sort: field, dir: newDir });
+  }
+
+  function SortIcon({ field }: { field: string }) {
+    if (filters.sort !== field) return <ChevronsUpDown className="h-3 w-3 text-text-muted" />;
+    return filters.dir === "asc" ? (
+      <ChevronUp className="h-3 w-3 text-brand-green" />
+    ) : (
+      <ChevronDown className="h-3 w-3 text-brand-green" />
+    );
+  }
+
+  // ── Clear all filters ─────────────────────────────────────────────────────
+  function clearFilters() {
+    setSearchInput("");
+    const next = new URLSearchParams(searchParams.toString());
+    for (const key of ["q", "stage", "source", "service", "state", "city", "area", "followup", "page"]) {
+      next.delete(key);
+    }
+    startTransition(() => router.replace(`?${next.toString()}`));
+  }
+
+  // ── Bulk selection ────────────────────────────────────────────────────────
+  const visibleIds = leads.map((l) => l.id);
+  const selectedVisible = visibleIds.filter((id) => selectedIds.has(id));
+  const allVisibleSelected = visibleIds.length > 0 && selectedVisible.length === visibleIds.length;
+  const someSelected = selectedVisible.length > 0 && !allVisibleSelected;
+
+  // Drive indeterminate state imperatively
+  if (selectAllRef.current) {
+    selectAllRef.current.checked = allVisibleSelected;
     selectAllRef.current.indeterminate = someSelected;
-  }, [sorted, selectedIds]);
+  }
 
-  const selectedCount = useMemo(
-    () => sorted.filter((l) => selectedIds.has(l.id)).length,
-    [sorted, selectedIds]
-  );
+  const selectedCount = selectedVisible.length;
 
   function toggleSelect(id: string) {
     setSelectedIds((prev) => {
@@ -187,9 +211,7 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
   }
 
   function toggleSelectAll() {
-    const visibleIds = sorted.map((l) => l.id);
-    const allSelected = visibleIds.every((id) => selectedIds.has(id));
-    if (allSelected) {
+    if (allVisibleSelected) {
       setSelectedIds((prev) => {
         const next = new Set(prev);
         visibleIds.forEach((id) => next.delete(id));
@@ -205,7 +227,7 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
   }
 
   function handleBulkDelete() {
-    const ids = sorted.filter((l) => selectedIds.has(l.id)).map((l) => l.id);
+    const ids = leads.filter((l) => selectedIds.has(l.id)).map((l) => l.id);
     if (!ids.length) return;
     if (
       !confirm(
@@ -216,38 +238,20 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
     startTransition(async () => {
       const result = await deleteLeadsBulkAction(ids);
       setMessage(result.message);
-      if (result.ok) clearSelection();
+      if (result.ok) {
+        clearSelection();
+        router.refresh();
+      }
     });
   }
 
-  const locationOptions = useMemo(() => {
-    const states = Array.from(new Set(leads.map((lead) => lead.detected_state).filter(Boolean) as string[])).sort();
-    const cities = Array.from(new Set(leads.map((lead) => lead.detected_city).filter(Boolean) as string[])).sort();
-    return { states, cities };
-  }, [leads]);
+  // ── Active filter count ───────────────────────────────────────────────────
+  const activeFilterCount = [
+    filters.stage, filters.source, filters.service,
+    filters.state, filters.city, filters.area, filters.followup,
+  ].filter((v) => v !== "" && v !== "all").length;
 
-  const activeFilterCount = [stageFilter, sourceFilter, serviceFilter, stateFilter, cityFilter, areaFilter, followupFilter].filter(
-    (v) => v !== "all"
-  ).length;
-  const noFollowupCount = useMemo(() => leads.filter((lead) => lead.no_followup_48h).length, [leads]);
-
-  const handleSort = (field: keyof LeadListItem) => {
-    if (sortField === field) setSortDir(sortDir === "asc" ? "desc" : "asc");
-    else {
-      setSortField(field);
-      setSortDir("asc");
-    }
-  };
-
-  const SortIcon = ({ field }: { field: keyof LeadListItem }) => {
-    if (sortField !== field) return <ChevronsUpDown className="h-3 w-3 text-text-muted" />;
-    return sortDir === "asc" ? (
-      <ChevronUp className="h-3 w-3 text-brand-green" />
-    ) : (
-      <ChevronDown className="h-3 w-3 text-brand-green" />
-    );
-  };
-
+  // ── Lead form ─────────────────────────────────────────────────────────────
   function openEdit(lead: LeadListItem) {
     const existingValues = Object.fromEntries(
       (lead.custom_field_values ?? []).map((cv) => [cv.field_id, cv.value ?? ""])
@@ -269,22 +273,13 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
     setEditingCustomValues({});
   }
 
+  // ── Export CSV (current page) ─────────────────────────────────────────────
   function exportCsv(rows: LeadListItem[]) {
     const fieldNames = options.customFields.map((f) => f.name);
     const headers = [
-      "Nome",
-      "Telefone",
-      "Email",
-      "Origem",
-      "Servico",
-      "Procedimento",
-      "Etapa",
-      "Valor potencial",
-      "Valor fechado",
-      "Tags",
-      ...fieldNames,
-      "Criado em",
-      "Ultima interacao",
+      "Nome", "Telefone", "Email", "Origem", "Servico", "Procedimento",
+      "Etapa", "Valor potencial", "Valor fechado", "Tags", ...fieldNames,
+      "Criado em", "Ultima interacao",
     ];
 
     const csvRows = rows.map((lead) => {
@@ -292,26 +287,15 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
         .map((lt) => (Array.isArray(lt.tags) ? lt.tags[0] : lt.tags)?.name ?? "")
         .filter(Boolean)
         .join("; ");
-
       const customValueMap = Object.fromEntries(
         (lead.custom_field_values ?? []).map((cv) => [cv.field_id, cv.value ?? ""])
       );
       const customValues = options.customFields.map((f) => customValueMap[f.id] ?? "");
-
       return [
-        lead.name,
-        lead.phone,
-        lead.email ?? "",
-        lead.source?.name ?? "",
-        lead.service?.name ?? "",
-        lead.procedure ?? "",
-        lead.stage?.name ?? "",
-        lead.potential_value ?? "",
-        lead.closed_value ?? "",
-        leadTagNames,
-        ...customValues,
-        lead.created_at,
-        lead.last_interaction_at ?? "",
+        lead.name, lead.phone, lead.email ?? "", lead.source?.name ?? "",
+        lead.service?.name ?? "", lead.procedure ?? "", lead.stage?.name ?? "",
+        lead.potential_value ?? "", lead.closed_value ?? "", leadTagNames,
+        ...customValues, lead.created_at, lead.last_interaction_at ?? "",
       ]
         .map((value) => `"${String(value).replace(/"/g, '""')}"`)
         .join(",");
@@ -339,16 +323,15 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
     startTransition(async () => {
       const result = await deleteLeadAction(lead.id);
       setMessage(result.message);
+      if (result.ok) router.refresh();
     });
   }
 
-  const selectedLeadIds = useMemo(
-    () => sorted.filter((l) => selectedIds.has(l.id)).map((l) => l.id),
-    [sorted, selectedIds]
-  );
+  const selectedLeadIds = leads.filter((l) => selectedIds.has(l.id)).map((l) => l.id);
 
   return (
     <div className="space-y-5">
+      {/* ── Header ──────────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between gap-4">
         <div>
           <p className="label-eyebrow text-text-muted">{organizationName}</p>
@@ -356,9 +339,9 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
           <p className="mt-1 text-xs text-text-muted">Periodo: {periodLabel}</p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="secondary" size="sm" className="gap-1.5" onClick={() => exportCsv(sorted)}>
+          <Button variant="secondary" size="sm" className="gap-1.5" onClick={() => exportCsv(leads)}>
             <Download className="h-3.5 w-3.5" />
-            Exportar
+            Exportar pagina
           </Button>
           <Button variant="secondary" size="sm" className="gap-1.5" onClick={() => setImportOpen(true)}>
             <Upload className="h-3.5 w-3.5" />
@@ -371,30 +354,29 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
         </div>
       </div>
 
+      {/* ── Filters ─────────────────────────────────────────────────────────── */}
       <div className="rounded-xl border border-border bg-white p-4 shadow-card">
         <div className="flex flex-wrap items-center gap-3">
           <div className="relative min-w-48 flex-1">
             <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-muted" />
             <Input
-              placeholder="Buscar por nome, telefone, email, procedimento..."
+              placeholder="Buscar por nome, telefone, procedimento..."
               className="h-8 pl-8 text-xs"
-              value={search}
-              onChange={(event) => {
-                setSearch(event.target.value);
-                setSelectedIds(new Set());
-              }}
+              value={searchInput}
+              onChange={(e) => handleSearchChange(e.target.value)}
             />
           </div>
-          <Select value={stageFilter} onValueChange={(v) => { setStageFilter(v); setSelectedIds(new Set()); }}>
+          <Select
+            value={filters.stage || "all"}
+            onValueChange={(v) => { navigateFilter({ stage: v }); setSelectedIds(new Set()); }}
+          >
             <SelectTrigger className="h-8 w-44 text-xs">
               <SelectValue placeholder="Todas as etapas" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Todas as etapas</SelectItem>
               {options.stages.map((stage) => (
-                <SelectItem key={stage.id} value={stage.id}>
-                  {stage.name}
-                </SelectItem>
+                <SelectItem key={stage.id} value={stage.id}>{stage.name}</SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -407,71 +389,67 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
             <Filter className="h-3.5 w-3.5" />
             Filtros {activeFilterCount > 0 ? `(${activeFilterCount})` : ""}
           </Button>
-          <span className="ml-auto text-xs text-text-muted">{sorted.length} leads</span>
+          <span className={cn("ml-auto text-xs text-text-muted", isPending && "opacity-50")}>
+            {pagination.total === 0
+              ? "Nenhum lead"
+              : `Exibindo ${pagination.from}–${pagination.to} de ${pagination.total} leads`}
+          </span>
         </div>
 
         {showAdvanced && (
           <div className="mt-4 grid gap-3 border-t border-border pt-4 md:grid-cols-2 lg:grid-cols-3">
-            <FilterSelect label="Origem" value={sourceFilter} onValueChange={(v) => { setSourceFilter(v); setSelectedIds(new Set()); }}>
+            <FilterSelect
+              label="Origem"
+              value={filters.source || "all"}
+              onValueChange={(v) => { navigateFilter({ source: v }); setSelectedIds(new Set()); }}
+            >
               <SelectItem value="all">Todas as origens</SelectItem>
-              {options.sources.map((source) => (
-                <SelectItem key={source.id} value={source.id}>
-                  {source.name}
-                </SelectItem>
-              ))}
+              {options.sources.map((s) => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
             </FilterSelect>
-            <FilterSelect label="Servico" value={serviceFilter} onValueChange={(v) => { setServiceFilter(v); setSelectedIds(new Set()); }}>
+            <FilterSelect
+              label="Servico"
+              value={filters.service || "all"}
+              onValueChange={(v) => { navigateFilter({ service: v }); setSelectedIds(new Set()); }}
+            >
               <SelectItem value="all">Todos os servicos</SelectItem>
-              {options.services.map((service) => (
-                <SelectItem key={service.id} value={service.id}>
-                  {service.name}
-                </SelectItem>
-              ))}
+              {options.services.map((s) => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
             </FilterSelect>
-            <FilterSelect label="Estado" value={stateFilter} onValueChange={(v) => { setStateFilter(v); setSelectedIds(new Set()); }}>
+            <FilterSelect
+              label="Estado"
+              value={filters.state || "all"}
+              onValueChange={(v) => { navigateFilter({ state: v }); setSelectedIds(new Set()); }}
+            >
               <SelectItem value="all">Todos os estados</SelectItem>
-              {locationOptions.states.map((state) => (
-                <SelectItem key={state} value={state}>
-                  {state}
-                </SelectItem>
-              ))}
+              {locationOptions.states.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
             </FilterSelect>
-            <FilterSelect label="Cidade provavel" value={cityFilter} onValueChange={(v) => { setCityFilter(v); setSelectedIds(new Set()); }}>
+            <FilterSelect
+              label="Cidade provavel"
+              value={filters.city || "all"}
+              onValueChange={(v) => { navigateFilter({ city: v }); setSelectedIds(new Set()); }}
+            >
               <SelectItem value="all">Todas as cidades</SelectItem>
-              {locationOptions.cities.map((city) => (
-                <SelectItem key={city} value={city}>
-                  {city}
-                </SelectItem>
-              ))}
+              {locationOptions.cities.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
             </FilterSelect>
-            <FilterSelect label="Area de atuacao" value={areaFilter} onValueChange={(v) => { setAreaFilter(v); setSelectedIds(new Set()); }}>
+            <FilterSelect
+              label="Area de atuacao"
+              value={filters.area || "all"}
+              onValueChange={(v) => { navigateFilter({ area: v }); setSelectedIds(new Set()); }}
+            >
               <SelectItem value="all">Todas</SelectItem>
               {Object.entries(LOCATION_STATUS_LABELS).map(([value, label]) => (
-                <SelectItem key={value} value={value}>
-                  {label}
-                </SelectItem>
+                <SelectItem key={value} value={value}>{label}</SelectItem>
               ))}
             </FilterSelect>
-            <FilterSelect label="Follow-up" value={followupFilter} onValueChange={(v) => { setFollowupFilter(v); setSelectedIds(new Set()); }}>
+            <FilterSelect
+              label="Follow-up"
+              value={filters.followup || "all"}
+              onValueChange={(v) => { navigateFilter({ followup: v }); setSelectedIds(new Set()); }}
+            >
               <SelectItem value="all">Todos</SelectItem>
               <SelectItem value="no_followup_48h">Sem follow-up 48h+</SelectItem>
             </FilterSelect>
             <div className="flex items-end">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setSearch("");
-                  setStageFilter("all");
-                  setSourceFilter("all");
-                  setServiceFilter("all");
-                  setStateFilter("all");
-                  setCityFilter("all");
-                  setAreaFilter("all");
-                  setFollowupFilter("all");
-                  setSelectedIds(new Set());
-                }}
-              >
+              <Button variant="ghost" size="sm" onClick={clearFilters}>
                 Limpar filtros
               </Button>
             </div>
@@ -479,13 +457,14 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
         )}
       </div>
 
+      {/* ── No-followup banner ───────────────────────────────────────────────── */}
       {noFollowupCount > 0 && (
         <button
           type="button"
           className="flex w-full items-center gap-2 rounded-xl border border-warning-amber/30 bg-amber-50 px-4 py-3 text-left text-xs text-amber-800 transition-colors hover:bg-amber-100"
           onClick={() => {
             setShowAdvanced(true);
-            setFollowupFilter("no_followup_48h");
+            navigateFilter({ followup: "no_followup_48h" });
             setSelectedIds(new Set());
           }}
         >
@@ -547,12 +526,12 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
         </div>
       )}
 
+      {/* ── Table ────────────────────────────────────────────────────────────── */}
       <div className="overflow-hidden rounded-xl border border-border bg-white shadow-card">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border bg-background-subtle">
-                {/* Checkbox column */}
                 <th className="w-10 px-3 py-2.5">
                   <input
                     ref={selectAllRef}
@@ -563,14 +542,14 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
                   />
                 </th>
                 {[
-                  { label: "Lead", field: "name" as keyof LeadListItem },
+                  { label: "Lead", field: "name" },
                   { label: "Telefone", field: null },
                   { label: "Servico", field: null },
-                  { label: "Procedimento", field: "procedure" as keyof LeadListItem },
+                  { label: "Procedimento", field: "procedure" },
                   { label: "Etapa", field: null },
                   { label: "Origem", field: null },
-                  { label: "Valor Pot.", field: "potential_value" as keyof LeadListItem },
-                  { label: "Entrada", field: "created_at" as keyof LeadListItem },
+                  { label: "Valor Pot.", field: "potential_value" },
+                  { label: "Entrada", field: "created_at" },
                   { label: "", field: null },
                 ].map(({ label, field }) => (
                   <th
@@ -589,8 +568,8 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
                 ))}
               </tr>
             </thead>
-            <tbody className="divide-y divide-border">
-              {sorted.map((lead) => {
+            <tbody className={cn("divide-y divide-border", isPending && "opacity-60")}>
+              {leads.map((lead) => {
                 const isSelected = selectedIds.has(lead.id);
                 return (
                   <tr
@@ -742,7 +721,7 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
           </table>
         </div>
 
-        {sorted.length === 0 && (
+        {leads.length === 0 && (
           <div className="flex flex-col items-center justify-center py-16 text-center">
             <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-background-subtle">
               <Search className="h-5 w-5 text-text-muted" />
@@ -751,8 +730,41 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
             <p className="mt-1 text-xs text-text-muted">Ajuste os filtros ou adicione um novo lead</p>
           </div>
         )}
+
+        {/* ── Pagination controls ───────────────────────────────────────────── */}
+        {pagination.total > 0 && (
+          <div className="flex items-center justify-between border-t border-border px-4 py-3">
+            <span className="text-xs text-text-muted">
+              {pagination.from}–{pagination.to} de {pagination.total} leads
+            </span>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                disabled={pagination.page <= 1 || isPending}
+                onClick={() => navigatePage(pagination.page - 1)}
+                aria-label="Pagina anterior"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <span className="min-w-[4rem] text-center text-xs text-text-secondary">
+                {pagination.page} / {pagination.totalPages}
+              </span>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                disabled={pagination.page >= pagination.totalPages || isPending}
+                onClick={() => navigatePage(pagination.page + 1)}
+                aria-label="Proxima pagina"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
 
+      {/* ── Modals ───────────────────────────────────────────────────────────── */}
       <LeadForm
         mode={formMode === "edit" ? "edit" : "create"}
         open={formMode !== null}
@@ -776,6 +788,7 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
         onSuccess={(msg) => {
           setMessage(msg);
           clearSelection();
+          router.refresh();
         }}
       />
 
@@ -785,7 +798,10 @@ export function LeadsClient({ leads, options, organizationId, organizationName, 
         onClose={() => setImportOpen(false)}
         onSuccess={(msg) => {
           setMessage(msg);
-          router.refresh();
+          // After import, go back to page 1 to show fresh data
+          const next = new URLSearchParams(searchParams.toString());
+          next.delete("page");
+          startTransition(() => router.replace(`?${next.toString()}`));
         }}
       />
     </div>

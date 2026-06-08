@@ -24,7 +24,6 @@ import {
   type ServiceAreaSettings,
 } from "@/lib/lead-location";
 import { getOrganizationContext } from "@/lib/organization-context";
-import { fetchAllRows } from "@/lib/supabase-pagination";
 import { cn, formatCurrency, formatNumber, formatPercent } from "@/lib/utils";
 import type { ConversionFunnelItem, DailyLeadsData, LeadStatus, LeadsByLocation, LeadsBySource } from "@/lib/types";
 
@@ -61,6 +60,19 @@ type DashboardLeadRow = Omit<DashboardLead, "source" | "service" | "stage"> & {
   stage: DashboardLead["stage"] | NonNullable<DashboardLead["stage"]>[];
 };
 
+// For previous period we only need the fields used in variation calculations
+type PreviousLead = {
+  id: string;
+  service_id: string | null;
+  stage_id: string | null;
+  status: LeadStatus;
+  potential_value: number | null;
+  closed_value: number | null;
+  created_at: string;
+};
+
+type PreviousLeadRow = Omit<PreviousLead, never>;
+
 type StageOption = {
   id: string;
   name: string;
@@ -73,20 +85,12 @@ type MsgRow = {
   created_at: string;
 };
 
-// Structured so future code can replace this with per-org DB config.
-// ─── Period helpers ───────────────────────────────────────────────────────────
-
 export const dynamic = "force-dynamic";
 
 function startOfDay(date: Date) {
   const next = new Date(date);
   next.setHours(0, 0, 0, 0);
   return next;
-}
-
-function inRange(date: string, start: Date, end: Date) {
-  const value = new Date(date).getTime();
-  return value >= start.getTime() && value < end.getTime();
 }
 
 function percent(part: number, total: number) {
@@ -98,15 +102,13 @@ function variation(current: number, previous: number) {
   return ((current - previous) / previous) * 100;
 }
 
-function wasScheduled(lead: DashboardLead, hasBeenScheduledIds: Set<string>) {
+function wasScheduled(lead: DashboardLead | PreviousLead, hasBeenScheduledIds: Set<string>) {
   return lead.status === "scheduled" || hasBeenScheduledIds.has(lead.id);
 }
 
 function getResponseMode(value?: string): ResponseMode {
   return value === "real_time" ? "real_time" : "business_hours";
 }
-
-// ─── Business hours calculation ───────────────────────────────────────────────
 
 // ─── Metric helpers ───────────────────────────────────────────────────────────
 
@@ -353,7 +355,6 @@ function buildFunnelData(leads: DashboardLead[], stages: StageOption[]): Convers
   });
 }
 
-// Format milliseconds to human-readable duration (e.g. "3 min", "1h 12min")
 function formatDuration(ms: number | null): string {
   if (ms === null || ms <= 0) return "--";
   const totalMinutes = Math.floor(ms / 60000);
@@ -364,9 +365,6 @@ function formatDuration(ms: number | null): string {
   return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}min`;
 }
 
-// Compute avg first response and avg general response times.
-// msgs must be ordered ASC by created_at within each conversation.
-// Pass bhConfig=null to use raw elapsed time (real_time mode).
 function computeResponseTimes(
   msgs: MsgRow[],
   bhConfig: OrgBusinessHours | null
@@ -381,7 +379,6 @@ function computeResponseTimes(
   const firstDeltas: number[] = [];
   const allDeltas: number[] = [];
 
-  // Compute elapsed ms between two ISO timestamps, respecting the chosen mode
   const elapsed = (from: string, to: string) => {
     const s = new Date(from);
     const e = new Date(to);
@@ -392,7 +389,6 @@ function computeResponseTimes(
     const firstInboundIdx = convMsgs.findIndex((m) => m.direction === "inbound");
     if (firstInboundIdx === -1) continue;
 
-    // First response: first inbound → first outbound after it
     const firstOutboundAfter = convMsgs
       .slice(firstInboundIdx + 1)
       .find((m) => m.direction === "outbound");
@@ -402,7 +398,6 @@ function computeResponseTimes(
       );
     }
 
-    // General: for each inbound, time to the next outbound
     for (let i = 0; i < convMsgs.length; i++) {
       if (convMsgs[i].direction !== "inbound") continue;
       const nextOut = convMsgs.slice(i + 1).find((m) => m.direction === "outbound");
@@ -418,8 +413,6 @@ function computeResponseTimes(
   return { avgFirstResponse: avg(firstDeltas), avgResponseTime: avg(allDeltas) };
 }
 
-// Count open conversations whose last message was inbound and older than cutoff.
-// recentMsgs must be ordered DESC (first entry per conv = last message).
 function computeNoFollowup(openConvIds: string[], recentMsgs: MsgRow[], cutoff: Date): number {
   const lastMsgByConv = new Map<string, MsgRow>();
   for (const msg of recentMsgs) {
@@ -453,7 +446,6 @@ export default async function DashboardPage({
   const previousStart = range.previousStart;
   const fortyEightHoursAgo = new Date(today.getTime() - 48 * 60 * 60 * 1000);
 
-  // Toggle URLs — preserve the current period when switching mode
   const toggleParams = new URLSearchParams();
   toggleParams.set("period", range.period);
   if (range.period === "custom") {
@@ -468,69 +460,93 @@ export default async function DashboardPage({
   const businessHoursUrl = `?${businessHoursParams.toString()}`;
   const realTimeUrl = `?${realTimeParams.toString()}`;
 
-  // Batch 1 — all independent queries in parallel
-  const [leadsResult, tasksResult, openConvsResult, allConvsResult, pipelinesResult, settingsResult, servicesResult] =
-    await Promise.all([
-      fetchAllRows<DashboardLeadRow>(() =>
-        admin
-          .from("leads")
-          .select(
-            `id, source_id, service_id, stage_id, status, potential_value, closed_value, created_at, last_interaction_at,
-             detected_city, detected_state, phone_ddd, service_area_status,
-             source:lead_sources(name),
-             service:clinic_services(id, name, active),
-             stage:pipeline_stages(id, name, order)`
-          )
-          .eq("organization_id", organizationId)
-          .order("created_at", { ascending: false })
-      ),
-      admin
-        .from("lead_tasks")
-        .select("id, due_at, completed_at, lead:leads!inner(id, organization_id)")
-        .eq("lead.organization_id", organizationId),
-      // Open conversations with leads (groups filtered in JS below)
-      admin
-        .from("conversations")
-        .select("id, remote_jid, unread_count")
-        .eq("organization_id", organizationId)
-        .eq("status", "open")
-        .not("lead_id", "is", null),
-      // All lead-linked conversations in the org. Response metrics filter messages by period.
-      admin
-        .from("conversations")
-        .select("id, remote_jid")
-        .eq("organization_id", organizationId)
-        .not("lead_id", "is", null),
-      admin
-        .from("pipelines")
-        .select("id, pipeline_stages(id, name, order)")
-        .eq("organization_id", organizationId)
-        .eq("is_default", true)
-        .maybeSingle(),
-      admin
-        .from("organization_settings")
-        .select("business_hours, service_area")
-        .eq("organization_id", organizationId)
-        .maybeSingle(),
-      admin
-        .from("clinic_services")
-        .select("id, name, active, order")
-        .eq("organization_id", organizationId)
-        .order("order", { ascending: true })
-        .order("name", { ascending: true }),
-    ]);
+  // ── Batch 1: all independent queries in parallel ───────────────────────────
+  // Leads are now queried per period — no more fetchAllRows loading everything
+  const leadsSelect = `id, source_id, service_id, stage_id, status, potential_value, closed_value,
+    created_at, last_interaction_at, detected_city, detected_state, phone_ddd, service_area_status,
+    source:lead_sources(name),
+    service:clinic_services(id, name, active),
+    stage:pipeline_stages(id, name, order)`;
 
-  if (leadsResult.error) {
+  const previousLeadsSelect = `id, service_id, stage_id, status, potential_value, closed_value, created_at`;
+
+  let currentLeadsQuery = admin
+    .from("leads")
+    .select(leadsSelect)
+    .eq("organization_id", organizationId)
+    .gte("created_at", currentStart.toISOString())
+    .lt("created_at", currentEnd.toISOString())
+    .order("created_at", { ascending: false });
+
+  let previousLeadsQuery = admin
+    .from("leads")
+    .select(previousLeadsSelect)
+    .eq("organization_id", organizationId)
+    .gte("created_at", previousStart.toISOString())
+    .lt("created_at", currentStart.toISOString())
+    .order("created_at", { ascending: false });
+
+  if (selectedService !== "all") {
+    currentLeadsQuery = currentLeadsQuery.eq("service_id", selectedService);
+    previousLeadsQuery = previousLeadsQuery.eq("service_id", selectedService);
+  }
+
+  const [
+    currentLeadsResult,
+    previousLeadsResult,
+    tasksResult,
+    openConvsResult,
+    allConvsResult,
+    pipelinesResult,
+    settingsResult,
+    servicesResult,
+  ] = await Promise.all([
+    currentLeadsQuery,
+    previousLeadsQuery,
+    admin
+      .from("lead_tasks")
+      .select("id, due_at, completed_at, lead:leads!inner(id, organization_id)")
+      .eq("lead.organization_id", organizationId),
+    admin
+      .from("conversations")
+      .select("id, remote_jid, unread_count")
+      .eq("organization_id", organizationId)
+      .eq("status", "open")
+      .not("lead_id", "is", null),
+    admin
+      .from("conversations")
+      .select("id, remote_jid")
+      .eq("organization_id", organizationId)
+      .not("lead_id", "is", null),
+    admin
+      .from("pipelines")
+      .select("id, pipeline_stages(id, name, order)")
+      .eq("organization_id", organizationId)
+      .eq("is_default", true)
+      .maybeSingle(),
+    admin
+      .from("organization_settings")
+      .select("business_hours, service_area")
+      .eq("organization_id", organizationId)
+      .maybeSingle(),
+    admin
+      .from("clinic_services")
+      .select("id, name, active, order")
+      .eq("organization_id", organizationId)
+      .order("order", { ascending: true })
+      .order("name", { ascending: true }),
+  ]);
+
+  if (currentLeadsResult.error) {
     return (
       <div className="rounded-xl border border-border bg-white p-8 shadow-card">
         <p className="label-eyebrow text-danger-red">Erro</p>
         <h1 className="mt-1 text-xl font-black text-text-primary">Nao foi possivel carregar o dashboard</h1>
-        <p className="mt-2 text-sm text-text-secondary">{leadsResult.error.message}</p>
+        <p className="mt-2 text-sm text-text-secondary">{currentLeadsResult.error.message}</p>
       </div>
     );
   }
 
-  // Filter out WhatsApp group JIDs in JS (avoids PostgREST LIKE syntax complexity)
   const openConvs = (openConvsResult.data ?? []).filter((c) => !c.remote_jid.includes("@g.us"));
   const openConvIds = openConvs.map((c) => c.id);
   const allLeadConvs = (allConvsResult.data ?? []).filter((c) => !c.remote_jid.includes("@g.us"));
@@ -540,7 +556,7 @@ export default async function DashboardPage({
   const bhConfig: OrgBusinessHours | null =
     responseMode === "business_hours" ? configuredBusinessHours : null;
 
-  // Batch 2 — depends on conversation IDs from batch 1
+  // ── Batch 2: depends on conv IDs from batch 1 ─────────────────────────────
   const emptyMsgs = { data: [] as MsgRow[], error: null };
   const [periodMsgsResult, recentMsgsResult] = await Promise.all([
     allLeadConvIds.length > 0
@@ -561,32 +577,40 @@ export default async function DashboardPage({
       : Promise.resolve(emptyMsgs),
   ]);
 
-  // ── Scheduling history ──────────────────────────────────────────────────────
-  const allLeadIds = (leadsResult.data ?? []).map((l) => l.id as string);
-  const scheduledEventsResult = allLeadIds.length > 0
-    ? await admin.from("lead_events").select("lead_id").eq("event_type", "reached_scheduled_stage").in("lead_id", allLeadIds)
-    : { data: [] as { lead_id: string }[] };
-  const hasBeenScheduledIds = new Set((scheduledEventsResult.data ?? []).map((e) => e.lead_id as string));
+  // ── Scheduling history (only for current period leads) ────────────────────
+  const currentLeadRaw = (currentLeadsResult.data ?? []) as DashboardLeadRow[];
+  const currentLeadIds = currentLeadRaw.map((l) => l.id as string);
 
-  // ── Lead metrics ────────────────────────────────────────────────────────────
+  const scheduledEventsResult =
+    currentLeadIds.length > 0
+      ? await admin
+          .from("lead_events")
+          .select("lead_id")
+          .eq("event_type", "reached_scheduled_stage")
+          .in("lead_id", currentLeadIds)
+      : { data: [] as { lead_id: string }[] };
+
+  const hasBeenScheduledIds = new Set(
+    (scheduledEventsResult.data ?? []).map((e) => e.lead_id as string)
+  );
+
+  // ── Normalize lead rows ───────────────────────────────────────────────────
   const services = servicesResult.data ?? [];
-  const allLeads = (leadsResult.data ?? []).map((lead) => ({
+
+  const currentLeads = currentLeadRaw.map((lead) => ({
     ...lead,
     source: Array.isArray(lead.source) ? (lead.source[0] ?? null) : lead.source,
     service: Array.isArray(lead.service) ? (lead.service[0] ?? null) : lead.service,
     stage: Array.isArray(lead.stage) ? (lead.stage[0] ?? null) : lead.stage,
   })) as DashboardLead[];
-  const leads = selectedService === "all" ? allLeads : allLeads.filter((lead) => lead.service_id === selectedService);
+
+  const previousLeads = ((previousLeadsResult.data ?? []) as PreviousLeadRow[]) as PreviousLead[];
 
   const stages = ((pipelinesResult.data?.pipeline_stages ?? []) as StageOption[]).sort(
     (a, b) => a.order - b.order
   );
 
-  const currentLeads = leads.filter((lead) => inRange(lead.created_at, currentStart, currentEnd));
-  const previousLeads = leads.filter((lead) =>
-    inRange(lead.created_at, previousStart, currentStart)
-  );
-
+  // ── Metrics ───────────────────────────────────────────────────────────────
   const scheduledCurrent = currentLeads.filter((lead) => wasScheduled(lead, hasBeenScheduledIds)).length;
   const scheduledPrevious = previousLeads.filter((lead) => wasScheduled(lead, hasBeenScheduledIds)).length;
 
@@ -601,28 +625,27 @@ export default async function DashboardPage({
   const closedCurrent = currentLeads.reduce((sum, lead) => sum + Number(lead.closed_value ?? 0), 0);
   const closedPrevious = previousLeads.reduce((sum, lead) => sum + Number(lead.closed_value ?? 0), 0);
 
-  // ── Response time metrics ───────────────────────────────────────────────────
+  // ── Response time ─────────────────────────────────────────────────────────
   const { avgFirstResponse, avgResponseTime } =
     responseMode === "business_hours" && !bhConfig
       ? { avgFirstResponse: null, avgResponseTime: null }
       : computeResponseTimes((periodMsgsResult.data ?? []) as MsgRow[], bhConfig);
 
-  // ── Follow-up 48h+ ──────────────────────────────────────────────────────────
-  // Period-independent: reflects current operational state
+  // ── Follow-up 48h+ ────────────────────────────────────────────────────────
   const noFollowupCount = computeNoFollowup(
     openConvIds,
     (recentMsgsResult.data ?? []) as MsgRow[],
     fortyEightHoursAgo
   );
 
-  // ── Alert banners ───────────────────────────────────────────────────────────
+  // ── Alert banners ─────────────────────────────────────────────────────────
   const leadsWithoutResponse = openConvs.filter((c) => c.unread_count > 0).length;
   const leadsWithoutFollowup = (tasksResult.data ?? []).filter((task) => {
     if (task.completed_at || !task.due_at) return false;
     return new Date(task.due_at).getTime() < today.getTime();
   }).length;
 
-  // ── Chart data ──────────────────────────────────────────────────────────────
+  // ── Chart data ────────────────────────────────────────────────────────────
   const dailyData = buildDailyData(currentLeads, currentStart, currentEnd, hasBeenScheduledIds);
   const sourceData = buildSourceData(currentLeads);
   const locationData = buildServiceRegionData(currentLeads, serviceArea);
@@ -645,7 +668,7 @@ export default async function DashboardPage({
       ? "Assessoria ativa"
       : "Periodo de implantacao";
 
-  // ── Render ──────────────────────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -657,7 +680,6 @@ export default async function DashboardPage({
           <h1 className="mt-1 text-2xl font-black text-text-primary">Dashboard</h1>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {/* Response mode toggle — affects only the two response-time cards */}
           {services.length > 0 && (
             <form action="/dashboard" className="flex items-center gap-2">
               <input type="hidden" name="period" value={range.period} />
@@ -791,7 +813,6 @@ export default async function DashboardPage({
           variation={variation(closedCurrent, closedPrevious)}
           icon={DollarSign}
         />
-        {/* Response-time cards — affected by the business hours toggle */}
         <MetricCard
           label="Tempo Medio 1a Resposta"
           value={formatDuration(avgFirstResponse)}

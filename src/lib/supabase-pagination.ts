@@ -1,3 +1,6 @@
+// WARNING: fetchAllRows loads ALL rows into memory.
+// Use ONLY for: CSV exports, admin batch jobs, one-off scripts.
+// NEVER use for interactive screens (/leads, /kanban, /dashboard) — use server-side .range() instead.
 const DEFAULT_PAGE_SIZE = 1000;
 
 type PaginatedQuery<T> = {
