@@ -114,7 +114,7 @@ export default async function InboxPage({
     );
   }
 
-  let selectedConversationId = params?.conversation ?? "";
+  const selectedConversationId = params?.conversation ?? "";
   const leadParam = params?.lead ?? "";
   const initialRows = ((conversationsResult.data ?? []) as unknown as ConversationRow[]).filter((conversation) => {
     const instance = firstRelation(conversation.instance);
@@ -191,23 +191,27 @@ export default async function InboxPage({
     }
   }
   const conversationIds = rows.map((conversation) => conversation.id);
-  const [{ data: messagesData }, { data: bhAutoReplyData }] =
+  const activeConversationId = selectedConversationId || conversationIds[0] || "";
+  const [{ data: messagesData }, { data: latestMessagesData }, { data: bhAutoReplyData }] =
     conversationIds.length > 0
       ? await Promise.all([
-          admin
-            .from("messages")
-            .select(
-              "id, conversation_id, direction, message_type, content, media_url, media_mimetype, media_filename, media_duration, created_at, delivered_at, read_at"
-            )
-            .in("conversation_id", conversationIds)
-            .order("created_at", { ascending: true }),
+          activeConversationId
+            ? admin
+                .from("messages")
+                .select(
+                  "id, conversation_id, direction, message_type, content, media_url, media_mimetype, media_filename, media_duration, created_at, delivered_at, read_at"
+                )
+                .eq("conversation_id", activeConversationId)
+                .order("created_at", { ascending: true })
+            : Promise.resolve({ data: [] as InboxMessage[] }),
+          admin.rpc("get_latest_inbox_messages", { conversation_ids: conversationIds }),
           admin
             .from("bh_auto_reply_queue")
             .select("id, conversation_id, scheduled_for, status")
             .in("conversation_id", conversationIds)
             .in("status", ["pending", "sending"]),
         ])
-      : [{ data: [] as InboxMessage[] }, { data: [] as BhAutoReplyQueueItem[] }];
+      : [{ data: [] as InboxMessage[] }, { data: [] as InboxMessage[] }, { data: [] as BhAutoReplyQueueItem[] }];
 
   const messagesByConversation = ((messagesData ?? []) as InboxMessage[]).reduce<Record<string, InboxMessage[]>>(
     (acc, message) => {
@@ -225,6 +229,14 @@ export default async function InboxPage({
     return acc;
   }, {});
 
+  const latestMessagesByConversation = ((latestMessagesData ?? []) as InboxMessage[]).reduce<Record<string, InboxMessage>>(
+    (acc, message) => {
+      acc[message.conversation_id] = message;
+      return acc;
+    },
+    {}
+  );
+
   const conversations = rows.map((conversation) => {
     const lead = firstRelation(conversation.lead);
     const instance = firstRelation(conversation.instance);
@@ -240,7 +252,7 @@ export default async function InboxPage({
           }
         : null,
       instance,
-      last_message: messages[messages.length - 1] ?? null,
+      last_message: latestMessagesByConversation[conversation.id] ?? messages[messages.length - 1] ?? null,
     };
   }) as InboxConversation[];
 
@@ -256,7 +268,7 @@ export default async function InboxPage({
       services={(servicesResult.data ?? []) as InboxService[]}
       stages={((pipelineResult.data?.pipeline_stages ?? []) as InboxStage[]).sort((a, b) => (a.order ?? 0) - (b.order ?? 0))}
       initialSearch={params?.q ?? ""}
-      initialActiveConversationId={selectedConversationId}
+      initialActiveConversationId={activeConversationId}
       dateMode={dateMode}
     />
   );

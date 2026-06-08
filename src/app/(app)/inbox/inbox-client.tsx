@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { ChevronDown, Clock, DollarSign, Filter, Inbox, MapPin, MessageCircle, Phone, Search, Tag, User, X } from "lucide-react";
+import { ChevronDown, Clock, DollarSign, Filter, Inbox, MapPin, MessageCircle, Search, Tag, User, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -200,6 +200,13 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
     router.push(query ? `${pathname}?${query}` : pathname);
   }
 
+  function selectConversation(conversationId: string) {
+    setActiveConvId(conversationId);
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("conversation", conversationId);
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  }
+
   useEffect(() => {
     const scheduleRefresh = () => {
       if (refreshTimerRef.current) return;
@@ -241,7 +248,7 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
 
     const interval = window.setInterval(() => {
       if (document.visibilityState === "visible") router.refresh();
-    }, 4000);
+    }, 60000);
 
     const onFocus = () => router.refresh();
     window.addEventListener("focus", onFocus);
@@ -422,7 +429,7 @@ export function InboxClient({ organizationId, conversations, messagesByConversat
               conversation={conversation}
               isActive={conversation.id === activeConv?.id}
               locallyRead={locallyReadIds.has(conversation.id)}
-              onClick={() => setActiveConvId(conversation.id)}
+              onClick={() => selectConversation(conversation.id)}
             />
           ))}
         </ScrollArea>

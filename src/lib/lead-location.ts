@@ -1,4 +1,5 @@
 import type { createAdminClient } from "@/lib/supabase/server";
+import { fetchAllRows } from "@/lib/supabase-pagination";
 
 type SupabaseAdmin = ReturnType<typeof createAdminClient>;
 
@@ -231,27 +232,31 @@ export async function refreshLeadLocationsForOrg(
   organizationId: string,
   serviceArea: ServiceAreaSettings
 ) {
-  const { data: leads, error } = await admin
-    .from("leads")
-    .select("id, phone")
-    .eq("organization_id", organizationId)
-    .or("location_manually_edited.is.null,location_manually_edited.eq.false")
-    .limit(1000);
+  const { data: leads, error } = await fetchAllRows<{ id: string; phone: string | null }>(() =>
+    admin
+      .from("leads")
+      .select("id, phone")
+      .eq("organization_id", organizationId)
+      .or("location_manually_edited.is.null,location_manually_edited.eq.false")
+  );
 
   if (error || !leads?.length) return;
 
-  await Promise.all(
-    leads.map((lead) =>
-      admin
-        .from("leads")
-        .update({
-          ...buildLocationPayload(String(lead.phone ?? ""), serviceArea),
-          location_manually_edited: false,
-        })
-        .eq("id", lead.id)
-        .eq("organization_id", organizationId)
-    )
-  );
+  for (let index = 0; index < leads.length; index += 100) {
+    const chunk = leads.slice(index, index + 100);
+    await Promise.all(
+      chunk.map((lead) =>
+        admin
+          .from("leads")
+          .update({
+            ...buildLocationPayload(String(lead.phone ?? ""), serviceArea),
+            location_manually_edited: false,
+          })
+          .eq("id", lead.id)
+          .eq("organization_id", organizationId)
+      )
+    );
+  }
 }
 
 export const LOCATION_STATUS_LABELS: Record<LeadLocationStatus, string> = {

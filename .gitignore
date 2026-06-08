@@ -4,6 +4,7 @@ node_modules/
 # next
 .next/
 out/
+tsconfig.tsbuildinfo
 
 # local env files
 .env
@@ -22,6 +23,9 @@ Thumbs.db
 
 # vercel
 .vercel/
+
+# supabase local state
+supabase/.temp/
 
 # internal docs (não versionar)
 prompt-claude-code.md
