@@ -60,6 +60,7 @@ export type InboxMessage = {
   media_mimetype: string | null;
   media_filename: string | null;
   media_duration: number | null;
+  media_ptt: boolean | null;
   created_at: string;
   delivered_at: string | null;
   read_at: string | null;

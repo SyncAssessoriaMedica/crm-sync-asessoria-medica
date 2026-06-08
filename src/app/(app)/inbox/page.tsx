@@ -336,7 +336,7 @@ export default async function InboxPage({
             ? admin
                 .from("messages")
                 .select(
-                  "id, conversation_id, direction, message_type, content, media_url, media_mimetype, media_filename, media_duration, created_at, delivered_at, read_at, send_status, send_error, client_message_id, media_status, media_error, media_attempts"
+                  "id, conversation_id, direction, message_type, content, media_url, media_mimetype, media_filename, media_duration, media_ptt, created_at, delivered_at, read_at, send_status, send_error, client_message_id, media_status, media_error, media_attempts"
                 )
                 .eq("conversation_id", activeConversationId)
                 .order("created_at", { ascending: true })

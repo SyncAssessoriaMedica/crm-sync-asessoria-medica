@@ -87,7 +87,7 @@ function friendlyError(error: string): string {
 }
 
 const MESSAGE_SELECT =
-  "id, conversation_id, direction, message_type, content, media_url, media_mimetype, media_filename, media_duration, created_at, delivered_at, read_at, send_status, send_error, client_message_id";
+  "id, conversation_id, direction, message_type, content, media_url, media_mimetype, media_filename, media_duration, media_ptt, created_at, delivered_at, read_at, send_status, send_error, client_message_id";
 
 type InstanceRow = {
   id: string;
@@ -118,6 +118,8 @@ export type SendInboxMessageInput = {
   mediaMimetype?: string | null;
   mediaFilename?: string | null;
   mediaDuration?: number | null;
+  /** true = WhatsApp voice note (PTT); false = regular audio file. Defaults to true. */
+  ptt?: boolean;
 };
 
 export async function sendInboxMessageAction(
@@ -125,7 +127,7 @@ export async function sendInboxMessageAction(
 ): Promise<{ ok: boolean; message: string; data: InboxMessage | null }> {
   try {
     const { admin, organizationId } = await getCurrentContext();
-    const { conversationId, clientMessageId, messageType, text, mediaUrl, mediaMimetype, mediaFilename, mediaDuration } =
+    const { conversationId, clientMessageId, messageType, text, mediaUrl, mediaMimetype, mediaFilename, mediaDuration, ptt } =
       input;
 
     // Basic validation
@@ -209,6 +211,7 @@ export async function sendInboxMessageAction(
           media_mimetype: mediaMimetype ?? null,
           media_filename: mediaFilename ?? null,
           media_duration: mediaDuration ?? null,
+          media_ptt: messageType === "audio" ? ptt !== false : null,
           client_message_id: clientMessageId,
           send_status: "sending",
           created_at: new Date().toISOString(),
@@ -267,11 +270,23 @@ export async function sendInboxMessageAction(
         text: trimmedText!,
       });
     } else if (messageType === "audio") {
-      sendResult = await sendEvolutionAudio({
-        instanceName: instance.instance_name,
-        phone,
-        audioUrl: resolvedMediaUrl!,
-      });
+      if (ptt === false) {
+        sendResult = await sendEvolutionMedia({
+          instanceName: instance.instance_name,
+          phone,
+          mediaType: "audio",
+          mediaUrl: resolvedMediaUrl!,
+          filename: mediaFilename ?? null,
+          mimetype: mediaMimetype ?? null,
+        });
+      } else {
+        sendResult = await sendEvolutionAudio({
+          instanceName: instance.instance_name,
+          phone,
+          audioUrl: resolvedMediaUrl!,
+          ptt: true,
+        });
+      }
     } else {
       sendResult = await sendEvolutionMedia({
         instanceName: instance.instance_name,
@@ -358,7 +373,7 @@ export async function retryInboxMessageAction(
     const { data: msg } = await admin
       .from("messages")
       .select(
-        "id, conversation_id, message_type, content, media_url, media_mimetype, media_filename, media_duration, client_message_id, send_status"
+        "id, conversation_id, message_type, content, media_url, media_mimetype, media_filename, media_duration, media_ptt, client_message_id, send_status"
       )
       .eq("id", messageId)
       .maybeSingle();
@@ -422,7 +437,21 @@ export async function retryInboxMessageAction(
     if (msgType === "text") {
       sendResult = await sendEvolutionText({ instanceName: instance.instance_name, phone, text: trimmedText ?? "" });
     } else if (msgType === "audio") {
-      sendResult = await sendEvolutionAudio({ instanceName: instance.instance_name, phone, audioUrl: resolvedMediaUrl! });
+      sendResult = msg.media_ptt === false
+        ? await sendEvolutionMedia({
+            instanceName: instance.instance_name,
+            phone,
+            mediaType: "audio",
+            mediaUrl: resolvedMediaUrl!,
+            filename: msg.media_filename ?? null,
+            mimetype: msg.media_mimetype ?? null,
+          })
+        : await sendEvolutionAudio({
+            instanceName: instance.instance_name,
+            phone,
+            audioUrl: resolvedMediaUrl!,
+            ptt: true,
+          });
     } else {
       sendResult = await sendEvolutionMedia({
         instanceName: instance.instance_name,

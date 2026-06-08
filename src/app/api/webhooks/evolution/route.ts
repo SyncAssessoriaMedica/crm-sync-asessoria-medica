@@ -219,6 +219,7 @@ function getMessageContent(data: NonNullable<EvolutionPayload["data"]>) {
       mediaUrl: nestedText(audio, ["url", "mediaUrl"]),
       mediaMimetype: nestedText(audio, ["mimetype"]) ?? "audio/ogg; codecs=opus",
       mediaDuration: Number(audio.seconds ?? audio.duration) || null,
+      mediaPtt: audio.ptt === true,
     };
   }
 
@@ -723,6 +724,7 @@ async function handleMessageEvent(admin: SupabaseAdmin, payload: NormalizedPaylo
     media_mimetype: messageContent.mediaMimetype ?? null,
     media_filename: messageContent.mediaFilename ?? null,
     media_duration: messageContent.mediaDuration ?? null,
+    media_ptt: messageContent.type === "audio" ? messageContent.mediaPtt ?? null : null,
     created_at: getTimestamp(data),
     // media_status tracks the async download lifecycle for storable types
     media_status: isStorable ? "pending" : null,

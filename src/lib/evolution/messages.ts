@@ -4,7 +4,7 @@ export type EvolutionSendResult =
   | { ok: true; evolutionMsgId?: string }
   | { ok: false; error: string; status?: number };
 
-export type SendMediaKind = "image" | "video" | "document" | "sticker";
+export type SendMediaKind = "image" | "audio" | "video" | "document" | "sticker";
 
 export function evolutionBase(): string | null {
   const raw = process.env.EVOLUTION_API_URL;
@@ -118,6 +118,7 @@ export async function sendEvolutionAudio(params: {
   instanceName: string;
   phone: string;
   audioUrl: string;
+  ptt?: boolean;
   delayMs?: number;
 }): Promise<EvolutionSendResult> {
   const base = evolutionBase();
@@ -134,6 +135,7 @@ export async function sendEvolutionAudio(params: {
         audio: params.audioUrl,
         delay: params.delayMs ?? 1200,
         encoding: true,
+        ...(params.ptt === false ? {} : { ptt: true }),
       }),
       signal: AbortSignal.timeout(45_000),
     });

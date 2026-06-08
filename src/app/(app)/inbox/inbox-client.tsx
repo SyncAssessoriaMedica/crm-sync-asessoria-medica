@@ -19,6 +19,7 @@ import {
   Search,
   Send,
   Smile,
+  Square,
   Tag,
   User,
   Video,
@@ -205,6 +206,23 @@ const ACCEPT_BY_TYPE: Record<AttachmentType, string> = {
   sticker: "image/webp",
 };
 
+function getValidExtensions(type: AttachmentType): string {
+  const map: Record<AttachmentType, string> = {
+    image: "JPG, PNG ou WEBP",
+    audio: "MP3, OGG, WAV, WEBM ou M4A",
+    video: "MP4, WEBM, 3GP ou MOV",
+    document: "PDF, Word, Excel ou ZIP",
+    sticker: "WEBP",
+  };
+  return map[type];
+}
+
+function formatRecordingTime(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
 // ─── ConversationItem ─────────────────────────────────────────────────────────
 
 function ConversationItem({
@@ -348,6 +366,20 @@ function Composer({
   const [attachment, setAttachment] = useState<ComposerAttachment | null>(null);
   const [sending, setSending] = useState(false);
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const [composerError, setComposerError] = useState<string | null>(null);
+
+  // Recording state
+  type RecordingState = "idle" | "recording" | "recorded";
+  const [recordingState, setRecordingState] = useState<RecordingState>("idle");
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [recordedAudioUrl, setRecordedAudioUrl] = useState<string | null>(null);
+  const [recordedBlobSize, setRecordedBlobSize] = useState(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordingChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const recordedBlobRef = useRef<Blob | null>(null);
+  const recordedAudioUrlRef = useRef<string | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const attachTypeRef = useRef<AttachmentType>("image");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -358,11 +390,32 @@ function Composer({
     attachmentUrlRef.current = attachment?.localUrl ?? null;
   }, [attachment?.localUrl]);
 
+  useEffect(() => {
+    recordedAudioUrlRef.current = recordedAudioUrl;
+  }, [recordedAudioUrl]);
+
   // Cleanup the currently selected preview when the composer unmounts.
   useEffect(() => {
     return () => {
       if (attachmentUrlRef.current?.startsWith("blob:")) {
         URL.revokeObjectURL(attachmentUrlRef.current);
+      }
+    };
+  }, []);
+
+  // Cleanup recording resources on unmount
+  useEffect(() => {
+    return () => {
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      const recorder = mediaRecorderRef.current;
+      if (recorder) {
+        recorder.ondataavailable = null;
+        recorder.onstop = null;
+        recorder.stream.getTracks().forEach((track) => track.stop());
+        if (recorder.state !== "inactive") recorder.stop();
+      }
+      if (recordedAudioUrlRef.current?.startsWith("blob:")) {
+        URL.revokeObjectURL(recordedAudioUrlRef.current);
       }
     };
   }, []);
@@ -398,78 +451,92 @@ function Composer({
     const maxBytes = MAX_ATTACHMENT_SIZE[type];
     const label = MEDIA_LABELS[type] ?? type;
 
+    // Client-side size validation — don't even attempt upload
     if (file.size > maxBytes) {
       setAttachment({
-        type,
-        file,
-        localUrl: "",
+        type, file, localUrl: "",
         mimetype: rawMime || "application/octet-stream",
-        filename: file.name,
-        size: file.size,
+        filename: file.name, size: file.size,
         uploadStatus: "failed",
         error: `${label} muito grande. Limite: ${formatFileSize(maxBytes)}. Este arquivo tem ${formatFileSize(file.size)}.`,
       });
       return;
     }
 
+    // Client-side MIME validation
     if (!rawMime || !ALLOWED_ATTACHMENT_MIME[type].has(rawMime)) {
       setAttachment({
-        type,
-        file,
-        localUrl: "",
+        type, file, localUrl: "",
         mimetype: rawMime || "application/octet-stream",
-        filename: file.name,
-        size: file.size,
+        filename: file.name, size: file.size,
         uploadStatus: "failed",
-        error: `Tipo de arquivo invalido para ${label}. MIME recebido: ${rawMime || "(vazio)"}.`,
+        error: `Tipo de ${label.toLowerCase()} inválido. Envie ${getValidExtensions(type)}.`,
       });
       return;
     }
 
     const localUrl = URL.createObjectURL(file);
     if (attachment?.localUrl.startsWith("blob:")) URL.revokeObjectURL(attachment.localUrl);
-    const newAttachment: ComposerAttachment = {
-      type,
-      file,
-      localUrl,
-      mimetype: file.type || "application/octet-stream",
-      filename: file.name,
-      size: file.size,
+
+    setAttachment({
+      type, file, localUrl,
+      mimetype: rawMime,
+      filename: file.name, size: file.size,
       uploadStatus: "uploading",
-    };
-    setAttachment(newAttachment);
+    });
 
-    // Upload immediately
     try {
-      const form = new FormData();
-      form.append("file", file);
-      form.append("type", type);
-      const res = await fetch("/api/inbox/upload-media", { method: "POST", body: form });
-      const json = (await res.json()) as { ok: boolean; url?: string; mimetype?: string; filename?: string; error?: string };
+      // Step 1: request signed upload URL from our server (validates auth + permissions)
+      const urlRes = await fetch("/api/inbox/create-upload-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type, mimetype: rawMime, size: file.size, filename: file.name }),
+      });
 
-      if (!json.ok || !json.url) {
+      if (!urlRes.ok) {
+        const json = await urlRes.json().catch(() => ({})) as { error?: string };
         setAttachment((prev) =>
           prev?.localUrl === localUrl
-            ? { ...prev, uploadStatus: "failed", error: json.error ?? "Falha no upload" }
+            ? { ...prev, uploadStatus: "failed", error: json.error ?? "Erro ao preparar upload." }
             : prev
         );
-      } else {
-        setAttachment((prev) =>
-          prev?.localUrl === localUrl
-            ? {
-                ...prev,
-                uploadStatus: "uploaded",
-                uploadedUrl: json.url,
-                mimetype: json.mimetype ?? prev.mimetype,
-                filename: json.filename ?? prev.filename,
-              }
-            : prev
-        );
+        return;
       }
+
+      const { signedUrl, storagePath, mimetype: finalMime, filename: finalFilename } =
+        (await urlRes.json()) as { signedUrl: string; storagePath: string; mimetype: string; filename: string };
+
+      // Step 2: upload directly from browser to Supabase Storage (bypasses Vercel size limits)
+      const uploadRes = await fetch(signedUrl, {
+        method: "PUT",
+        body: file,
+        headers: { "Content-Type": rawMime },
+      });
+
+      if (!uploadRes.ok) {
+        setAttachment((prev) =>
+          prev?.localUrl === localUrl
+            ? { ...prev, uploadStatus: "failed", error: "Falha ao enviar arquivo. Tente novamente." }
+            : prev
+        );
+        return;
+      }
+
+      setAttachment((prev) =>
+        prev?.localUrl === localUrl
+          ? {
+              ...prev,
+              uploadStatus: "uploaded",
+              uploadedUrl: `supabase://media/${storagePath}`,
+              mimetype: finalMime ?? prev.mimetype,
+              filename: finalFilename ?? prev.filename,
+            }
+          : prev
+      );
     } catch {
       setAttachment((prev) =>
         prev?.localUrl === localUrl
-          ? { ...prev, uploadStatus: "failed", error: "Erro de rede no upload" }
+          ? { ...prev, uploadStatus: "failed", error: "Erro de rede no upload. Tente novamente." }
           : prev
       );
     }
@@ -480,9 +547,248 @@ function Composer({
     setAttachment(null);
   }
 
+  // ─── Voice recording ─────────────────────────────────────────────────────────
+
+  async function startRecording() {
+    setComposerError(null);
+
+    if (!isConnected || sending || attachment) return;
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setComposerError("Seu navegador não suporta gravação de áudio.");
+      return;
+    }
+    if (typeof MediaRecorder === "undefined") {
+      setComposerError("Seu navegador não suporta gravação de áudio.");
+      return;
+    }
+
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "NotAllowedError") {
+        setComposerError("Permissão de microfone negada pelo navegador.");
+      } else {
+        setComposerError("Não foi possível acessar o microfone.");
+      }
+      return;
+    }
+
+    const mimeType =
+      ["audio/webm;codecs=opus", "audio/webm", "audio/ogg"].find((m) =>
+        MediaRecorder.isTypeSupported(m)
+      ) ?? "";
+
+    let recorder: MediaRecorder;
+    try {
+      recorder = new MediaRecorder(stream, {
+        ...(mimeType ? { mimeType } : {}),
+        audioBitsPerSecond: 32_000,
+      });
+    } catch {
+      stream.getTracks().forEach((track) => track.stop());
+      setComposerError("Nao foi possivel iniciar a gravacao de audio neste navegador.");
+      return;
+    }
+    recordingChunksRef.current = [];
+
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) recordingChunksRef.current.push(e.data);
+    };
+
+    recorder.onstop = () => {
+      stream.getTracks().forEach((t) => t.stop());
+      const mime = recorder.mimeType || "audio/webm";
+      const blob = new Blob(recordingChunksRef.current, { type: mime });
+      if (blob.size === 0) {
+        if (recordingTimerRef.current) {
+          clearInterval(recordingTimerRef.current);
+          recordingTimerRef.current = null;
+        }
+        setComposerError("A gravacao ficou vazia. Tente novamente.");
+        setRecordingState("idle");
+        return;
+      }
+      recordedBlobRef.current = blob;
+      const url = URL.createObjectURL(blob);
+      setRecordedAudioUrl(url);
+      setRecordedBlobSize(blob.size);
+      setRecordingState("recorded");
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+        recordingTimerRef.current = null;
+      }
+    };
+
+    try {
+      recorder.start(200);
+    } catch {
+      stream.getTracks().forEach((track) => track.stop());
+      setComposerError("Nao foi possivel iniciar a gravacao de audio.");
+      return;
+    }
+    mediaRecorderRef.current = recorder;
+    setRecordingState("recording");
+    setRecordingSeconds(0);
+
+    recordingTimerRef.current = setInterval(() => {
+      setRecordingSeconds((s) => s + 1);
+    }, 1000);
+  }
+
+  function stopRecording() {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+    }
+  }
+
+  function cancelRecording() {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    if (mediaRecorderRef.current) {
+      const rec = mediaRecorderRef.current;
+      rec.ondataavailable = null;
+      rec.onstop = () => {
+        try { rec.stream?.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
+      };
+      if (rec.state !== "inactive") rec.stop();
+      mediaRecorderRef.current = null;
+    }
+    if (recordedAudioUrl?.startsWith("blob:")) URL.revokeObjectURL(recordedAudioUrl);
+    setRecordedAudioUrl(null);
+    setRecordedBlobSize(0);
+    recordedBlobRef.current = null;
+    setRecordingSeconds(0);
+    setRecordingState("idle");
+  }
+
+  async function sendRecordedAudio() {
+    const blob = recordedBlobRef.current;
+    if (!blob || sending) return;
+
+    const rawMime = (blob.type || "audio/webm").split(";")[0].trim();
+    const ext = rawMime === "audio/ogg" ? "ogg" : "webm";
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const dateStr = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    const filename = `audio-${dateStr}.${ext}`;
+
+    if (blob.size > MAX_ATTACHMENT_SIZE.audio) {
+      setComposerError(
+        `Áudio muito grande. Limite: ${formatFileSize(MAX_ATTACHMENT_SIZE.audio)}. Este arquivo tem ${formatFileSize(blob.size)}.`
+      );
+      return;
+    }
+
+    setSending(true);
+
+    try {
+      // Get signed URL
+      const urlRes = await fetch("/api/inbox/create-upload-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "audio", mimetype: rawMime, size: blob.size, filename }),
+      });
+
+      if (!urlRes.ok) {
+        const json = await urlRes.json().catch(() => ({})) as { error?: string };
+        setComposerError(json.error ?? "Erro ao preparar upload de áudio.");
+        setSending(false);
+        return;
+      }
+
+      const { signedUrl, storagePath, mimetype: finalMime, filename: finalFilename } =
+        (await urlRes.json()) as { signedUrl: string; storagePath: string; mimetype: string; filename: string };
+
+      // Upload directly to Supabase
+      const uploadRes = await fetch(signedUrl, {
+        method: "PUT",
+        body: blob,
+        headers: { "Content-Type": rawMime },
+      });
+
+      if (!uploadRes.ok) {
+        setComposerError("Falha ao enviar áudio gravado. Tente novamente.");
+        setSending(false);
+        return;
+      }
+
+      // Snapshot the blob URL before clearing state
+      const blobUrl = recordedAudioUrl;
+
+      // Clear recording state before sending
+      setRecordingState("idle");
+      setRecordedAudioUrl(null);
+      setRecordedBlobSize(0);
+      recordedBlobRef.current = null;
+      setRecordingSeconds(0);
+
+      const clientMessageId = crypto.randomUUID();
+      const uploadedUrl = `supabase://media/${storagePath}`;
+
+      const optimistic: InboxMessage = {
+        id: `opt-${clientMessageId}`,
+        conversation_id: activeConvId,
+        direction: "outbound",
+        message_type: "audio",
+        content: null,
+        media_url: blobUrl,
+        media_mimetype: finalMime ?? rawMime,
+        media_filename: finalFilename ?? filename,
+        media_duration: null,
+        media_ptt: true,
+        created_at: new Date().toISOString(),
+        delivered_at: null,
+        read_at: null,
+        send_status: "sending",
+        send_error: null,
+        client_message_id: clientMessageId,
+        media_status: null,
+        media_error: null,
+        media_attempts: null,
+      };
+
+      onOptimisticAdd(optimistic);
+
+      const result = await sendInboxMessageAction({
+        conversationId: activeConvId,
+        clientMessageId,
+        messageType: "audio",
+        mediaUrl: uploadedUrl,
+        mediaMimetype: finalMime ?? rawMime,
+        mediaFilename: finalFilename ?? filename,
+        ptt: true,
+      });
+
+      setSending(false);
+
+      if (result.data) {
+        onOptimisticUpdate(clientMessageId, {
+          id: result.data.id,
+          send_status: result.data.send_status,
+          send_error: result.data.send_error,
+          media_url: result.data.media_url,
+        });
+        if (blobUrl?.startsWith("blob:")) URL.revokeObjectURL(blobUrl);
+      } else {
+        onOptimisticUpdate(clientMessageId, {
+          send_status: "failed",
+          send_error: result.message,
+        });
+      }
+    } catch {
+      setComposerError("Erro de rede ao enviar áudio. Tente novamente.");
+      setSending(false);
+    }
+  }
+
   const canSend =
     isConnected &&
     !sending &&
+    recordingState === "idle" &&
     (!attachment || attachment.uploadStatus === "uploaded") &&
     (draftText.trim().length > 0 || attachment !== null);
 
@@ -508,6 +814,7 @@ function Composer({
       media_mimetype: hasAttachment ? attachment.mimetype : null,
       media_filename: hasAttachment ? attachment.filename : null,
       media_duration: null,
+      media_ptt: hasAttachment && attachment.type === "audio" ? false : null,
       created_at: now,
       delivered_at: null,
       read_at: null,
@@ -535,6 +842,8 @@ function Composer({
       mediaMimetype: hasAttachment ? attachment.mimetype : null,
       mediaFilename: hasAttachment ? attachment.filename : null,
       mediaDuration: null,
+      // Attached audio files are regular audio (not PTT voice notes)
+      ...(hasAttachment && attachment.type === "audio" ? { ptt: false } : {}),
     });
 
     setSending(false);
@@ -574,94 +883,198 @@ function Composer({
 
   return (
     <div className="border-t border-border bg-white px-3 pb-3 pt-2">
-      {attachment && (
-        <AttachmentPreview attachment={attachment} onRemove={removeAttachment} />
-      )}
-
-      {!isConnected && (
-        <div className="mb-2 flex items-center gap-1.5 rounded-lg bg-warning-amber/10 px-3 py-2 text-[11px] font-medium text-warning-amber">
+      {/* Composer error (mic permission denied, recording unsupported, etc.) */}
+      {composerError && (
+        <div className="mb-2 flex items-center gap-1.5 rounded-lg bg-danger-red/10 px-3 py-2 text-[11px] font-medium text-danger-red">
           <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-          WhatsApp desconectado — reconecte a instância para enviar mensagens.
-        </div>
-      )}
-
-      <div className="flex items-end gap-2">
-        {/* Attach button */}
-        <div className="relative" ref={attachMenuRef}>
+          <span className="flex-1">{composerError}</span>
           <button
             type="button"
-            onClick={() => setAttachMenuOpen((v) => !v)}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border text-text-muted hover:bg-background-subtle hover:text-text-secondary"
-            aria-label="Anexar arquivo"
-            disabled={!isConnected}
+            onClick={() => setComposerError(null)}
+            aria-label="Fechar erro"
+            className="shrink-0 opacity-70 hover:opacity-100"
           >
-            <Paperclip className="h-4 w-4" />
+            <X className="h-3 w-3" />
           </button>
+        </div>
+      )}
 
-          {attachMenuOpen && (
-            <div className="absolute bottom-10 left-0 z-20 flex flex-col overflow-hidden rounded-xl border border-border bg-white shadow-lg">
-              {(
-                [
-                  ["image", ImageIcon, "Imagem"],
-                  ["audio", Mic, "Áudio"],
-                  ["video", Video, "Vídeo"],
-                  ["document", FileText, "Documento"],
-                  ["sticker", Smile, "Figurinha"],
-                ] as const
-              ).map(([type, Icon, label]) => (
-                <button
-                  key={type}
-                  type="button"
-                  onClick={() => openFilePicker(type)}
-                  className="flex items-center gap-2 px-4 py-2 text-left text-xs hover:bg-background-subtle"
-                >
-                  <Icon className="h-3.5 w-3.5 text-brand-green-dark" />
-                  {label}
-                </button>
-              ))}
+      {/* ── Recording active ── */}
+      {recordingState === "recording" && (
+        <div className="mb-2 flex items-center gap-2 rounded-lg border border-brand-green/30 bg-brand-green-soft px-3 py-2">
+          <span className="h-2 w-2 animate-pulse rounded-full bg-danger-red" />
+          <span className="flex-1 font-mono text-sm font-semibold tabular-nums text-brand-green-deep">
+            {formatRecordingTime(recordingSeconds)}
+          </span>
+          <button
+            type="button"
+            onClick={cancelRecording}
+            className="flex items-center gap-1 rounded px-2 py-1 text-[11px] text-text-muted hover:bg-white/60"
+          >
+            <X className="h-3.5 w-3.5" />
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={stopRecording}
+            className="flex items-center gap-1 rounded-lg bg-danger-red px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-red-700"
+          >
+            <Square className="h-3 w-3 fill-current" />
+            Parar
+          </button>
+        </div>
+      )}
+
+      {/* ── Recorded preview ── */}
+      {recordingState === "recorded" && recordedAudioUrl && (
+        <div className="mb-2 rounded-lg border border-border bg-background-subtle p-2">
+          <audio
+            src={recordedAudioUrl}
+            controls
+            preload="metadata"
+            className="h-8 w-full min-w-[180px]"
+          />
+          <div className="mt-1.5 flex items-center justify-between">
+            <span className="text-[10px] text-text-muted">
+              {recordedBlobSize > 0 ? formatFileSize(recordedBlobSize) : ""}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={cancelRecording}
+                className="text-[11px] text-text-muted hover:text-danger-red"
+              >
+                Descartar
+              </button>
+              <button
+                type="button"
+                onClick={() => void sendRecordedAudio()}
+                disabled={sending}
+                className={cn(
+                  "flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-semibold text-white transition-colors",
+                  sending
+                    ? "cursor-not-allowed bg-brand-green/60"
+                    : "bg-brand-green hover:bg-brand-green-dark"
+                )}
+              >
+                <Send className="h-3 w-3" />
+                Enviar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Normal compose row (hidden during recording) ── */}
+      {recordingState === "idle" && (
+        <>
+          {attachment && (
+            <AttachmentPreview attachment={attachment} onRemove={removeAttachment} />
+          )}
+
+          {!isConnected && (
+            <div className="mb-2 flex items-center gap-1.5 rounded-lg bg-warning-amber/10 px-3 py-2 text-[11px] font-medium text-warning-amber">
+              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+              WhatsApp desconectado — reconecte a instância para enviar mensagens.
             </div>
           )}
-        </div>
 
-        {/* Text input */}
-        <textarea
-          ref={textareaRef}
-          value={draftText}
-          onChange={(e) => setDraftText(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={isConnected ? "Escreva uma mensagem... (Enter envia)" : "WhatsApp desconectado"}
-          disabled={!isConnected || sending}
-          rows={1}
-          className={cn(
-            "flex-1 resize-none rounded-lg border border-border bg-background-subtle px-3 py-2 text-xs leading-relaxed text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-brand-green",
-            "min-h-[2rem] max-h-28 overflow-y-auto",
-            (!isConnected || sending) && "opacity-60 cursor-not-allowed"
-          )}
-          style={{ height: "auto" }}
-          onInput={(e) => {
-            const el = e.currentTarget;
-            el.style.height = "auto";
-            el.style.height = `${Math.min(el.scrollHeight, 112)}px`;
-          }}
-        />
+          <div className="flex items-end gap-2">
+            {/* Attach button */}
+            <div className="relative" ref={attachMenuRef}>
+              <button
+                type="button"
+                onClick={() => setAttachMenuOpen((v) => !v)}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border text-text-muted hover:bg-background-subtle hover:text-text-secondary"
+                aria-label="Anexar arquivo"
+                disabled={!isConnected}
+              >
+                <Paperclip className="h-4 w-4" />
+              </button>
 
-        {/* Send button */}
-        <button
-          type="button"
-          onClick={() => void handleSend()}
-          disabled={!canSend}
-          title={disabledReason ?? "Enviar"}
-          className={cn(
-            "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors",
-            canSend
-              ? "bg-brand-green text-white hover:bg-brand-green-dark"
-              : "bg-border text-text-muted cursor-not-allowed"
-          )}
-          aria-label="Enviar"
-        >
-          <Send className="h-4 w-4" />
-        </button>
-      </div>
+              {attachMenuOpen && (
+                <div className="absolute bottom-10 left-0 z-20 flex flex-col overflow-hidden rounded-xl border border-border bg-white shadow-lg">
+                  {(
+                    [
+                      ["image", ImageIcon, "Imagem"],
+                      ["audio", Mic, "Áudio"],
+                      ["video", Video, "Vídeo"],
+                      ["document", FileText, "Documento"],
+                      ["sticker", Smile, "Figurinha"],
+                    ] as const
+                  ).map(([type, Icon, label]) => (
+                    <button
+                      key={type}
+                      type="button"
+                      onClick={() => openFilePicker(type)}
+                      className="flex items-center gap-2 px-4 py-2 text-left text-xs hover:bg-background-subtle"
+                    >
+                      <Icon className="h-3.5 w-3.5 text-brand-green-dark" />
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Text input */}
+            <textarea
+              ref={textareaRef}
+              value={draftText}
+              onChange={(e) => setDraftText(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={isConnected ? "Escreva uma mensagem... (Enter envia)" : "WhatsApp desconectado"}
+              disabled={!isConnected || sending}
+              rows={1}
+              className={cn(
+                "flex-1 resize-none rounded-lg border border-border bg-background-subtle px-3 py-2 text-xs leading-relaxed text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-brand-green",
+                "min-h-[2rem] max-h-28 overflow-y-auto",
+                (!isConnected || sending) && "opacity-60 cursor-not-allowed"
+              )}
+              style={{ height: "auto" }}
+              onInput={(e) => {
+                const el = e.currentTarget;
+                el.style.height = "auto";
+                el.style.height = `${Math.min(el.scrollHeight, 112)}px`;
+              }}
+            />
+
+            {/* Mic button — record audio */}
+            <button
+              type="button"
+              onClick={() => void startRecording()}
+              disabled={!isConnected || sending || Boolean(attachment)}
+              title={!isConnected ? "WhatsApp desconectado" : attachment ? "Remova o anexo para gravar audio" : "Gravar audio"}
+              className={cn(
+                "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border transition-colors",
+                isConnected && !sending && !attachment
+                  ? "text-text-muted hover:bg-brand-green-soft hover:text-brand-green-dark"
+                  : "cursor-not-allowed opacity-40"
+              )}
+              aria-label="Gravar áudio"
+            >
+              <Mic className="h-4 w-4" />
+            </button>
+
+            {/* Send button */}
+            <button
+              type="button"
+              onClick={() => void handleSend()}
+              disabled={!canSend}
+              title={disabledReason ?? "Enviar"}
+              className={cn(
+                "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors",
+                canSend
+                  ? "bg-brand-green text-white hover:bg-brand-green-dark"
+                  : "bg-border text-text-muted cursor-not-allowed"
+              )}
+              aria-label="Enviar"
+            >
+              <Send className="h-4 w-4" />
+            </button>
+          </div>
+        </>
+      )}
 
       {/* Hidden file input */}
       <input
