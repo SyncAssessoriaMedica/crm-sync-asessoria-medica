@@ -1,7 +1,21 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { AlertCircle, CheckCheck, Clock, FileText, Loader2, MapPin, RefreshCw, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import {
+  AlertCircle,
+  Check,
+  CheckCheck,
+  Clock,
+  Copy,
+  Download,
+  FileText,
+  Loader2,
+  MapPin,
+  Pause,
+  Play,
+  RefreshCw,
+  X,
+} from "lucide-react";
 import { cn, formatDateTime } from "@/lib/utils";
 import type { InboxMessage } from "./types";
 
@@ -167,6 +181,11 @@ function AudioContent({
 }) {
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(message.media_duration ?? 0);
+  const [playbackRate, setPlaybackRate] = useState(1);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const url = localOrProxy(message);
 
   // Outbound CRM-sent skeleton
@@ -211,21 +230,80 @@ function AudioContent({
     );
   }
 
+  function togglePlayback() {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (audio.paused) void audio.play();
+    else audio.pause();
+  }
+
+  function cyclePlaybackRate() {
+    const rates = [1, 1.5, 2];
+    const next = rates[(rates.indexOf(playbackRate) + 1) % rates.length];
+    setPlaybackRate(next);
+    if (audioRef.current) audioRef.current.playbackRate = next;
+  }
+
+  const progress = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
+
   return (
-    <div className="px-3 py-2">
+    <div className="min-w-[250px] px-2.5 pb-1 pt-2">
       <audio
         key={attempt}
+        ref={audioRef}
         src={url}
-        controls
-        preload="none"
-        className="h-8 w-full min-w-[180px]"
+        preload="metadata"
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => setPlaying(false)}
+        onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+        onLoadedMetadata={(event) => {
+          const nextDuration = event.currentTarget.duration;
+          setDuration(Number.isFinite(nextDuration) ? nextDuration : message.media_duration || 0);
+        }}
         onError={() => setFailed(true)}
       />
-      {message.media_duration !== null && message.media_duration !== undefined && message.media_duration > 0 && (
-        <p className="mt-0.5 text-[10px] text-text-muted">{formatDuration(message.media_duration)}</p>
-      )}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={togglePlayback}
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand-green text-white shadow-sm transition-colors hover:bg-brand-green-dark"
+          aria-label={playing ? "Pausar áudio" : "Reproduzir áudio"}
+        >
+          {playing ? <Pause className="h-4 w-4 fill-current" /> : <Play className="ml-0.5 h-4 w-4 fill-current" />}
+        </button>
+        <div className="min-w-0 flex-1">
+          <input
+            type="range"
+            min="0"
+            max={duration || 0}
+            step="0.1"
+            value={currentTime}
+            onChange={(event) => {
+              const next = Number(event.target.value);
+              setCurrentTime(next);
+              if (audioRef.current) audioRef.current.currentTime = next;
+            }}
+            aria-label="Posição do áudio"
+            className="h-1.5 w-full cursor-pointer accent-brand-green"
+            style={{ backgroundSize: `${progress}% 100%` }}
+          />
+          <div className="mt-0.5 flex items-center justify-between text-[9px] text-text-muted">
+            <span>{formatDuration(Math.floor(currentTime))}</span>
+            <span>{formatDuration(Math.floor(duration || 0))}</span>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={cyclePlaybackRate}
+          className="min-w-7 rounded-full px-1.5 py-1 text-[10px] font-bold text-text-muted hover:bg-black/5"
+          aria-label="Alterar velocidade do áudio"
+        >
+          {playbackRate}x
+        </button>
+      </div>
       {message.content && (
-        <p className="mt-1 text-xs whitespace-pre-wrap">{message.content}</p>
+        <p className="mt-1 px-1 text-xs whitespace-pre-wrap">{message.content}</p>
       )}
     </div>
   );
@@ -271,7 +349,7 @@ function VideoContent({
         src={url}
         controls
         preload="none"
-        className="max-h-64 w-full"
+        className="max-h-80 w-full bg-black object-contain"
         onError={() => setFailed(true)}
       />
       {message.content && (
@@ -320,9 +398,9 @@ function DocumentContent({
   }
 
   return (
-    <div className="flex items-center gap-2 px-3 py-2">
-      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand-green-soft text-brand-green-dark">
-        <FileText className="h-4 w-4" />
+    <div className="m-1.5 flex min-w-[260px] items-center gap-2 rounded-md bg-black/[0.045] p-2">
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-white/80 text-brand-green-dark shadow-sm">
+        <FileText className="h-5 w-5" />
       </div>
       <div className="min-w-0 flex-1">
         <p className="truncate text-xs font-medium">{filename}</p>
@@ -335,9 +413,10 @@ function DocumentContent({
         <a
           href={url}
           download={filename}
-          className="shrink-0 rounded-md bg-brand-green-soft px-2 py-1 text-[10px] font-semibold text-brand-green-dark hover:bg-brand-green/10"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-text-muted hover:bg-white/80 hover:text-brand-green-dark"
+          aria-label={`Baixar ${filename}`}
         >
-          Baixar
+          <Download className="h-4 w-4" />
         </a>
       )}
     </div>
@@ -378,7 +457,7 @@ function StickerContent({
         src={url}
         alt="Figurinha"
         loading="lazy"
-        className="h-24 w-24 object-contain"
+        className="h-36 w-36 object-contain drop-shadow-sm"
         onError={() => setFailed(true)}
       />
     </div>
@@ -417,6 +496,7 @@ function parseLocation(content: string | null): { lat: string; lng: string } | n
 }
 
 function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return `${m}:${String(s).padStart(2, "0")}`;
@@ -451,8 +531,15 @@ function SendStatusFooter({
   const status = message.send_status ?? "sent";
   const time = formatDateTime(message.created_at).split(", ")[1] ?? formatDateTime(message.created_at);
 
+  const statusIcon =
+    status === "sending" ? <Clock className="h-2.5 w-2.5" /> :
+    status === "failed" ? <AlertCircle className="h-2.5 w-2.5 text-danger-red" /> :
+    message.read_at ? <CheckCheck className="h-3 w-3 text-[#53bdeb]" /> :
+    message.delivered_at ? <CheckCheck className="h-3 w-3" /> :
+    <Check className="h-3 w-3" />;
+
   return (
-    <div className="flex flex-col items-end gap-0.5 px-3 pb-2 pt-0.5">
+    <div className="flex flex-col items-end gap-0.5 px-2 pb-1 pt-0.5">
       {status === "failed" && (
         <div className="flex items-center gap-1">
           {message.send_error && (
@@ -472,11 +559,9 @@ function SendStatusFooter({
           )}
         </div>
       )}
-      <div className="flex items-center gap-1 text-[10px] text-brand-green-deep/60">
+      <div className="flex items-center gap-0.5 text-[9px] text-text-muted">
         <span>{time}</span>
-        {status === "sending" && <Loader2 className="h-2.5 w-2.5 animate-spin text-brand-green-deep/40" />}
-        {status === "failed" && <AlertCircle className="h-2.5 w-2.5 text-danger-red" />}
-        {(status === "sent" || status === "pending") && <CheckCheck className="h-2.5 w-2.5 text-brand-green" />}
+        {statusIcon}
       </div>
     </div>
   );
@@ -497,19 +582,37 @@ export function MessageBubble({
 }) {
   const isSent = message.direction === "outbound";
   const isFailed = message.send_status === "failed";
+  const isSticker = message.message_type === "sticker";
   const mediaRetryFn = onMediaRetry ? () => onMediaRetry(message.id) : undefined;
 
   return (
-    <div className={cn("flex", isSent ? "justify-end" : "justify-start")}>
+    <div className={cn("group flex px-1", isSent ? "justify-end" : "justify-start")}>
       <div
         className={cn(
-          "max-w-[75%] overflow-hidden text-xs leading-relaxed",
-          isSent ? "bubble-sent text-text-primary" : "bubble-received text-text-primary",
+          "relative max-w-[78%] overflow-visible text-xs leading-relaxed sm:max-w-[68%]",
+          !isSticker && "rounded-lg shadow-[0_1px_1px_rgba(11,20,26,0.13)]",
+          !isSticker && (isSent ? "bg-[#d9fdd3] text-text-primary" : "bg-white text-text-primary"),
+          !isSticker && isSent && "after:absolute after:right-[-7px] after:top-0 after:border-[7px] after:border-b-transparent after:border-r-transparent after:border-t-[#d9fdd3]",
+          !isSticker && !isSent && "after:absolute after:left-[-7px] after:top-0 after:border-[7px] after:border-b-transparent after:border-l-transparent after:border-t-white",
           isFailed && "opacity-80 ring-1 ring-danger-red/30"
         )}
       >
+        {message.content && (
+          <button
+            type="button"
+            onClick={() => void navigator.clipboard.writeText(message.content ?? "")}
+            className={cn(
+              "absolute top-1 z-10 hidden h-6 w-6 items-center justify-center rounded-full bg-white/90 text-[#54656f] shadow-sm hover:bg-white group-hover:flex",
+              isSent ? "-left-8" : "-right-8"
+            )}
+            aria-label="Copiar mensagem"
+            title="Copiar mensagem"
+          >
+            <Copy className="h-3 w-3" />
+          </button>
+        )}
         {message.message_type === "text" && (
-          <p className="px-3 pt-2 whitespace-pre-wrap">{message.content}</p>
+          <p className="px-2.5 pb-0.5 pt-1.5 text-[13px] whitespace-pre-wrap">{message.content}</p>
         )}
         {message.message_type === "image" && (
           <ImageContent message={message} onMediaRetry={mediaRetryFn} />
@@ -536,7 +639,7 @@ export function MessageBubble({
         {isSent ? (
           <SendStatusFooter message={message} onRetry={onRetry} />
         ) : (
-          <div className="flex items-center gap-1 px-3 pb-2 pt-0.5 text-[10px] text-text-muted">
+          <div className="flex items-center justify-end gap-1 px-2 pb-1 pt-0.5 text-[9px] text-text-muted">
             <span>{formatDateTime(message.created_at).split(", ")[1] ?? formatDateTime(message.created_at)}</span>
           </div>
         )}

@@ -18,14 +18,14 @@ function ConversationItemSkeleton() {
 function MessageBubbleSkeleton({ sent }: { sent?: boolean }) {
   return (
     <div className={`flex ${sent ? "justify-end" : "justify-start"}`}>
-      <Skeleton className={`h-10 rounded-2xl ${sent ? "w-44" : "w-52"}`} />
+      <Skeleton className={`h-10 rounded-lg shadow-sm ${sent ? "w-44 bg-[#d9fdd3]" : "w-52 bg-white"}`} />
     </div>
   );
 }
 
 export default function InboxLoading() {
   return (
-    <div className="flex h-[calc(100vh-3.5rem)] overflow-hidden rounded-xl border border-border bg-white shadow-card">
+    <div className="-m-6 flex h-[calc(100vh-3.5rem)] overflow-hidden bg-white">
       {/* Left panel — conversation list */}
       <div className="flex w-72 shrink-0 flex-col border-r border-border">
         {/* Search + filter bar */}
@@ -48,9 +48,9 @@ export default function InboxLoading() {
       </div>
 
       {/* Middle panel — chat */}
-      <div className="flex flex-1 flex-col">
+      <div className="flex flex-1 flex-col bg-[#efeae2]">
         {/* Chat header */}
-        <div className="flex items-center gap-3 border-b border-border px-4 py-3">
+        <div className="flex items-center gap-3 border-b border-black/5 bg-[#f0f2f5] px-4 py-3">
           <Skeleton className="h-9 w-9 shrink-0 rounded-full" />
           <div className="flex-1 space-y-1.5">
             <Skeleton className="h-3 w-32" />
@@ -59,7 +59,16 @@ export default function InboxLoading() {
           <Skeleton className="h-7 w-24 rounded-lg" />
         </div>
         {/* Messages */}
-        <div className="flex-1 space-y-3 overflow-hidden p-4">
+        <div
+          className="flex-1 space-y-3 overflow-hidden p-6"
+          style={{
+            backgroundImage:
+              "linear-gradient(45deg, rgba(17, 27, 33, 0.018) 25%, transparent 25%), linear-gradient(-45deg, rgba(17, 27, 33, 0.018) 25%, transparent 25%)",
+            backgroundPosition: "0 0, 12px 12px",
+            backgroundSize: "24px 24px",
+          }}
+        >
+          <div className="mx-auto mb-4 h-6 w-20 rounded-md bg-white/80 shadow-sm" />
           <MessageBubbleSkeleton />
           <MessageBubbleSkeleton sent />
           <MessageBubbleSkeleton />
@@ -69,8 +78,8 @@ export default function InboxLoading() {
           <MessageBubbleSkeleton />
         </div>
         {/* Message input */}
-        <div className="border-t border-border p-3">
-          <Skeleton className="h-10 w-full rounded-xl" />
+        <div className="border-t border-black/5 bg-[#f0f2f5] p-3">
+          <Skeleton className="h-10 w-full rounded-lg bg-white" />
         </div>
       </div>
 

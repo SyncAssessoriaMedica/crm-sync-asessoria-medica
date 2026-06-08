@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   AlertCircle,
+  ArrowDown,
   ChevronDown,
   Clock,
   DollarSign,
@@ -149,6 +150,22 @@ function cleanJid(remoteJid: string) {
 
 function onlyDigits(value: string) {
   return value.replace(/\D/g, "");
+}
+
+function messageDayKey(date: string): string {
+  const value = new Date(date);
+  return `${value.getFullYear()}-${value.getMonth()}-${value.getDate()}`;
+}
+
+function messageDayLabel(date: string): string {
+  const value = new Date(date);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+
+  if (messageDayKey(date) === messageDayKey(today.toISOString())) return "Hoje";
+  if (messageDayKey(date) === messageDayKey(yesterday.toISOString())) return "Ontem";
+  return value.toLocaleDateString("pt-BR", { day: "2-digit", month: "long", year: "numeric" });
 }
 
 function formatFileSize(bytes: number) {
@@ -890,7 +907,7 @@ function Composer({
     : null;
 
   return (
-    <div className="border-t border-border bg-white px-3 pb-3 pt-2">
+    <div className="border-t border-black/5 bg-[#f0f2f5] px-3 pb-3 pt-2">
       {/* Composer error (mic permission denied, recording unsupported, etc.) */}
       {composerError && (
         <div className="mb-2 flex items-center gap-2 rounded-lg bg-danger-red/10 px-3 py-2 text-[11px] font-medium text-danger-red">
@@ -1005,7 +1022,7 @@ function Composer({
               <button
                 type="button"
                 onClick={() => setAttachMenuOpen((v) => !v)}
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border text-text-muted hover:bg-background-subtle hover:text-text-secondary"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[#54656f] hover:bg-black/5"
                 aria-label="Anexar arquivo"
                 disabled={!isConnected}
               >
@@ -1047,8 +1064,8 @@ function Composer({
               disabled={!isConnected || sending}
               rows={1}
               className={cn(
-                "flex-1 resize-none rounded-lg border border-border bg-background-subtle px-3 py-2 text-xs leading-relaxed text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-brand-green",
-                "min-h-[2rem] max-h-28 overflow-y-auto",
+                "flex-1 resize-none rounded-lg border border-transparent bg-white px-3 py-2.5 text-[13px] leading-relaxed text-text-primary shadow-sm placeholder:text-text-muted focus:border-brand-green/30 focus:outline-none",
+                "min-h-9 max-h-28 overflow-y-auto",
                 (!isConnected || sending) && "opacity-60 cursor-not-allowed"
               )}
               style={{ height: "auto" }}
@@ -1066,7 +1083,7 @@ function Composer({
               disabled={!isConnected || sending || Boolean(attachment)}
               title={!isConnected ? "WhatsApp desconectado" : attachment ? "Remova o anexo para gravar audio" : "Gravar audio"}
               className={cn(
-                "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border transition-colors",
+                "flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors",
                 isConnected && !sending && !attachment
                   ? "text-text-muted hover:bg-brand-green-soft hover:text-brand-green-dark"
                   : "cursor-not-allowed opacity-40"
@@ -1083,7 +1100,7 @@ function Composer({
               disabled={!canSend}
               title={disabledReason ?? "Enviar"}
               className={cn(
-                "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors",
+                "flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors shadow-sm",
                 canSend
                   ? "bg-brand-green text-white hover:bg-brand-green-dark"
                   : "bg-border text-text-muted cursor-not-allowed"
@@ -1128,6 +1145,7 @@ export function InboxClient({
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const markedReadRef = useRef<Set<string>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
   const prevConvIdRef = useRef<string>("");
 
   const [activeConvId, setActiveConvId] = useState(initialActiveConversationId || conversations[0]?.id || "");
@@ -1139,6 +1157,7 @@ export function InboxClient({
   const [localLeadSources, setLocalLeadSources] = useState<Record<string, string | null>>({});
   const [localLeadStages, setLocalLeadStages] = useState<Record<string, string | null>>({});
   const [message, setMessage] = useState<string | null>(null);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [isPending, startTransition] = useTransition();
 
   // Optimistic messages (per conversation)
@@ -1228,7 +1247,20 @@ export function InboxClient({
     const behavior = prevConvIdRef.current === (activeConv?.id ?? "") ? "smooth" : "instant";
     prevConvIdRef.current = activeConv?.id ?? "";
     messagesEndRef.current.scrollIntoView({ behavior, block: "end" });
+    setShowScrollToBottom(false);
   }, [activeConv?.id, visibleMessages.length]);
+
+  function handleChatScroll() {
+    const viewport = chatScrollRef.current;
+    if (!viewport) return;
+    const distanceFromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+    setShowScrollToBottom(distanceFromBottom > 180);
+  }
+
+  function scrollToLatestMessage() {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    setShowScrollToBottom(false);
+  }
 
   // Realtime + periodic refresh
   useEffect(() => {
@@ -1534,19 +1566,21 @@ export function InboxClient({
       </div>
 
       {/* ── Center: chat area ── */}
-      <div className="flex flex-1 flex-col bg-background-subtle">
+      <div className="min-w-0 flex flex-1 flex-col bg-[#efeae2]">
         {activeConv ? (
           <>
             {/* Header */}
-            <div className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-white px-4">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-brand-green-soft text-sm font-bold text-brand-green-deep">
+            <div className="flex h-14 shrink-0 items-center gap-3 border-b border-black/5 bg-[#f0f2f5] px-4">
+              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-brand-green-soft text-sm font-bold text-brand-green-deep">
                 {getInitials(lead?.name ?? cleanJid(activeConv.remote_jid))}
               </div>
               <div className="flex-1">
                 <p className="text-sm font-semibold leading-none text-text-primary">
                   {lead?.name ?? "Contato sem lead vinculado"}
                 </p>
-                <p className="mt-0.5 text-[11px] text-text-muted">{formatPhone(cleanJid(activeConv.remote_jid))}</p>
+                <p className="mt-0.5 text-[11px] text-text-muted">
+                  {formatPhone(cleanJid(activeConv.remote_jid))} · {isConnected ? "WhatsApp conectado" : "WhatsApp desconectado"}
+                </p>
               </div>
               <div className="flex items-center gap-2">
                 {lead?.status && (
@@ -1570,17 +1604,53 @@ export function InboxClient({
             )}
 
             {/* Messages */}
-            <ScrollArea className="flex-1 p-4">
-              <div className="space-y-2 pb-4">
+            <div className="relative min-h-0 flex-1">
+              <div
+                ref={chatScrollRef}
+                onScroll={handleChatScroll}
+                className="h-full overflow-y-auto px-3 py-4 sm:px-6"
+                style={{
+                  backgroundImage:
+                    "linear-gradient(45deg, rgba(17, 27, 33, 0.018) 25%, transparent 25%), linear-gradient(-45deg, rgba(17, 27, 33, 0.018) 25%, transparent 25%)",
+                  backgroundPosition: "0 0, 12px 12px",
+                  backgroundSize: "24px 24px",
+                }}
+              >
+              <div className="mx-auto max-w-5xl space-y-1 pb-4">
                 {visibleMessages.length === 0 && (
-                  <div className="py-12 text-center text-xs text-text-muted">Nenhuma mensagem salva nesta conversa.</div>
+                  <div className="mx-auto mt-10 w-fit rounded-lg bg-white/85 px-4 py-2 text-center text-xs text-text-muted shadow-sm">
+                    Nenhuma mensagem salva nesta conversa.
+                  </div>
                 )}
-                {visibleMessages.map((item) => (
-                  <MessageBubble key={item.id} message={item} onRetry={handleRetry} onMediaRetry={handleMediaRetry} />
-                ))}
+                {visibleMessages.map((item, index) => {
+                  const previous = visibleMessages[index - 1];
+                  const showDay = !previous || messageDayKey(previous.created_at) !== messageDayKey(item.created_at);
+                  return (
+                    <div key={item.id}>
+                      {showDay && (
+                        <div className="sticky top-2 z-10 mx-auto mb-3 mt-2 w-fit rounded-md bg-white/90 px-3 py-1 text-[10px] font-medium text-[#54656f] shadow-sm backdrop-blur-sm">
+                          {messageDayLabel(item.created_at)}
+                        </div>
+                      )}
+                      <MessageBubble message={item} onRetry={handleRetry} onMediaRetry={handleMediaRetry} />
+                    </div>
+                  );
+                })}
                 <div ref={messagesEndRef} />
               </div>
-            </ScrollArea>
+              </div>
+              {showScrollToBottom && (
+                <button
+                  type="button"
+                  onClick={scrollToLatestMessage}
+                  className="absolute bottom-3 right-4 flex h-9 w-9 items-center justify-center rounded-full bg-white text-[#54656f] shadow-md transition-colors hover:bg-[#f0f2f5]"
+                  aria-label="Ir para mensagens recentes"
+                  title="Mensagens recentes"
+                >
+                  <ArrowDown className="h-4 w-4" />
+                </button>
+              )}
+            </div>
 
             {/* Composer */}
             <Composer
