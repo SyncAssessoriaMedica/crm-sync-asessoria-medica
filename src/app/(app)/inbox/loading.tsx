@@ -63,9 +63,7 @@ export default function InboxLoading() {
           className="flex-1 space-y-3 overflow-hidden p-6"
           style={{
             backgroundImage:
-              "linear-gradient(45deg, rgba(17, 27, 33, 0.018) 25%, transparent 25%), linear-gradient(-45deg, rgba(17, 27, 33, 0.018) 25%, transparent 25%)",
-            backgroundPosition: "0 0, 12px 12px",
-            backgroundSize: "24px 24px",
+              "repeating-linear-gradient(45deg, rgba(17, 27, 33, 0.014) 0, rgba(17, 27, 33, 0.014) 1px, transparent 1px, transparent 28px), repeating-linear-gradient(-45deg, rgba(17, 27, 33, 0.012) 0, rgba(17, 27, 33, 0.012) 1px, transparent 1px, transparent 28px)",
           }}
         >
           <div className="mx-auto mb-4 h-6 w-20 rounded-md bg-white/80 shadow-sm" />

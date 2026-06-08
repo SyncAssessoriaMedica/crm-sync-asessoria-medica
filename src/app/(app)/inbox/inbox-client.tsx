@@ -816,6 +816,7 @@ function Composer({
     recordingState === "idle" &&
     (!attachment || attachment.uploadStatus === "uploaded") &&
     (draftText.trim().length > 0 || attachment !== null);
+  const hasComposeContent = draftText.trim().length > 0 || attachment !== null;
 
   async function handleSend() {
     if (!canSend) return;
@@ -1076,39 +1077,39 @@ function Composer({
               }}
             />
 
-            {/* Mic button — record audio */}
-            <button
-              type="button"
-              onClick={() => void startRecording()}
-              disabled={!isConnected || sending || Boolean(attachment)}
-              title={!isConnected ? "WhatsApp desconectado" : attachment ? "Remova o anexo para gravar audio" : "Gravar audio"}
-              className={cn(
-                "flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors",
-                isConnected && !sending && !attachment
-                  ? "text-text-muted hover:bg-brand-green-soft hover:text-brand-green-dark"
-                  : "cursor-not-allowed opacity-40"
-              )}
-              aria-label="Gravar áudio"
-            >
-              <Mic className="h-4 w-4" />
-            </button>
-
-            {/* Send button */}
-            <button
-              type="button"
-              onClick={() => void handleSend()}
-              disabled={!canSend}
-              title={disabledReason ?? "Enviar"}
-              className={cn(
-                "flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors shadow-sm",
-                canSend
-                  ? "bg-brand-green text-white hover:bg-brand-green-dark"
-                  : "bg-border text-text-muted cursor-not-allowed"
-              )}
-              aria-label="Enviar"
-            >
-              <Send className="h-4 w-4" />
-            </button>
+            {hasComposeContent ? (
+              <button
+                type="button"
+                onClick={() => void handleSend()}
+                disabled={!canSend}
+                title={disabledReason ?? "Enviar"}
+                className={cn(
+                  "flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors",
+                  canSend
+                    ? "bg-brand-green text-white hover:bg-brand-green-dark"
+                    : "cursor-not-allowed bg-border text-text-muted"
+                )}
+                aria-label="Enviar"
+              >
+                <Send className="h-4 w-4" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void startRecording()}
+                disabled={!isConnected || sending}
+                title={!isConnected ? "WhatsApp desconectado" : "Gravar áudio"}
+                className={cn(
+                  "flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors",
+                  isConnected && !sending
+                    ? "text-[#54656f] hover:bg-black/5"
+                    : "cursor-not-allowed opacity-40"
+                )}
+                aria-label="Gravar áudio"
+              >
+                <Mic className="h-4 w-4" />
+              </button>
+            )}
           </div>
         </>
       )}
@@ -1611,9 +1612,7 @@ export function InboxClient({
                 className="h-full overflow-y-auto px-3 py-4 sm:px-6"
                 style={{
                   backgroundImage:
-                    "linear-gradient(45deg, rgba(17, 27, 33, 0.018) 25%, transparent 25%), linear-gradient(-45deg, rgba(17, 27, 33, 0.018) 25%, transparent 25%)",
-                  backgroundPosition: "0 0, 12px 12px",
-                  backgroundSize: "24px 24px",
+                    "repeating-linear-gradient(45deg, rgba(17, 27, 33, 0.014) 0, rgba(17, 27, 33, 0.014) 1px, transparent 1px, transparent 28px), repeating-linear-gradient(-45deg, rgba(17, 27, 33, 0.012) 0, rgba(17, 27, 33, 0.012) 1px, transparent 1px, transparent 28px)",
                 }}
               >
               <div className="mx-auto max-w-5xl space-y-1 pb-4">
