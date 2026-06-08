@@ -15,6 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { businessHoursMs, parseOrgBusinessHours, type OrgBusinessHours } from "@/lib/business-hours";
 import { getDateRangeFromParams } from "@/lib/date-range";
+import { fetchAllRows } from "@/lib/supabase-pagination";
 import {
   LOCATION_STATUS_LABELS,
   normalizeLocationText,
@@ -470,26 +471,31 @@ export default async function DashboardPage({
 
   const previousLeadsSelect = `id, service_id, stage_id, status, potential_value, closed_value, created_at`;
 
-  let currentLeadsQuery = admin
-    .from("leads")
-    .select(leadsSelect)
-    .eq("organization_id", organizationId)
-    .gte("created_at", currentStart.toISOString())
-    .lt("created_at", currentEnd.toISOString())
-    .order("created_at", { ascending: false });
+  const buildCurrentLeadsQuery = () => {
+    let query = admin
+      .from("leads")
+      .select(leadsSelect)
+      .eq("organization_id", organizationId)
+      .gte("created_at", currentStart.toISOString())
+      .lt("created_at", currentEnd.toISOString())
+      .order("created_at", { ascending: false });
 
-  let previousLeadsQuery = admin
-    .from("leads")
-    .select(previousLeadsSelect)
-    .eq("organization_id", organizationId)
-    .gte("created_at", previousStart.toISOString())
-    .lt("created_at", currentStart.toISOString())
-    .order("created_at", { ascending: false });
+    if (selectedService !== "all") query = query.eq("service_id", selectedService);
+    return query;
+  };
 
-  if (selectedService !== "all") {
-    currentLeadsQuery = currentLeadsQuery.eq("service_id", selectedService);
-    previousLeadsQuery = previousLeadsQuery.eq("service_id", selectedService);
-  }
+  const buildPreviousLeadsQuery = () => {
+    let query = admin
+      .from("leads")
+      .select(previousLeadsSelect)
+      .eq("organization_id", organizationId)
+      .gte("created_at", previousStart.toISOString())
+      .lt("created_at", currentStart.toISOString())
+      .order("created_at", { ascending: false });
+
+    if (selectedService !== "all") query = query.eq("service_id", selectedService);
+    return query;
+  };
 
   const [
     currentLeadsResult,
@@ -501,8 +507,8 @@ export default async function DashboardPage({
     settingsResult,
     servicesResult,
   ] = await Promise.all([
-    currentLeadsQuery,
-    previousLeadsQuery,
+    fetchAllRows<DashboardLeadRow>(buildCurrentLeadsQuery),
+    fetchAllRows<PreviousLeadRow>(buildPreviousLeadsQuery),
     admin
       .from("lead_tasks")
       .select("id, due_at, completed_at, lead:leads!inner(id, organization_id)")
