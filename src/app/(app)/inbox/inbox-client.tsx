@@ -81,6 +81,35 @@ const STATUS_LABELS: Record<string, string> = {
 
 const FOLLOWUP_CUTOFF_MS = 48 * 60 * 60 * 1000;
 
+const MAX_ATTACHMENT_SIZE: Record<AttachmentType, number> = {
+  image: 10 * 1024 * 1024,
+  audio: 16 * 1024 * 1024,
+  video: 50 * 1024 * 1024,
+  document: 50 * 1024 * 1024,
+  sticker: 5 * 1024 * 1024,
+};
+
+const ALLOWED_ATTACHMENT_MIME: Record<AttachmentType, Set<string>> = {
+  image: new Set(["image/jpeg", "image/jpg", "image/png", "image/webp"]),
+  audio: new Set(["audio/ogg", "audio/mpeg", "audio/mp3", "audio/wav", "audio/webm", "audio/mp4", "audio/x-m4a"]),
+  video: new Set(["video/mp4", "video/webm", "video/3gpp", "video/quicktime"]),
+  document: new Set([
+    "application/pdf",
+    "text/plain",
+    "text/csv",
+    "application/zip",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/rtf",
+    "application/x-zip-compressed",
+  ]),
+  sticker: new Set(["image/webp"]),
+};
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type AttachmentType = "image" | "audio" | "video" | "document" | "sticker";
@@ -119,6 +148,12 @@ function cleanJid(remoteJid: string) {
 
 function onlyDigits(value: string) {
   return value.replace(/\D/g, "");
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(bytes >= 100 * 1024 * 1024 ? 0 : 1)} MB`;
+  if (bytes >= 1024) return `${Math.ceil(bytes / 1024)} KB`;
+  return `${bytes} B`;
 }
 
 function lastMessagePreview(message: InboxMessage | null) {
@@ -359,6 +394,38 @@ function Composer({
     if (!file) return;
 
     const type = attachTypeRef.current;
+    const rawMime = (file.type || "").toLowerCase().split(";")[0].trim();
+    const maxBytes = MAX_ATTACHMENT_SIZE[type];
+    const label = MEDIA_LABELS[type] ?? type;
+
+    if (file.size > maxBytes) {
+      setAttachment({
+        type,
+        file,
+        localUrl: "",
+        mimetype: rawMime || "application/octet-stream",
+        filename: file.name,
+        size: file.size,
+        uploadStatus: "failed",
+        error: `${label} muito grande. Limite: ${formatFileSize(maxBytes)}. Este arquivo tem ${formatFileSize(file.size)}.`,
+      });
+      return;
+    }
+
+    if (!rawMime || !ALLOWED_ATTACHMENT_MIME[type].has(rawMime)) {
+      setAttachment({
+        type,
+        file,
+        localUrl: "",
+        mimetype: rawMime || "application/octet-stream",
+        filename: file.name,
+        size: file.size,
+        uploadStatus: "failed",
+        error: `Tipo de arquivo invalido para ${label}. MIME recebido: ${rawMime || "(vazio)"}.`,
+      });
+      return;
+    }
+
     const localUrl = URL.createObjectURL(file);
     if (attachment?.localUrl.startsWith("blob:")) URL.revokeObjectURL(attachment.localUrl);
     const newAttachment: ComposerAttachment = {
