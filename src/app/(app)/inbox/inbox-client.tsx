@@ -367,6 +367,7 @@ function Composer({
   const [sending, setSending] = useState(false);
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const [composerError, setComposerError] = useState<string | null>(null);
+  const [microphoneBlocked, setMicrophoneBlocked] = useState(false);
 
   // Recording state
   type RecordingState = "idle" | "recording" | "recorded";
@@ -551,6 +552,7 @@ function Composer({
 
   async function startRecording() {
     setComposerError(null);
+    setMicrophoneBlocked(false);
 
     if (!isConnected || sending || attachment) return;
 
@@ -565,15 +567,21 @@ function Composer({
 
     let stream: MediaStream;
     try {
+      // getUserMedia is intentionally called from the mic click so browsers can
+      // display their native permission prompt while a user gesture is active.
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (err) {
       if (err instanceof DOMException && err.name === "NotAllowedError") {
-        setComposerError("Permissão de microfone negada pelo navegador.");
+        setMicrophoneBlocked(true);
+        setComposerError(
+          "O microfone está bloqueado no navegador. Libere-o no ícone ao lado do endereço e tente novamente."
+        );
       } else {
         setComposerError("Não foi possível acessar o microfone.");
       }
       return;
     }
+    setMicrophoneBlocked(false);
 
     const mimeType =
       ["audio/webm;codecs=opus", "audio/webm", "audio/ogg"].find((m) =>
@@ -885,12 +893,24 @@ function Composer({
     <div className="border-t border-border bg-white px-3 pb-3 pt-2">
       {/* Composer error (mic permission denied, recording unsupported, etc.) */}
       {composerError && (
-        <div className="mb-2 flex items-center gap-1.5 rounded-lg bg-danger-red/10 px-3 py-2 text-[11px] font-medium text-danger-red">
+        <div className="mb-2 flex items-center gap-2 rounded-lg bg-danger-red/10 px-3 py-2 text-[11px] font-medium text-danger-red">
           <AlertCircle className="h-3.5 w-3.5 shrink-0" />
           <span className="flex-1">{composerError}</span>
+          {microphoneBlocked && (
+            <button
+              type="button"
+              onClick={() => void startRecording()}
+              className="shrink-0 rounded border border-danger-red/30 bg-white px-2 py-1 transition-colors hover:bg-danger-red/5"
+            >
+              Tentar novamente
+            </button>
+          )}
           <button
             type="button"
-            onClick={() => setComposerError(null)}
+            onClick={() => {
+              setComposerError(null);
+              setMicrophoneBlocked(false);
+            }}
             aria-label="Fechar erro"
             className="shrink-0 opacity-70 hover:opacity-100"
           >
