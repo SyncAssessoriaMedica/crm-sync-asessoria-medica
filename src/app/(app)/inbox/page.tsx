@@ -12,6 +12,7 @@ type ConversationRow = Omit<InboxConversation, "lead" | "instance" | "last_messa
 };
 
 type InboxDateMode = "activity" | "created";
+const INBOX_CONVERSATION_LIMIT = 300;
 
 function firstRelation<T>(value: T | T[] | null): T | null {
   return Array.isArray(value) ? value[0] ?? null : value;
@@ -93,11 +94,10 @@ export default async function InboxPage({
       `
       )
       .eq("organization_id", organizationId)
-      .not("lead_id", "is", null)
       .gte(dateColumn, range.start.toISOString())
       .lt(dateColumn, range.end.toISOString())
       .order(dateColumn, { ascending: false })
-      .limit(80),
+      .limit(INBOX_CONVERSATION_LIMIT),
     admin
       .from("whatsapp_instances")
       .select("id, instance_name, phone_number, status")
@@ -189,11 +189,8 @@ export default async function InboxPage({
             .from("conversations")
             .select(CONVERSATION_SELECT)
             .eq("organization_id", organizationId)
-            .not("lead_id", "is", null)
-            .gte(dateColumn, range.start.toISOString())
-            .lt(dateColumn, range.end.toISOString())
             .ilike("remote_jid", `%${searchDigits}%`)
-            .order(dateColumn, { ascending: false })
+            .order("updated_at", { ascending: false })
             .limit(50)
         : Promise.resolve({ data: [] as ConversationRow[] }),
     ]);
@@ -204,11 +201,8 @@ export default async function InboxPage({
           .from("conversations")
           .select(CONVERSATION_SELECT)
           .eq("organization_id", organizationId)
-          .not("lead_id", "is", null)
-          .gte(dateColumn, range.start.toISOString())
-          .lt(dateColumn, range.end.toISOString())
           .in("lead_id", leadIds)
-          .order(dateColumn, { ascending: false })
+          .order("updated_at", { ascending: false })
           .limit(50)
       : { data: [] as ConversationRow[] };
 
