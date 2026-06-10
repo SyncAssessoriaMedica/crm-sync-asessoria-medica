@@ -12,6 +12,7 @@ import {
   LayoutDashboard,
   Loader2,
   MessageSquare,
+  MessagesSquare,
   Settings,
   Shield,
   Users,
@@ -50,6 +51,12 @@ const navItems = [
     href: "/follow-up",
     icon: Clock,
     roles: ["super_admin", "gestor_sync", "admin_clinica"],
+  },
+  {
+    label: "Mensagens rapidas",
+    href: "/admin/mensagens-rapidas",
+    icon: MessagesSquare,
+    roles: ["super_admin", "gestor_sync", "admin_clinica", "atendente"],
   },
   {
     label: "Administrador",
@@ -214,10 +221,12 @@ export function Sidebar({ user }: SidebarProps) {
         <nav className="flex flex-col gap-0.5 py-1">
           <p className="label-eyebrow px-2 py-2 text-white/30">Menu</p>
           {visibleItems.map((item) => {
-            const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
+            const isActive =
+              pathname === item.href ||
+              (item.href !== "/admin" && pathname.startsWith(`${item.href}/`));
             const isItemPending =
               pendingHref === item.href &&
-              !(pathname === item.href || pathname.startsWith(`${item.href}/`));
+              !(pathname === item.href || (item.href !== "/admin" && pathname.startsWith(`${item.href}/`)));
             return (
               <Link
                 key={item.href}

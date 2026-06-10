@@ -15,6 +15,7 @@ import {
   Inbox,
   MapPin,
   MessageCircle,
+  MessagesSquare,
   Mic,
   Paperclip,
   Search,
@@ -50,6 +51,11 @@ import {
 } from "./actions";
 import { updateLeadSourceAction, updateLeadStageAction } from "../leads/actions";
 import { MessageBubble } from "./message-media";
+import {
+  renderQuickMessageVariables,
+  type QuickMessage,
+  type QuickMessageVariable,
+} from "@/lib/quick-messages";
 import type {
   BhAutoReplyQueueItem,
   InboxConversation,
@@ -118,7 +124,7 @@ type AttachmentType = "image" | "audio" | "video" | "document" | "sticker";
 
 type ComposerAttachment = {
   type: AttachmentType;
-  file: File;
+  file?: File;
   localUrl: string;
   uploadedUrl?: string;
   mimetype: string;
@@ -126,6 +132,7 @@ type ComposerAttachment = {
   size: number;
   uploadStatus: "uploading" | "uploaded" | "failed";
   error?: string;
+  ptt?: boolean;
 };
 
 type InboxClientProps = {
@@ -370,11 +377,13 @@ function AttachmentPreview({
 
 function Composer({
   activeConvId,
+  activeLead,
   isConnected,
   onOptimisticAdd,
   onOptimisticUpdate,
 }: {
   activeConvId: string;
+  activeLead: InboxConversation["lead"];
   isConnected: boolean;
   onOptimisticAdd: (message: InboxMessage) => void;
   onOptimisticUpdate: (clientMessageId: string, patch: Partial<InboxMessage>) => void;
@@ -385,6 +394,10 @@ function Composer({
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const [composerError, setComposerError] = useState<string | null>(null);
   const [microphoneBlocked, setMicrophoneBlocked] = useState(false);
+  const [quickMenuOpen, setQuickMenuOpen] = useState(false);
+  const [quickMessages, setQuickMessages] = useState<QuickMessage[] | null>(null);
+  const [quickSearch, setQuickSearch] = useState("");
+  const [quickLoading, setQuickLoading] = useState(false);
 
   // Recording state
   type RecordingState = "idle" | "recording" | "recorded";
@@ -402,6 +415,7 @@ function Composer({
   const attachTypeRef = useRef<AttachmentType>("image");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const attachMenuRef = useRef<HTMLDivElement>(null);
+  const quickMenuRef = useRef<HTMLDivElement>(null);
   const attachmentUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -449,6 +463,77 @@ function Composer({
     document.addEventListener("mousedown", handleOutside);
     return () => document.removeEventListener("mousedown", handleOutside);
   }, [attachMenuOpen]);
+
+  useEffect(() => {
+    if (!quickMenuOpen) return;
+    function handleOutside(e: MouseEvent) {
+      if (quickMenuRef.current && !quickMenuRef.current.contains(e.target as Node)) {
+        setQuickMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, [quickMenuOpen]);
+
+  async function openQuickMessages() {
+    const shouldOpen = !quickMenuOpen;
+    setQuickMenuOpen(shouldOpen);
+    setAttachMenuOpen(false);
+    if (!shouldOpen || quickLoading) return;
+    setQuickLoading(true);
+    try {
+      const response = await fetch("/api/quick-messages", { cache: "no-store" });
+      const json = await response.json() as { ok?: boolean; messages?: QuickMessage[]; error?: string };
+      if (!response.ok || !json.messages) throw new Error(json.error ?? "Erro ao carregar mensagens rapidas.");
+      setQuickMessages(json.messages);
+    } catch (error) {
+      setComposerError(error instanceof Error ? error.message : "Erro ao carregar mensagens rapidas.");
+    } finally {
+      setQuickLoading(false);
+    }
+  }
+
+  function selectQuickMessage(message: QuickMessage) {
+    const leadName = activeLead?.name?.trim() ?? "";
+    const variableValues: Partial<Record<QuickMessageVariable, string | null>> = {
+      nome: leadName,
+      primeiro_nome: leadName.split(/\s+/)[0] ?? "",
+      telefone: activeLead?.phone ? formatPhone(activeLead.phone) : null,
+      procedimento: activeLead?.service?.name ?? activeLead?.procedure ?? null,
+      data_agendamento: activeLead?.appointment_scheduled_at ? formatDateTime(activeLead.appointment_scheduled_at) : null,
+      cidade: activeLead?.detected_city,
+      estado: activeLead?.detected_state,
+    };
+    const rendered = renderQuickMessageVariables(message.content, variableValues);
+    setDraftText(rendered.text);
+    if (message.message_type !== "text" && message.media_url) {
+      setAttachment({
+        type: message.message_type as AttachmentType,
+        localUrl: `/api/quick-messages/${message.id}/media`,
+        uploadedUrl: message.media_url,
+        mimetype: message.media_mimetype ?? "application/octet-stream",
+        filename: message.media_filename ?? message.title,
+        size: 0,
+        uploadStatus: "uploaded",
+        ptt: message.message_type === "audio" ? message.media_ptt === true : undefined,
+      });
+    } else {
+      removeAttachment();
+    }
+    if (rendered.missing.length > 0) {
+      setComposerError(`Confira antes de enviar: faltam valores para ${rendered.missing.map((key) => `{{${key}}}`).join(", ")}.`);
+    } else {
+      setComposerError(null);
+    }
+    setQuickMenuOpen(false);
+    setQuickSearch("");
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }
+
+  const filteredQuickMessages = (quickMessages ?? []).filter((message) => {
+    const term = quickSearch.trim().toLowerCase().replace(/^\//, "");
+    return !term || message.title.toLowerCase().includes(term) || message.shortcut.includes(term) || message.content?.toLowerCase().includes(term);
+  });
 
   function openFilePicker(type: AttachmentType) {
     attachTypeRef.current = type;
@@ -840,7 +925,7 @@ function Composer({
       media_mimetype: hasAttachment ? attachment.mimetype : null,
       media_filename: hasAttachment ? attachment.filename : null,
       media_duration: null,
-      media_ptt: hasAttachment && attachment.type === "audio" ? false : null,
+      media_ptt: hasAttachment && attachment.type === "audio" ? attachment.ptt === true : null,
       created_at: now,
       delivered_at: null,
       read_at: null,
@@ -869,7 +954,7 @@ function Composer({
       mediaFilename: hasAttachment ? attachment.filename : null,
       mediaDuration: null,
       // Attached audio files are regular audio (not PTT voice notes)
-      ...(hasAttachment && attachment.type === "audio" ? { ptt: false } : {}),
+      ...(hasAttachment && attachment.type === "audio" ? { ptt: attachment.ptt === true } : {}),
     });
 
     setSending(false);
@@ -1018,6 +1103,50 @@ function Composer({
           )}
 
           <div className="flex items-end gap-2">
+            <div className="relative" ref={quickMenuRef}>
+              <button
+                type="button"
+                onClick={() => void openQuickMessages()}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[#54656f] hover:bg-black/5"
+                aria-label="Mensagens rapidas"
+                title="Mensagens rapidas"
+                disabled={!isConnected}
+              >
+                <MessagesSquare className="h-4 w-4" />
+              </button>
+              {quickMenuOpen && (
+                <div className="absolute bottom-10 left-0 z-30 w-80 overflow-hidden rounded-xl border border-border bg-white shadow-xl">
+                  <div className="border-b border-border p-2">
+                    <input
+                      autoFocus
+                      value={quickSearch}
+                      onChange={(event) => setQuickSearch(event.target.value)}
+                      placeholder="Buscar nome, texto ou /atalho..."
+                      className="h-8 w-full rounded-lg border border-border bg-background-subtle px-3 text-xs focus:outline-none focus:ring-1 focus:ring-brand-green"
+                    />
+                  </div>
+                  <div className="max-h-72 overflow-y-auto p-1">
+                    {quickLoading && <p className="px-3 py-4 text-center text-xs text-text-muted">Carregando...</p>}
+                    {!quickLoading && filteredQuickMessages.length === 0 && <p className="px-3 py-4 text-center text-xs text-text-muted">Nenhuma mensagem rapida encontrada.</p>}
+                    {filteredQuickMessages.map((message) => (
+                      <button
+                        key={message.id}
+                        type="button"
+                        onClick={() => selectQuickMessage(message)}
+                        className="block w-full rounded-lg px-3 py-2 text-left hover:bg-background-subtle"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate text-xs font-semibold text-text-primary">{message.title}</span>
+                          <span className="shrink-0 font-mono text-[10px] text-brand-green-dark">/{message.shortcut}</span>
+                        </div>
+                        <p className="mt-0.5 truncate text-[10px] text-text-muted">{message.content || message.media_filename || message.message_type}</p>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
             {/* Attach button */}
             <div className="relative" ref={attachMenuRef}>
               <button
@@ -1655,6 +1784,7 @@ export function InboxClient({
             <Composer
               key={activeConv.id}
               activeConvId={activeConv.id}
+              activeLead={activeConv.lead}
               isConnected={isConnected}
               onOptimisticAdd={handleOptimisticAdd}
               onOptimisticUpdate={handleOptimisticUpdate}

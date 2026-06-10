@@ -7,6 +7,7 @@ const ROUTE_RULES: [string, UserRole[]][] = [
   ["/kanban",      ["super_admin", "gestor_sync", "admin_clinica", "atendente"]],
   ["/inbox",       ["super_admin", "gestor_sync", "admin_clinica", "atendente"]],
   ["/follow-up",   ["super_admin", "gestor_sync", "admin_clinica"]],
+  ["/admin/mensagens-rapidas", ["super_admin", "gestor_sync", "admin_clinica", "atendente"]],
   ["/admin",       ["super_admin", "gestor_sync", "admin_clinica"]],
   ["/settings",    ["super_admin", "gestor_sync", "admin_clinica"]],
 ];
