@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getOrganizationContext } from "@/lib/organization-context";
 import { canAccessRoute } from "@/lib/permissions";
+import { createClient } from "@/lib/supabase/server";
 
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return new NextResponse("Nao autorizado.", { status: 401 });
     const context = await getOrganizationContext();
     if (!canAccessRoute(context.role, "/inbox")) return new NextResponse("Sem permissao.", { status: 403 });
     const { id } = await params;

@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { createAdminClient } from "@/lib/supabase/server";
+import { createAdminClient, createClient } from "@/lib/supabase/server";
 import { getOrganizationContext } from "@/lib/organization-context";
 import { canAccessRoute } from "@/lib/permissions";
 
@@ -23,6 +23,9 @@ const EXT: Record<string, string> = {
 
 export async function POST(request: NextRequest) {
   try {
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return NextResponse.json({ ok: false, error: "Nao autorizado." }, { status: 401 });
     const context = await getOrganizationContext();
     if (!canAccessRoute(context.role, "/admin/mensagens-rapidas")) {
       return NextResponse.json({ ok: false, error: "Sem permissao." }, { status: 403 });
