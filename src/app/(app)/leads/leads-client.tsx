@@ -529,22 +529,22 @@ export function LeadsClient({
       {/* ── Table ────────────────────────────────────────────────────────────── */}
       <div className="overflow-hidden rounded-xl border border-border bg-white shadow-card">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1380px] table-fixed text-sm">
+          <table className="w-full table-fixed text-xs">
             <colgroup>
-              <col className="w-12" />
-              <col className="w-[300px]" />
-              <col className="w-[220px]" />
-              <col className="w-[130px]" />
-              <col className="w-[160px]" />
-              <col className="w-[180px]" />
-              <col className="w-[130px]" />
-              <col className="w-[110px]" />
-              <col className="w-[120px]" />
-              <col className="w-[90px]" />
+              <col className="w-[3.5%]" />
+              <col className="w-[22%]" />
+              <col className="w-[16%]" />
+              <col className="w-[8%]" />
+              <col className="w-[10%]" />
+              <col className="w-[11%]" />
+              <col className="w-[8%]" />
+              <col className="w-[7%]" />
+              <col className="w-[8%]" />
+              <col className="w-[6.5%]" />
             </colgroup>
             <thead>
               <tr className="border-b border-border bg-background-subtle">
-                <th className="w-10 px-3 py-2.5">
+                <th className="px-2 py-2.5">
                   <input
                     ref={selectAllRef}
                     type="checkbox"
@@ -567,13 +567,13 @@ export function LeadsClient({
                   <th
                     key={label}
                     className={cn(
-                      "px-4 py-2.5 text-left",
+                      "px-2 py-2.5 text-left",
                       field && "cursor-pointer select-none hover:bg-background-subtle/80"
                     )}
                     onClick={field ? () => handleSort(field) : undefined}
                   >
                     <div className="flex items-center gap-1">
-                      <span className="label-eyebrow whitespace-nowrap">{label}</span>
+                      <span className="text-[9px] font-bold uppercase tracking-wide text-text-muted whitespace-nowrap">{label}</span>
                       {field && <SortIcon field={field} />}
                     </div>
                   </th>
@@ -593,7 +593,7 @@ export function LeadsClient({
                         : "hover:bg-background-subtle/50"
                     )}
                   >
-                    <td className="w-10 px-3 py-3">
+                    <td className="px-2 py-3">
                       <input
                         type="checkbox"
                         aria-label={`Selecionar ${lead.name}`}
@@ -602,9 +602,9 @@ export function LeadsClient({
                         className="h-4 w-4 cursor-pointer accent-brand-green"
                       />
                     </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2.5">
-                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-green-soft text-[10px] font-bold text-brand-green-deep">
+                    <td className="px-2 py-3">
+                      <div className="flex items-center gap-2">
+                        <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand-green-soft text-[9px] font-bold text-brand-green-deep">
                           {getInitials(lead.name)}
                         </div>
                         <div className="min-w-0">
@@ -643,7 +643,7 @@ export function LeadsClient({
                         </div>
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-xs text-text-secondary">
+                    <td className="px-2 py-3 text-[11px] text-text-secondary">
                       <div>{formatPhone(lead.phone)}</div>
                       {(lead.detected_city || lead.detected_state || lead.phone_ddd) && (
                         <div className="mt-1 flex items-center gap-1 text-[10px] text-text-muted">
@@ -655,31 +655,31 @@ export function LeadsClient({
                         </div>
                       )}
                     </td>
-                    <td className="truncate px-4 py-3 text-xs text-text-secondary" title={lead.service?.name ?? undefined}>
+                    <td className="truncate px-2 py-3 text-[11px] text-text-secondary" title={lead.service?.name ?? undefined}>
                       {lead.service?.name ?? "-"}
                     </td>
-                    <td className="truncate px-4 py-3 text-xs text-text-secondary" title={lead.procedure ?? undefined}>
+                    <td className="truncate px-2 py-3 text-[11px] text-text-secondary" title={lead.procedure ?? undefined}>
                       {lead.procedure ?? "-"}
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-2 py-3">
                       <Badge
                         variant={lead.stage ? "green" : "secondary"}
-                        className="max-w-full whitespace-nowrap"
+                        className="max-w-full truncate whitespace-nowrap px-1.5 text-[9px]"
                         title={lead.stage?.name ?? "Sem etapa"}
                       >
                         {lead.stage?.name ?? "Sem etapa"}
                       </Badge>
                     </td>
-                    <td className="truncate px-4 py-3 text-[11px] text-text-muted" title={lead.source?.name ?? undefined}>
+                    <td className="truncate px-2 py-3 text-[10px] text-text-muted" title={lead.source?.name ?? undefined}>
                       {lead.source?.name ?? "-"}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-xs font-medium text-text-primary">
+                    <td className="whitespace-nowrap px-2 py-3 text-[11px] font-medium text-text-primary">
                       {lead.potential_value ? formatCurrency(lead.potential_value) : "-"}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-xs text-text-muted">
+                    <td className="whitespace-nowrap px-2 py-3 text-[10px] text-text-muted">
                       {formatDate(lead.created_at)}
                     </td>
-                    <td className="px-3 py-3">
+                    <td className="px-1 py-3">
                       <div className="flex items-center justify-end gap-1">
                         <Link
                           href={`/leads/${lead.id}`}
