@@ -65,7 +65,8 @@ function retryUrl(messageId: string) {
 }
 
 function localOrProxy(message: InboxMessage): string {
-  // Optimistic messages may have a blob URL stored in media_url
+  // Optimistic messages do not have a database ID yet, so use their preview URL.
+  if (message.id.startsWith("opt-") && message.media_url) return message.media_url;
   if (message.media_url?.startsWith("blob:")) return message.media_url;
   return proxyUrl(message.id);
 }
@@ -642,7 +643,7 @@ export function MessageBubble({
           </button>
         )}
         {message.message_type === "text" && (
-          <p className="min-h-8 px-2.5 pb-1.5 pr-16 pt-1.5 text-[13px] whitespace-pre-wrap">{message.content}</p>
+          <p className="min-h-8 break-words px-2.5 pb-1.5 pr-16 pt-1.5 text-[13px] whitespace-pre-wrap [overflow-wrap:anywhere]">{message.content}</p>
         )}
         {message.message_type === "image" && (
           <ImageContent message={message} onMediaRetry={mediaRetryFn} />

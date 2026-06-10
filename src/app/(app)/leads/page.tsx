@@ -1,6 +1,7 @@
 import { canAccessRoute } from "@/lib/permissions";
 import { getDateRangeFromParams } from "@/lib/date-range";
 import { getOrganizationContext } from "@/lib/organization-context";
+import { getNoFollowup48hStatus } from "@/lib/followup-status";
 import { AccessDenied } from "@/components/layout/access-denied";
 import { LeadsClient } from "./leads-client";
 import type { LeadListItem, LeadOptionData } from "./types";
@@ -61,9 +62,6 @@ export default async function LeadsPage({
   const from = (page - 1) * PAGE_SIZE;
   const to = from + PAGE_SIZE - 1;
 
-  const now = new Date();
-  const fortyEightHoursAgo = new Date(now.getTime() - 48 * 60 * 60 * 1000);
-
   // ── Batch 1: options + open conversations (for follow-up) ─────────────────
   const [
     sourcesResult,
@@ -73,7 +71,7 @@ export default async function LeadsPage({
     tagsResult,
     statesResult,
     citiesResult,
-    openConvsResult,
+    followupStatus,
   ] = await Promise.all([
     admin.from("lead_sources").select("*").eq("organization_id", organizationId).order("name", { ascending: true }),
     admin.from("clinic_services").select("*").eq("organization_id", organizationId).order("order", { ascending: true }).order("name", { ascending: true }),
@@ -85,41 +83,11 @@ export default async function LeadsPage({
     // Distinct cities for filter dropdown
     admin.from("leads").select("detected_city").eq("organization_id", organizationId).not("detected_city", "is", null),
     // Open conversations (non-group) for follow-up detection
-    admin.from("conversations").select("id, lead_id, remote_jid").eq("organization_id", organizationId).eq("status", "open").not("lead_id", "is", null),
+    getNoFollowup48hStatus(admin, organizationId),
   ]);
 
   // ── Compute no-followup lead IDs (for banner count + filter) ─────────────
-  const openConvs = (openConvsResult.data ?? []).filter(
-    (c) => !String(c.remote_jid ?? "").includes("@g.us")
-  ) as { id: string; lead_id: string; remote_jid: string }[];
-  const openConvIds = openConvs.map((c) => c.id);
-
-  const recentMsgsResult =
-    openConvIds.length > 0
-      ? await admin
-          .from("messages")
-          .select("conversation_id, direction, created_at")
-          .in("conversation_id", openConvIds)
-          .order("created_at", { ascending: false })
-      : { data: [] as { conversation_id: string; direction: string; created_at: string }[] };
-
-  const lastMsgByConv = new Map<string, { direction: string; created_at: string }>();
-  for (const msg of recentMsgsResult.data ?? []) {
-    if (!lastMsgByConv.has(msg.conversation_id)) {
-      lastMsgByConv.set(msg.conversation_id, msg);
-    }
-  }
-
-  const noFollowupLeadIds = new Set<string>();
-  for (const conv of openConvs) {
-    const last = lastMsgByConv.get(conv.id);
-    if (
-      last?.direction === "inbound" &&
-      new Date(last.created_at).getTime() < fortyEightHoursAgo.getTime()
-    ) {
-      noFollowupLeadIds.add(conv.lead_id);
-    }
-  }
+  const noFollowupLeadIds = followupStatus.leadIds;
   const noFollowupCount = noFollowupLeadIds.size;
 
   // ── Build main leads query with server-side filters ───────────────────────

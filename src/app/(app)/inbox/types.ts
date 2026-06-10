@@ -82,6 +82,7 @@ export type InboxConversation = {
   lead: InboxLead | null;
   instance: InboxInstance | null;
   last_message: InboxMessage | null;
+  no_followup_48h?: boolean;
 };
 
 export type BhAutoReplyQueueItem = {

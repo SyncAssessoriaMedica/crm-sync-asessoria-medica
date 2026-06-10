@@ -87,8 +87,6 @@ const STATUS_LABELS: Record<string, string> = {
   no_show: "Nao compareceu",
 };
 
-const FOLLOWUP_CUTOFF_MS = 48 * 60 * 60 * 1000;
-
 const MAX_ATTACHMENT_SIZE: Record<AttachmentType, number> = {
   image: 10 * 1024 * 1024,
   audio: 16 * 1024 * 1024,
@@ -188,9 +186,11 @@ function lastMessagePreview(message: InboxMessage | null) {
 }
 
 function needsFollowup48h(conversation: InboxConversation) {
-  const lastMessage = conversation.last_message;
-  if (!lastMessage || conversation.status !== "open") return false;
-  return lastMessage.direction === "inbound" && Date.now() - new Date(lastMessage.created_at).getTime() > FOLLOWUP_CUTOFF_MS;
+  return conversation.no_followup_48h === true;
+}
+
+function isScheduledConversation(conversation: InboxConversation) {
+  return conversation.lead?.stage?.name?.trim().toLowerCase() === "agendado";
 }
 
 function mergeMessages(
@@ -425,6 +425,13 @@ function Composer({
   useEffect(() => {
     recordedAudioUrlRef.current = recordedAudioUrl;
   }, [recordedAudioUrl]);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 176)}px`;
+  }, [draftText]);
 
   // Cleanup the currently selected preview when the composer unmounts.
   useEffect(() => {
@@ -1195,14 +1202,14 @@ function Composer({
               rows={1}
               className={cn(
                 "flex-1 resize-none rounded-lg border border-transparent bg-white px-3 py-2.5 text-[13px] leading-relaxed text-text-primary shadow-sm placeholder:text-text-muted focus:border-brand-green/30 focus:outline-none",
-                "min-h-9 max-h-28 overflow-y-auto",
+                "min-h-9 max-h-44 overflow-y-auto",
                 (!isConnected || sending) && "opacity-60 cursor-not-allowed"
               )}
               style={{ height: "auto" }}
               onInput={(e) => {
                 const el = e.currentTarget;
                 el.style.height = "auto";
-                el.style.height = `${Math.min(el.scrollHeight, 112)}px`;
+                el.style.height = `${Math.min(el.scrollHeight, 176)}px`;
               }}
             />
 
@@ -1280,7 +1287,7 @@ export function InboxClient({
 
   const [activeConvId, setActiveConvId] = useState(initialActiveConversationId || conversations[0]?.id || "");
   const [search, setSearch] = useState(initialSearch);
-  const [filter, setFilter] = useState<"all" | "unread" | "open" | "closed" | "no_followup_48h">("all");
+  const [filter, setFilter] = useState<"all" | "unread" | "open" | "closed" | "scheduled" | "no_followup_48h">("all");
   const [serviceFilter, setServiceFilter] = useState("all");
   const [locallyReadIds, setLocallyReadIds] = useState<Set<string>>(new Set());
   const [cancelledBhIds, setCancelledBhIds] = useState<Set<string>>(new Set());
@@ -1289,6 +1296,18 @@ export function InboxClient({
   const [message, setMessage] = useState<string | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [isPending, startTransition] = useTransition();
+
+  useEffect(() => {
+    const currentQuery = searchParams.get("q") ?? "";
+    if (search.trim() === currentQuery.trim()) return;
+    const timer = window.setTimeout(() => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (search.trim()) params.set("q", search.trim());
+      else params.delete("q");
+      router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [pathname, router, search, searchParams]);
 
   // Optimistic messages (per conversation)
   const [optimisticMessages, setOptimisticMessages] = useState<InboxMessage[]>([]);
@@ -1328,6 +1347,7 @@ export function InboxClient({
       const matchesFilter =
         filter === "all" ||
         (filter === "unread" && conversation.unread_count > 0) ||
+        (filter === "scheduled" && isScheduledConversation(conversation)) ||
         (filter === "no_followup_48h" && needsFollowup48h(conversation)) ||
         conversation.status === filter;
       const matchesService = serviceFilter === "all" || lead?.service_id === serviceFilter;
@@ -1622,16 +1642,17 @@ export function InboxClient({
               </button>
             ))}
           </div>
-          <div className="grid grid-cols-4 gap-1">
+          <div className="grid grid-cols-5 gap-1">
             {[
               ["all", "Todas"],
               ["open", "Abertas"],
               ["closed", "Fechadas"],
+              ["scheduled", "Agendados"],
               ["no_followup_48h", `48h+${noFollowupCount > 0 ? ` (${noFollowupCount})` : ""}`],
             ].map(([value, label]) => (
               <button
                 key={value}
-                onClick={() => setFilter(value as "all" | "open" | "closed" | "no_followup_48h")}
+                onClick={() => setFilter(value as "all" | "open" | "closed" | "scheduled" | "no_followup_48h")}
                 className={cn(
                   "rounded-md px-2 py-1 text-[10px] font-semibold",
                   filter === value

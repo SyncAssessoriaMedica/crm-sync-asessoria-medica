@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { canAccessRoute } from "@/lib/permissions";
 import { getDateRangeFromParams } from "@/lib/date-range";
 import { getOrganizationContext } from "@/lib/organization-context";
+import { getNoFollowup48hStatus } from "@/lib/followup-status";
 import { AccessDenied } from "@/components/layout/access-denied";
 import { InboxClient } from "./inbox-client";
 import type { BhAutoReplyQueueItem, InboxConversation, InboxInstance, InboxLead, InboxMessage, InboxService, InboxSource, InboxStage } from "./types";
@@ -59,7 +60,7 @@ export default async function InboxPage({
     return <AccessDenied />;
   }
 
-  const [conversationsResult, instancesResult, sourcesResult, servicesResult, pipelineResult] = await Promise.all([
+  const [conversationsResult, instancesResult, sourcesResult, servicesResult, pipelineResult, followupStatus] = await Promise.all([
     admin
       .from("conversations")
       .select(
@@ -94,7 +95,7 @@ export default async function InboxPage({
       `
       )
       .eq("organization_id", organizationId)
-      .gte(dateColumn, range.start.toISOString())
+      .gte(dateColumn, dateMode === "activity" ? new Date(0).toISOString() : range.start.toISOString())
       .lt(dateColumn, range.end.toISOString())
       .order(dateColumn, { ascending: false })
       .limit(INBOX_CONVERSATION_LIMIT),
@@ -121,6 +122,7 @@ export default async function InboxPage({
       .eq("organization_id", organizationId)
       .eq("is_default", true)
       .maybeSingle(),
+    getNoFollowup48hStatus(admin, organizationId),
   ]);
 
   if (conversationsResult.error) {
@@ -333,7 +335,8 @@ export default async function InboxPage({
                   "id, conversation_id, direction, message_type, content, media_url, media_mimetype, media_filename, media_duration, media_ptt, created_at, delivered_at, read_at, send_status, send_error, client_message_id, media_status, media_error, media_attempts"
                 )
                 .eq("conversation_id", activeConversationId)
-                .order("created_at", { ascending: true })
+                .order("created_at", { ascending: false })
+                .limit(200)
             : Promise.resolve({ data: [] as InboxMessage[] }),
           admin.rpc("get_latest_inbox_messages", { conversation_ids: conversationIds }),
           admin
@@ -344,7 +347,7 @@ export default async function InboxPage({
         ])
       : [{ data: [] as InboxMessage[] }, { data: [] as InboxMessage[] }, { data: [] as BhAutoReplyQueueItem[] }];
 
-  const messagesByConversation = ((messagesData ?? []) as InboxMessage[]).reduce<Record<string, InboxMessage[]>>(
+  const messagesByConversation = ([...((messagesData ?? []) as InboxMessage[])].reverse()).reduce<Record<string, InboxMessage[]>>(
     (acc, message) => {
       acc[message.conversation_id] ??= [];
       acc[message.conversation_id].push(message);
@@ -384,12 +387,13 @@ export default async function InboxPage({
         : null,
       instance,
       last_message: latestMessagesByConversation[conversation.id] ?? messages[messages.length - 1] ?? null,
+      no_followup_48h: followupStatus.conversationIds.has(conversation.id),
     };
   }) as InboxConversation[];
 
   return (
     <InboxClient
-      key={`${params?.q ?? ""}-${dateMode}-${range.start.toISOString()}-${range.end.toISOString()}-${selectedConversationId}-${leadParam}`}
+      key={`${dateMode}-${range.start.toISOString()}-${range.end.toISOString()}-${leadParam}`}
       organizationId={organizationId}
       conversations={conversations}
       messagesByConversation={messagesByConversation}

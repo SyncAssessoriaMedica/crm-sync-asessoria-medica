@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { isFollowupExhaustedStage } from "@/lib/followup-status";
 import { z } from "zod";
 import { getOrganizationContext } from "@/lib/organization-context";
 import { buildLocationPayload, buildLocationPayloadForOrg, getOrganizationServiceArea } from "@/lib/lead-location";
@@ -506,6 +507,17 @@ export async function updateLeadStageAction(leadId: string, stageId: string): Pr
       .eq("organization_id", organizationId);
 
     if (error) return { ok: false, message: error.message };
+
+    if (nextStageId) {
+      const { data: nextStage } = await admin.from("pipeline_stages").select("name").eq("id", nextStageId).maybeSingle();
+      if (isFollowupExhaustedStage(nextStage?.name)) {
+        await admin
+          .from("followup_queue")
+          .update({ status: "cancelled", error: "Lead movido para Mais de 2 follow-ups." })
+          .eq("lead_id", leadId)
+          .in("status", ["pending", "sending"]);
+      }
+    }
 
     if (status === "scheduled") {
       await admin.from("lead_events").insert({

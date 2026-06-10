@@ -25,6 +25,7 @@ import {
   type ServiceAreaSettings,
 } from "@/lib/lead-location";
 import { getOrganizationContext } from "@/lib/organization-context";
+import { getNoFollowup48hStatus } from "@/lib/followup-status";
 import { cn, formatCurrency, formatNumber, formatPercent } from "@/lib/utils";
 import type { ConversionFunnelItem, DailyLeadsData, LeadStatus, LeadsByLocation, LeadsBySource } from "@/lib/types";
 
@@ -414,19 +415,6 @@ function computeResponseTimes(
   return { avgFirstResponse: avg(firstDeltas), avgResponseTime: avg(allDeltas) };
 }
 
-function computeNoFollowup(openConvIds: string[], recentMsgs: MsgRow[], cutoff: Date): number {
-  const lastMsgByConv = new Map<string, MsgRow>();
-  for (const msg of recentMsgs) {
-    if (!lastMsgByConv.has(msg.conversation_id)) lastMsgByConv.set(msg.conversation_id, msg);
-  }
-  let count = 0;
-  for (const id of openConvIds) {
-    const last = lastMsgByConv.get(id);
-    if (last && last.direction === "inbound" && new Date(last.created_at) < cutoff) count++;
-  }
-  return count;
-}
-
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default async function DashboardPage({
@@ -445,8 +433,6 @@ export default async function DashboardPage({
   const currentStart = range.start;
   const currentEnd = range.end;
   const previousStart = range.previousStart;
-  const fortyEightHoursAgo = new Date(today.getTime() - 48 * 60 * 60 * 1000);
-
   const toggleParams = new URLSearchParams();
   toggleParams.set("period", range.period);
   if (range.period === "custom") {
@@ -554,7 +540,6 @@ export default async function DashboardPage({
   }
 
   const openConvs = (openConvsResult.data ?? []).filter((c) => !c.remote_jid.includes("@g.us"));
-  const openConvIds = openConvs.map((c) => c.id);
   const allLeadConvs = (allConvsResult.data ?? []).filter((c) => !c.remote_jid.includes("@g.us"));
   const allLeadConvIds = allLeadConvs.map((c) => c.id);
   const configuredBusinessHours = parseOrgBusinessHours(settingsResult.data?.business_hours);
@@ -564,24 +549,15 @@ export default async function DashboardPage({
 
   // ── Batch 2: depends on conv IDs from batch 1 ─────────────────────────────
   const emptyMsgs = { data: [] as MsgRow[], error: null };
-  const [periodMsgsResult, recentMsgsResult] = await Promise.all([
-    allLeadConvIds.length > 0
-      ? admin
-          .from("messages")
-          .select("conversation_id, direction, created_at")
-          .in("conversation_id", allLeadConvIds)
-          .gte("created_at", currentStart.toISOString())
-          .lt("created_at", currentEnd.toISOString())
-          .order("created_at", { ascending: true })
-      : Promise.resolve(emptyMsgs),
-    openConvIds.length > 0
-      ? admin
-          .from("messages")
-          .select("conversation_id, direction, created_at")
-          .in("conversation_id", openConvIds)
-          .order("created_at", { ascending: false })
-      : Promise.resolve(emptyMsgs),
-  ]);
+  const periodMsgsResult = allLeadConvIds.length > 0
+    ? await admin
+        .from("messages")
+        .select("conversation_id, direction, created_at")
+        .in("conversation_id", allLeadConvIds)
+        .gte("created_at", currentStart.toISOString())
+        .lt("created_at", currentEnd.toISOString())
+        .order("created_at", { ascending: true })
+    : emptyMsgs;
 
   // ── Scheduling history (only for current period leads) ────────────────────
   const currentLeadRaw = (currentLeadsResult.data ?? []) as DashboardLeadRow[];
@@ -638,11 +614,7 @@ export default async function DashboardPage({
       : computeResponseTimes((periodMsgsResult.data ?? []) as MsgRow[], bhConfig);
 
   // ── Follow-up 48h+ ────────────────────────────────────────────────────────
-  const noFollowupCount = computeNoFollowup(
-    openConvIds,
-    (recentMsgsResult.data ?? []) as MsgRow[],
-    fortyEightHoursAgo
-  );
+  const noFollowupCount = (await getNoFollowup48hStatus(admin, organizationId)).leadIds.size;
 
   // ── Alert banners ─────────────────────────────────────────────────────────
   const leadsWithoutResponse = openConvs.filter((c) => c.unread_count > 0).length;
