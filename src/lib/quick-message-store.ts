@@ -1,17 +1,8 @@
 import "server-only";
-import { randomUUID } from "crypto";
 import type { createAdminClient } from "@/lib/supabase/server";
 import type { QuickMessage } from "@/lib/quick-messages";
 
-const SOURCE = "quick_message_config";
-
 type AdminClient = ReturnType<typeof createAdminClient>;
-type QuickMessageEvent = {
-  id: string;
-  event_type: string | null;
-  payload: unknown;
-  created_at: string;
-};
 
 export async function listQuickMessages(
   admin: AdminClient,
@@ -19,36 +10,14 @@ export async function listQuickMessages(
   options: { activeOnly?: boolean } = {}
 ) {
   const { data, error } = await admin
-    .from("webhook_events")
-    .select("id, event_type, payload, created_at")
+    .from("quick_messages")
+    .select("id, title, shortcut, message_type, content, media_url, media_mimetype, media_filename, media_duration, media_ptt, active, created_at, updated_at")
     .eq("organization_id", organizationId)
-    .eq("source", SOURCE)
-    .order("created_at", { ascending: false })
-    .limit(1000);
+    .is("deleted_at", null)
+    .order("title", { ascending: true });
   if (error) return { data: [] as QuickMessage[], error };
 
-  const latest = new Map<string, QuickMessage>();
-  for (const event of (data ?? []) as QuickMessageEvent[]) {
-    const payload = event.payload as Partial<QuickMessage> & { id?: string };
-    if (!payload.id || latest.has(payload.id)) continue;
-    latest.set(payload.id, {
-      id: payload.id,
-      title: payload.title ?? "Mensagem rapida",
-      shortcut: payload.shortcut ?? "",
-      message_type: payload.message_type ?? "text",
-      content: payload.content ?? null,
-      media_url: payload.media_url ?? null,
-      media_mimetype: payload.media_mimetype ?? null,
-      media_filename: payload.media_filename ?? null,
-      media_duration: payload.media_duration ?? null,
-      media_ptt: payload.media_ptt ?? null,
-      active: event.event_type !== "quick_message.deleted" && payload.active !== false,
-      created_at: payload.created_at ?? event.created_at,
-      updated_at: event.created_at,
-    });
-  }
-
-  const messages = Array.from(latest.values())
+  const messages = (data as QuickMessage[])
     .filter((message) => !options.activeOnly || message.active)
     .sort((a, b) => a.title.localeCompare(b.title, "pt-BR"));
   return { data: messages, error: null };
@@ -65,11 +34,20 @@ export async function writeQuickMessage(
   eventType: "quick_message.created" | "quick_message.updated" | "quick_message.activated" | "quick_message.deactivated" | "quick_message.deleted",
   message: Omit<QuickMessage, "updated_at"> & { updated_at?: string }
 ) {
-  return admin.from("webhook_events").insert({
-    organization_id: organizationId,
-    source: SOURCE,
-    event_type: eventType,
-    payload: { ...message, id: message.id || randomUUID() },
-    processed: true,
-  });
+  if (eventType === "quick_message.created") {
+    return admin.from("quick_messages").insert({ ...message, organization_id: organizationId });
+  }
+  if (eventType === "quick_message.deleted") {
+    return admin
+      .from("quick_messages")
+      .update({ active: false, deleted_at: new Date().toISOString() })
+      .eq("id", message.id)
+      .eq("organization_id", organizationId);
+  }
+  return admin
+    .from("quick_messages")
+    .update(message)
+    .eq("id", message.id)
+    .eq("organization_id", organizationId)
+    .is("deleted_at", null);
 }
