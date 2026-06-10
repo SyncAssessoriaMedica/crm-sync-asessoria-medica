@@ -529,7 +529,19 @@ export function LeadsClient({
       {/* ── Table ────────────────────────────────────────────────────────────── */}
       <div className="overflow-hidden rounded-xl border border-border bg-white shadow-card">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full min-w-[1380px] table-fixed text-sm">
+            <colgroup>
+              <col className="w-12" />
+              <col className="w-[300px]" />
+              <col className="w-[220px]" />
+              <col className="w-[130px]" />
+              <col className="w-[160px]" />
+              <col className="w-[180px]" />
+              <col className="w-[130px]" />
+              <col className="w-[110px]" />
+              <col className="w-[120px]" />
+              <col className="w-[90px]" />
+            </colgroup>
             <thead>
               <tr className="border-b border-border bg-background-subtle">
                 <th className="w-10 px-3 py-2.5">
@@ -561,7 +573,7 @@ export function LeadsClient({
                     onClick={field ? () => handleSort(field) : undefined}
                   >
                     <div className="flex items-center gap-1">
-                      <span className="label-eyebrow">{label}</span>
+                      <span className="label-eyebrow whitespace-nowrap">{label}</span>
                       {field && <SortIcon field={field} />}
                     </div>
                   </th>
@@ -595,10 +607,11 @@ export function LeadsClient({
                         <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-green-soft text-[10px] font-bold text-brand-green-deep">
                           {getInitials(lead.name)}
                         </div>
-                        <div>
+                        <div className="min-w-0">
                           <Link
                             href={`/leads/${lead.id}`}
-                            className="font-medium leading-none text-text-primary hover:text-brand-green-dark"
+                            className="block truncate font-medium leading-none text-text-primary hover:text-brand-green-dark"
+                            title={lead.name}
                           >
                             {lead.name}
                           </Link>
@@ -642,27 +655,31 @@ export function LeadsClient({
                         </div>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-xs text-text-secondary">
+                    <td className="truncate px-4 py-3 text-xs text-text-secondary" title={lead.service?.name ?? undefined}>
                       {lead.service?.name ?? "-"}
                     </td>
-                    <td className="px-4 py-3 text-xs text-text-secondary">
+                    <td className="truncate px-4 py-3 text-xs text-text-secondary" title={lead.procedure ?? undefined}>
                       {lead.procedure ?? "-"}
                     </td>
-                    <td className="min-w-32 px-4 py-3">
-                      <Badge variant={lead.stage ? "green" : "secondary"} className="whitespace-nowrap">
+                    <td className="px-4 py-3">
+                      <Badge
+                        variant={lead.stage ? "green" : "secondary"}
+                        className="max-w-full whitespace-nowrap"
+                        title={lead.stage?.name ?? "Sem etapa"}
+                      >
                         {lead.stage?.name ?? "Sem etapa"}
                       </Badge>
                     </td>
-                    <td className="px-4 py-3 text-[11px] text-text-muted">
+                    <td className="truncate px-4 py-3 text-[11px] text-text-muted" title={lead.source?.name ?? undefined}>
                       {lead.source?.name ?? "-"}
                     </td>
-                    <td className="px-4 py-3 text-xs font-medium text-text-primary">
+                    <td className="whitespace-nowrap px-4 py-3 text-xs font-medium text-text-primary">
                       {lead.potential_value ? formatCurrency(lead.potential_value) : "-"}
                     </td>
-                    <td className="px-4 py-3 text-xs text-text-muted">
+                    <td className="whitespace-nowrap px-4 py-3 text-xs text-text-muted">
                       {formatDate(lead.created_at)}
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-3 py-3">
                       <div className="flex items-center justify-end gap-1">
                         <Link
                           href={`/leads/${lead.id}`}
