@@ -852,6 +852,17 @@ export async function updateLeadsBulkAction(
         }));
         await admin.from("lead_events").insert(events);
       }
+
+      if (updates.stage_id) {
+        const { data: nextStage } = await admin.from("pipeline_stages").select("name").eq("id", updates.stage_id).maybeSingle();
+        if (isFollowupExhaustedStage(nextStage?.name)) {
+          await admin
+            .from("followup_queue")
+            .update({ status: "cancelled", error: "Lead movido para Mais de 2 follow-ups." })
+            .in("lead_id", ownedIds)
+            .in("status", ["pending", "sending"]);
+        }
+      }
     }
 
     if (updates.tagsToAdd?.length) {
