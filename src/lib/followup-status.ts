@@ -11,6 +11,11 @@ export function isFollowupExhaustedStage(stageName?: string | null) {
   return normalizeStageName(stageName).includes("mais de 2 follow");
 }
 
+export function isExcludedFromFollowup48h(stageName?: string | null) {
+  const normalized = normalizeStageName(stageName);
+  return normalized === "agendado" || normalized === "retorno" || normalized.includes("mais de 2 follow");
+}
+
 export async function getNoFollowup48hStatus(admin: AdminClient, organizationId: string) {
   const { data: conversations, error } = await admin
     .from("conversations")
@@ -24,7 +29,7 @@ export async function getNoFollowup48hStatus(admin: AdminClient, organizationId:
     if (String(conversation.remote_jid ?? "").includes("@g.us")) return false;
     const lead = Array.isArray(conversation.lead) ? conversation.lead[0] : conversation.lead;
     const stage = Array.isArray(lead?.stage) ? lead.stage[0] : lead?.stage;
-    return !isFollowupExhaustedStage(stage?.name);
+    return !isExcludedFromFollowup48h(stage?.name);
   });
 
   const ids = eligible.map((conversation) => conversation.id);
