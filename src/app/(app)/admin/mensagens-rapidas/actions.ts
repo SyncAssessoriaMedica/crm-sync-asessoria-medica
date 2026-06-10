@@ -9,6 +9,8 @@ import {
   QUICK_MESSAGE_TYPES,
   validateQuickMessageVariables,
 } from "@/lib/quick-messages";
+import { findQuickMessage, listQuickMessages, writeQuickMessage } from "@/lib/quick-message-store";
+import { randomUUID } from "crypto";
 
 type ActionResult = { ok: boolean; message: string };
 
@@ -90,8 +92,18 @@ export async function saveQuickMessageAction(input: unknown): Promise<ActionResu
     const validationError = validatePayload(context.organizationId, parsed.data);
     if (validationError) return { ok: false, message: validationError };
 
+    const existingMessages = await listQuickMessages(context.admin, context.organizationId);
+    if (existingMessages.data.some((message) => message.shortcut === shortcut && message.id !== parsed.data.id)) {
+      return { ok: false, message: "Este atalho ja esta sendo usado." };
+    }
+    const existing = parsed.data.id
+      ? existingMessages.data.find((message) => message.id === parsed.data.id)
+      : null;
+    if (parsed.data.id && !existing) return { ok: false, message: "Mensagem rapida nao encontrada." };
+
+    const now = new Date().toISOString();
     const row = {
-      organization_id: context.organizationId,
+      id: parsed.data.id ?? randomUUID(),
       title: parsed.data.title.trim(),
       shortcut,
       message_type: parsed.data.message_type,
@@ -101,26 +113,23 @@ export async function saveQuickMessageAction(input: unknown): Promise<ActionResu
       media_filename: parsed.data.message_type === "text" ? null : parsed.data.media_filename ?? null,
       media_duration: parsed.data.message_type === "text" ? null : parsed.data.media_duration ?? null,
       media_ptt: parsed.data.message_type === "audio" ? parsed.data.media_ptt === true : null,
-      updated_by: context.user.id,
+      active: existing?.active ?? true,
+      created_at: existing?.created_at ?? now,
+      updated_at: now,
     };
 
-    const result = parsed.data.id
-      ? await context.admin
-          .from("quick_messages")
-          .update(row)
-          .eq("id", parsed.data.id)
-          .eq("organization_id", context.organizationId)
-          .is("deleted_at", null)
-          .select("id")
-          .maybeSingle()
-      : await context.admin.from("quick_messages").insert({ ...row, created_by: context.user.id }).select("id").single();
+    const result = await writeQuickMessage(
+      context.admin,
+      context.organizationId,
+      parsed.data.id ? "quick_message.updated" : "quick_message.created",
+      row
+    );
 
     if (result.error) {
-      if (result.error.code === "23505") return { ok: false, message: "Este atalho ja esta sendo usado." };
       return { ok: false, message: result.error.message };
     }
 
-    const resourceId = result.data?.id ?? parsed.data.id ?? null;
+    const resourceId = row.id;
     await auditQuickMessage(context, parsed.data.id ? "update_quick_message" : "create_quick_message", resourceId, {
       title: row.title,
       shortcut,
@@ -137,12 +146,14 @@ export async function saveQuickMessageAction(input: unknown): Promise<ActionResu
 export async function toggleQuickMessageAction(id: string, active: boolean): Promise<ActionResult> {
   try {
     const context = await getQuickMessageContext();
-    const { error } = await context.admin
-      .from("quick_messages")
-      .update({ active, updated_by: context.user.id })
-      .eq("id", id)
-      .eq("organization_id", context.organizationId)
-      .is("deleted_at", null);
+    const existing = await findQuickMessage(context.admin, context.organizationId, id);
+    if (!existing) return { ok: false, message: "Mensagem rapida nao encontrada." };
+    const { error } = await writeQuickMessage(
+      context.admin,
+      context.organizationId,
+      active ? "quick_message.activated" : "quick_message.deactivated",
+      { ...existing, active, updated_at: new Date().toISOString() }
+    );
     if (error) return { ok: false, message: error.message };
     await auditQuickMessage(context, active ? "activate_quick_message" : "deactivate_quick_message", id);
     revalidatePath("/admin/mensagens-rapidas");
@@ -156,12 +167,14 @@ export async function toggleQuickMessageAction(id: string, active: boolean): Pro
 export async function deleteQuickMessageAction(id: string): Promise<ActionResult> {
   try {
     const context = await getQuickMessageContext();
-    const { error } = await context.admin
-      .from("quick_messages")
-      .update({ active: false, deleted_at: new Date().toISOString(), updated_by: context.user.id })
-      .eq("id", id)
-      .eq("organization_id", context.organizationId)
-      .is("deleted_at", null);
+    const existing = await findQuickMessage(context.admin, context.organizationId, id);
+    if (!existing) return { ok: false, message: "Mensagem rapida nao encontrada." };
+    const { error } = await writeQuickMessage(
+      context.admin,
+      context.organizationId,
+      "quick_message.deleted",
+      { ...existing, active: false, updated_at: new Date().toISOString() }
+    );
     if (error) return { ok: false, message: error.message };
     await auditQuickMessage(context, "delete_quick_message", id);
     revalidatePath("/admin/mensagens-rapidas");
