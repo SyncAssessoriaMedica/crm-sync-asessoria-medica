@@ -648,8 +648,8 @@ export function LeadsClient({
                     <td className="px-4 py-3 text-xs text-text-secondary">
                       {lead.procedure ?? "-"}
                     </td>
-                    <td className="px-4 py-3">
-                      <Badge variant={lead.stage ? "green" : "secondary"}>
+                    <td className="min-w-32 px-4 py-3">
+                      <Badge variant={lead.stage ? "green" : "secondary"} className="whitespace-nowrap">
                         {lead.stage?.name ?? "Sem etapa"}
                       </Badge>
                     </td>

@@ -1642,7 +1642,7 @@ export function InboxClient({
               </button>
             ))}
           </div>
-          <div className="grid grid-cols-5 gap-1">
+          <div className="grid grid-cols-6 gap-1">
             {[
               ["all", "Todas"],
               ["open", "Abertas"],
@@ -1654,7 +1654,9 @@ export function InboxClient({
                 key={value}
                 onClick={() => setFilter(value as "all" | "open" | "closed" | "scheduled" | "no_followup_48h")}
                 className={cn(
-                  "rounded-md px-2 py-1 text-[10px] font-semibold",
+                  "col-span-2 whitespace-nowrap rounded-md px-1.5 py-1 text-[10px] font-semibold",
+                  value === "scheduled" && "col-span-3",
+                  value === "no_followup_48h" && "col-span-3",
                   filter === value
                     ? value === "no_followup_48h"
                       ? "bg-amber-50 text-amber-700"
