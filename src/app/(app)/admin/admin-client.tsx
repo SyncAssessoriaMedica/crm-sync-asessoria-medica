@@ -115,6 +115,7 @@ type WebhookConfig = {
     phone?: string;
     email?: string;
     source?: string;
+    stage_id?: string;
     service_id?: string;
     procedure?: string;
     potential_value?: string;
@@ -709,8 +710,14 @@ export function AdminClient({ data }: { data: AdminData }) {
 
           {activeSection === "webhooks" && (
             <Section title="Webhooks de entrada" description="Crie uma URL unica, cole na ferramenta externa, envie um teste e mapeie os campos recebidos para criar leads.">
-              <form action={runAction(createInboundWebhookAction)} className="grid gap-3 rounded-xl border border-border bg-background-subtle/50 p-4 md:grid-cols-[1fr_auto]">
+              <form action={runAction(createInboundWebhookAction)} className="grid gap-3 rounded-xl border border-border bg-background-subtle/50 p-4 md:grid-cols-[1fr_1fr_auto]">
                 <Field label="Nome da integracao" name="name" placeholder="Landing page Meta Ads" required />
+                <SelectField label="Etapa dos leads" name="stage_id" defaultValue="none">
+                  <SelectItem value="none">Sem etapa</SelectItem>
+                  {data.pipelineStages.map((stage) => (
+                    <SelectItem key={stage.id} value={stage.id}>{stage.name}</SelectItem>
+                  ))}
+                </SelectField>
                 <Button className="self-end" disabled={isPending}>Criar URL</Button>
               </form>
               <div className="space-y-3">
@@ -726,6 +733,7 @@ export function AdminClient({ data }: { data: AdminData }) {
                     baseUrl={data.baseUrl}
                     customFields={data.customFields}
                     services={data.services}
+                    pipelineStages={data.pipelineStages}
                     lastDelivery={data.lastDeliveryByToken[config.token] ?? null}
                     isPending={isPending}
                     onRun={runAction}
@@ -1497,6 +1505,7 @@ function WebhookConfigCard({
   baseUrl,
   customFields,
   services,
+  pipelineStages,
   lastDelivery,
   isPending,
   onRun,
@@ -1507,6 +1516,7 @@ function WebhookConfigCard({
   baseUrl: string;
   customFields: CustomField[];
   services: ClinicServiceRow[];
+  pipelineStages: PipelineStageRow[];
   lastDelivery: WebhookDelivery | null;
   isPending: boolean;
   onRun: (action: (formData: FormData) => Promise<{ ok: boolean; message: string; data?: unknown }>) => (formData: FormData) => void;
@@ -1582,6 +1592,12 @@ function WebhookConfigCard({
             <Field label="Caminho do telefone" name="phone_path" placeholder="lead.phone" defaultValue={config.mappings.phone ?? ""} />
             <Field label="Caminho do email" name="email_path" placeholder="lead.email" defaultValue={config.mappings.email ?? ""} />
             <Field label="Caminho da origem" name="source_path" placeholder="utm.source" defaultValue={config.mappings.source ?? ""} />
+            <SelectField label="Etapa dos leads do webhook" name="stage_id" defaultValue={config.mappings.stage_id ?? "none"}>
+              <SelectItem value="none">Sem etapa</SelectItem>
+              {pipelineStages.map((stage) => (
+                <SelectItem key={stage.id} value={stage.id}>{stage.name}</SelectItem>
+              ))}
+            </SelectField>
             <SelectField label="Servico marcado no lead" name="service_id" defaultValue={config.mappings.service_id ?? "none"}>
               <SelectItem value="none">Sem servico fixo</SelectItem>
               {services

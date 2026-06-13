@@ -11,6 +11,7 @@ type LeadInput = {
   name?: string | null;
   email?: string | null;
   sourceId?: string | null;
+  stageId?: string | null;
   serviceId?: string | null;
   procedure?: string | null;
   potentialValue?: number | null;
@@ -114,6 +115,7 @@ export async function createOrUpdateLeadByPhone(
       phone: input.phone,
       email: input.email ?? null,
       source_id: input.sourceId ?? null,
+      stage_id: input.stageId ?? null,
       service_id: input.serviceId ?? null,
       procedure: input.procedure ?? null,
       potential_value: input.potentialValue ?? null,

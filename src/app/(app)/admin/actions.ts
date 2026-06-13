@@ -56,6 +56,24 @@ async function resolveClinicServiceId(
   return data?.id ? String(data.id) : "";
 }
 
+async function resolvePipelineStageId(
+  admin: ReturnType<typeof createAdminClient>,
+  organizationId: string,
+  value: FormDataEntryValue | null
+) {
+  const stageId = asText(value);
+  if (!stageId || stageId === "none") return "";
+
+  const { data } = await admin
+    .from("pipeline_stages")
+    .select("id, pipelines!inner(organization_id)")
+    .eq("id", stageId)
+    .eq("pipelines.organization_id", organizationId)
+    .maybeSingle();
+
+  return data?.id ? String(data.id) : "";
+}
+
 function normalizeEvolutionApiUrl(value: string) {
   const trimmed = value.trim().replace(/\/+$/, "");
   try {
@@ -692,6 +710,7 @@ export async function createInboundWebhookAction(formData: FormData): Promise<Ac
     const { admin, organizationId } = await getContext();
     const name = asText(formData.get("name")) || "Nova integracao";
     const serviceId = await resolveClinicServiceId(admin, organizationId, formData.get("service_id"));
+    const stageId = await resolvePipelineStageId(admin, organizationId, formData.get("stage_id"));
     const token = crypto.randomUUID().replace(/-/g, "");
     await admin.from("webhook_events").insert({
       organization_id: organizationId,
@@ -706,6 +725,7 @@ export async function createInboundWebhookAction(formData: FormData): Promise<Ac
           phone: "",
           email: "",
           source: "",
+          stage_id: stageId,
           service_id: serviceId,
           procedure: "",
           potential_value: "",
@@ -728,6 +748,7 @@ export async function updateInboundWebhookAction(formData: FormData): Promise<Ac
     const name = asText(formData.get("name")) || "Webhook";
     if (!token) return { ok: false, message: "Webhook nao encontrado." };
     const serviceId = await resolveClinicServiceId(admin, organizationId, formData.get("service_id"));
+    const stageId = await resolvePipelineStageId(admin, organizationId, formData.get("stage_id"));
 
     let custom: Record<string, string> = { ...DEFAULT_WEBHOOK_CUSTOM_MAPPINGS };
     const rawCustom = asText(formData.get("custom_mappings"));
@@ -752,6 +773,7 @@ export async function updateInboundWebhookAction(formData: FormData): Promise<Ac
           phone: asText(formData.get("phone_path")),
           email: asText(formData.get("email_path")),
           source: asText(formData.get("source_path")),
+          stage_id: stageId,
           service_id: serviceId,
           procedure: asText(formData.get("procedure_path")),
           potential_value: asText(formData.get("potential_value_path")),

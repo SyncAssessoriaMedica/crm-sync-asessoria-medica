@@ -19,6 +19,7 @@ type WebhookConfigPayload = {
     phone?: string;
     email?: string;
     source?: string;
+    stage_id?: string;
     service_id?: string;
     procedure?: string;
     potential_value?: string;
@@ -101,6 +102,20 @@ async function resolveService(admin: ReturnType<typeof createAdminClient>, organ
     .eq("organization_id", organizationId)
     .eq("id", id)
     .eq("active", true)
+    .maybeSingle();
+
+  return data?.id as string | undefined;
+}
+
+async function resolveStage(admin: ReturnType<typeof createAdminClient>, organizationId: string, stageId?: string) {
+  const id = toText(stageId);
+  if (!id) return undefined;
+
+  const { data } = await admin
+    .from("pipeline_stages")
+    .select("id, pipelines!inner(organization_id)")
+    .eq("id", id)
+    .eq("pipelines.organization_id", organizationId)
     .maybeSingle();
 
   return data?.id as string | undefined;
@@ -230,6 +245,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
   try {
     const sourceId = await resolveSource(admin, organizationId, getByPath(body, config.mappings?.source));
+    const stageId = await resolveStage(admin, organizationId, config.mappings?.stage_id);
     const serviceId = await resolveService(admin, organizationId, config.mappings?.service_id);
     const potential = Number(getByPath(body, config.mappings?.potential_value));
     const leadResult = await createOrUpdateLeadByPhone(admin, {
@@ -238,6 +254,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       phone,
       email: toText(getByPath(body, config.mappings?.email)) || null,
       sourceId: sourceId ?? null,
+      stageId,
       serviceId,
       procedure: toText(getByPath(body, config.mappings?.procedure)) || null,
       potentialValue: Number.isFinite(potential) && potential > 0 ? potential : null,
