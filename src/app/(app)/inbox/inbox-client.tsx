@@ -1289,6 +1289,7 @@ export function InboxClient({
   const [search, setSearch] = useState(initialSearch);
   const [filter, setFilter] = useState<"all" | "unread" | "open" | "closed" | "scheduled" | "no_followup_48h">("all");
   const [serviceFilter, setServiceFilter] = useState("all");
+  const [sourceFilter, setSourceFilter] = useState("all");
   const [locallyReadIds, setLocallyReadIds] = useState<Set<string>>(new Set());
   const [cancelledBhIds, setCancelledBhIds] = useState<Set<string>>(new Set());
   const [localLeadSources, setLocalLeadSources] = useState<Record<string, string | null>>({});
@@ -1351,9 +1352,10 @@ export function InboxClient({
         (filter === "no_followup_48h" && needsFollowup48h(conversation)) ||
         conversation.status === filter;
       const matchesService = serviceFilter === "all" || lead?.service_id === serviceFilter;
-      return matchesSearch && matchesFilter && matchesService;
+      const matchesSource = sourceFilter === "all" || lead?.source_id === sourceFilter;
+      return matchesSearch && matchesFilter && matchesService && matchesSource;
     });
-  }, [conversations, filter, search, serviceFilter]);
+  }, [conversations, filter, search, serviceFilter, sourceFilter]);
 
   const activeConv =
     filteredConversations.find((c) => c.id === activeConvId) ??
@@ -1678,6 +1680,21 @@ export function InboxClient({
                 {services.map((s) => (
                   <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
                 ))}
+              </SelectContent>
+            </Select>
+          )}
+          {sources.length > 0 && (
+            <Select value={sourceFilter} onValueChange={setSourceFilter}>
+              <SelectTrigger className="h-8 text-[11px]">
+                <SelectValue placeholder="Todas as origens" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todas as origens</SelectItem>
+                {sources
+                  .filter((s) => s.active !== false)
+                  .map((s) => (
+                    <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                  ))}
               </SelectContent>
             </Select>
           )}

@@ -81,6 +81,7 @@ function friendlyError(error: string): string {
   }
   if (low.includes("401") || low.includes("403")) return "Sem permissão na instância WhatsApp.";
   if (low.includes("404")) return "Instância não encontrada na Evolution API.";
+  if (low.includes("http 400")) return "Número não encontrado no WhatsApp.";
   if (low.includes("http 4")) return "Erro ao enviar. Verifique a configuração da instância.";
   if (low.includes("http 5")) return "Erro no servidor Evolution API. Tente novamente.";
   return "Falha ao enviar. Tente novamente.";

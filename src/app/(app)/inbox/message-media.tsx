@@ -546,6 +546,20 @@ function friendlyMime(mime: string): string {
 
 // ─── Send status footer ────────────────────────────────────────────────────────
 
+function friendlySendError(sendError: string): string {
+  const low = sendError.toLowerCase();
+  if (low.includes("http 400") || (low.includes('"status":400') && low.includes("bad request"))) {
+    return "Número não encontrado no WhatsApp";
+  }
+  if (low.includes("timeout") || low.includes("aborterror") || low.includes("timed out")) {
+    return "Tempo esgotado";
+  }
+  if (low.includes("401") || low.includes("403")) return "Sem permissão na instância";
+  if (low.includes("404")) return "Instância não encontrada";
+  if (low.includes("http 4") || low.includes("http 5")) return "Erro ao enviar";
+  return "Falha ao enviar";
+}
+
 function SendStatusFooter({
   message,
   onRetry,
@@ -573,8 +587,11 @@ function SendStatusFooter({
       {status === "failed" && (
         <div className="flex items-center gap-1">
           {message.send_error && (
-            <span className="text-[10px] text-danger-red/80" title={message.send_error}>
-              {message.send_error.slice(0, 60)}
+            <span
+              className="text-[10px] text-danger-red/90"
+              title={message.send_error}
+            >
+              {friendlySendError(message.send_error)}
             </span>
           )}
           {onRetry && (
