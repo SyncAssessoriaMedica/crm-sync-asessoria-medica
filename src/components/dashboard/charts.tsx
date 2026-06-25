@@ -191,6 +191,68 @@ export function LeadsByLocationChart({ data }: { data: LeadsByLocation[] }) {
   );
 }
 
+type ScheduledBySourceItem = { source: string; total: number; scheduled: number; rate: number };
+
+export function ScheduledBySourceChart({ data }: { data: ScheduledBySourceItem[] }) {
+  if (data.length === 0) {
+    return (
+      <div className="flex h-[180px] items-center justify-center rounded-lg border border-dashed border-border bg-background-subtle text-xs text-text-muted">
+        Nenhum agendamento no periodo selecionado
+      </div>
+    );
+  }
+
+  const height = Math.max(160, data.length * 48);
+
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <BarChart data={data} layout="vertical" margin={{ left: 0, right: 52, top: 4, bottom: 4 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#dfe7e1" horizontal={false} />
+        <XAxis
+          type="number"
+          allowDecimals={false}
+          tick={{ fontSize: 10, fill: "#8a948d" }}
+          axisLine={false}
+          tickLine={false}
+        />
+        <YAxis
+          type="category"
+          dataKey="source"
+          width={120}
+          tick={{ fontSize: 11, fill: "#526058" }}
+          axisLine={false}
+          tickLine={false}
+        />
+        <Tooltip
+          contentStyle={{
+            background: "#fff",
+            border: "1px solid #dfe7e1",
+            borderRadius: "10px",
+            fontSize: "12px",
+          }}
+          formatter={(value: number, _name, item) => [
+            `${value} de ${(item.payload as ScheduledBySourceItem).total} leads (${(item.payload as ScheduledBySourceItem).rate.toFixed(0)}%)`,
+            "Agendados",
+          ]}
+        />
+        <Bar
+          dataKey="scheduled"
+          name="Agendados"
+          fill="#22c55e"
+          radius={[0, 6, 6, 0]}
+          label={{
+            position: "right" as const,
+            formatter: (_v: number, entry: { payload?: { rate?: number } }) =>
+              `${entry?.payload?.rate?.toFixed(0) ?? 0}%`,
+            fontSize: 10,
+            fill: "#526058",
+          }}
+        />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
 export function ConversionFunnelChart({ data }: { data: ConversionFunnelItem[] }) {
   if (data.length === 0) {
     return (

@@ -9,9 +9,8 @@ import {
   UserCheck,
   Users,
 } from "lucide-react";
-import { ConversionFunnelChart, DailyLeadsChart, LeadsByLocationChart, LeadsBySourceChart } from "@/components/dashboard/charts";
+import { DailyLeadsChart, LeadsByLocationChart, LeadsBySourceChart, ScheduledBySourceChart } from "@/components/dashboard/charts";
 import { MetricCard } from "@/components/dashboard/metric-card";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { businessHoursMs, parseOrgBusinessHours, type OrgBusinessHours } from "@/lib/business-hours";
 import { getDateRangeFromParams } from "@/lib/date-range";
@@ -27,7 +26,7 @@ import {
 import { getOrganizationContext } from "@/lib/organization-context";
 import { getNoFollowup48hStatus } from "@/lib/followup-status";
 import { cn, formatCurrency, formatNumber, formatPercent } from "@/lib/utils";
-import type { ConversionFunnelItem, DailyLeadsData, LeadStatus, LeadsByLocation, LeadsBySource } from "@/lib/types";
+import type { DailyLeadsData, LeadStatus, LeadsByLocation, LeadsBySource } from "@/lib/types";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -75,10 +74,9 @@ type PreviousLead = {
 
 type PreviousLeadRow = Omit<PreviousLead, never>;
 
-type StageOption = {
+type SourceOption = {
   id: string;
-  name: string;
-  order: number;
+  name: string | null;
 };
 
 type MsgRow = {
@@ -329,32 +327,23 @@ function buildServiceRegionData(leads: DashboardLead[], serviceArea: ServiceArea
     .slice(0, 8);
 }
 
-function buildFunnelData(leads: DashboardLead[], stages: StageOption[]): ConversionFunnelItem[] {
-  if (stages.length > 0) {
-    return stages.map((stage, index) => {
-      const count = leads.filter((lead) => lead.stage_id === stage.id).length;
-      const base =
-        index === 0
-          ? leads.length
-          : leads.filter((lead) => lead.stage_id === stages[0]?.id).length || leads.length;
-      return { stage: stage.name, count, rate: percent(count, base) };
-    });
+function buildScheduledBySourceData(leads: DashboardLead[], hasBeenScheduledIds: Set<string>) {
+  const counts = new Map<string, { total: number; scheduled: number }>();
+  for (const lead of leads) {
+    const source = lead.source?.name ?? "Sem origem";
+    const entry = counts.get(source) ?? { total: 0, scheduled: 0 };
+    entry.total += 1;
+    if (wasScheduled(lead, hasBeenScheduledIds)) entry.scheduled += 1;
+    counts.set(source, entry);
   }
-
-  const labels: Record<LeadStatus, string> = {
-    new: "Novo",
-    contacted: "Contactado",
-    qualified: "Qualificado",
-    scheduled: "Agendado",
-    attended: "Compareceu",
-    closed_won: "Fechado",
-    closed_lost: "Perdido",
-    no_show: "Nao compareceu",
-  };
-  return (Object.keys(labels) as LeadStatus[]).map((status) => {
-    const count = leads.filter((lead) => lead.status === status).length;
-    return { stage: labels[status], count, rate: percent(count, leads.length) };
-  });
+  return [...counts.entries()]
+    .map(([source, { total, scheduled }]) => ({
+      source,
+      total,
+      scheduled,
+      rate: percent(scheduled, total),
+    }))
+    .sort((a, b) => b.scheduled - a.scheduled);
 }
 
 function formatDuration(ms: number | null): string {
@@ -420,12 +409,13 @@ function computeResponseTimes(
 export default async function DashboardPage({
   searchParams,
 }: {
-  searchParams?: Promise<{ period?: string; start?: string; end?: string; responseMode?: string; service?: string }>;
+  searchParams?: Promise<{ period?: string; start?: string; end?: string; responseMode?: string; service?: string; source?: string }>;
 }) {
   const params = await searchParams;
   const range = getDateRangeFromParams(params);
   const responseMode = getResponseMode(params?.responseMode);
   const selectedService = params?.service ?? "all";
+  const selectedSource = params?.source ?? "all";
 
   const context = await getOrganizationContext();
   const { admin, organizationId, organization } = context;
@@ -440,6 +430,7 @@ export default async function DashboardPage({
     if (params?.end) toggleParams.set("end", params.end);
   }
   if (selectedService !== "all") toggleParams.set("service", selectedService);
+  if (selectedSource !== "all") toggleParams.set("source", selectedSource);
   const businessHoursParams = new URLSearchParams(toggleParams);
   businessHoursParams.set("responseMode", "business_hours");
   const realTimeParams = new URLSearchParams(toggleParams);
@@ -448,7 +439,6 @@ export default async function DashboardPage({
   const realTimeUrl = `?${realTimeParams.toString()}`;
 
   // ── Batch 1: all independent queries in parallel ───────────────────────────
-  // Leads are now queried per period — no more fetchAllRows loading everything
   const leadsSelect = `id, source_id, service_id, stage_id, status, potential_value, closed_value,
     created_at, last_interaction_at, detected_city, detected_state, phone_ddd, service_area_status,
     source:lead_sources(name),
@@ -467,6 +457,7 @@ export default async function DashboardPage({
       .order("created_at", { ascending: false });
 
     if (selectedService !== "all") query = query.eq("service_id", selectedService);
+    if (selectedSource !== "all") query = query.eq("source_id", selectedSource);
     return query;
   };
 
@@ -480,6 +471,7 @@ export default async function DashboardPage({
       .order("created_at", { ascending: false });
 
     if (selectedService !== "all") query = query.eq("service_id", selectedService);
+    if (selectedSource !== "all") query = query.eq("source_id", selectedSource);
     return query;
   };
 
@@ -487,11 +479,10 @@ export default async function DashboardPage({
     currentLeadsResult,
     previousLeadsResult,
     tasksResult,
-    openConvsResult,
     allConvsResult,
-    pipelinesResult,
     settingsResult,
     servicesResult,
+    sourcesResult,
   ] = await Promise.all([
     fetchAllRows<DashboardLeadRow>(buildCurrentLeadsQuery),
     fetchAllRows<PreviousLeadRow>(buildPreviousLeadsQuery),
@@ -501,21 +492,9 @@ export default async function DashboardPage({
       .eq("lead.organization_id", organizationId),
     admin
       .from("conversations")
-      .select("id, remote_jid, unread_count")
-      .eq("organization_id", organizationId)
-      .eq("status", "open")
-      .not("lead_id", "is", null),
-    admin
-      .from("conversations")
       .select("id, remote_jid")
       .eq("organization_id", organizationId)
       .not("lead_id", "is", null),
-    admin
-      .from("pipelines")
-      .select("id, pipeline_stages(id, name, order)")
-      .eq("organization_id", organizationId)
-      .eq("is_default", true)
-      .maybeSingle(),
     admin
       .from("organization_settings")
       .select("business_hours, service_area")
@@ -526,6 +505,11 @@ export default async function DashboardPage({
       .select("id, name, active, order")
       .eq("organization_id", organizationId)
       .order("order", { ascending: true })
+      .order("name", { ascending: true }),
+    admin
+      .from("lead_sources")
+      .select("id, name")
+      .eq("organization_id", organizationId)
       .order("name", { ascending: true }),
   ]);
 
@@ -539,7 +523,6 @@ export default async function DashboardPage({
     );
   }
 
-  const openConvs = (openConvsResult.data ?? []).filter((c) => !c.remote_jid.includes("@g.us"));
   const allLeadConvs = (allConvsResult.data ?? []).filter((c) => !c.remote_jid.includes("@g.us"));
   const allLeadConvIds = allLeadConvs.map((c) => c.id);
   const configuredBusinessHours = parseOrgBusinessHours(settingsResult.data?.business_hours);
@@ -578,6 +561,7 @@ export default async function DashboardPage({
 
   // ── Normalize lead rows ───────────────────────────────────────────────────
   const services = servicesResult.data ?? [];
+  const sources = (sourcesResult.data ?? []) as SourceOption[];
 
   const currentLeads = currentLeadRaw.map((lead) => ({
     ...lead,
@@ -587,10 +571,6 @@ export default async function DashboardPage({
   })) as DashboardLead[];
 
   const previousLeads = ((previousLeadsResult.data ?? []) as PreviousLeadRow[]) as PreviousLead[];
-
-  const stages = ((pipelinesResult.data?.pipeline_stages ?? []) as StageOption[]).sort(
-    (a, b) => a.order - b.order
-  );
 
   // ── Metrics ───────────────────────────────────────────────────────────────
   const scheduledCurrent = currentLeads.filter((lead) => wasScheduled(lead, hasBeenScheduledIds)).length;
@@ -604,8 +584,6 @@ export default async function DashboardPage({
   ).length;
   const potentialCurrent = currentLeads.reduce((sum, lead) => sum + Number(lead.potential_value ?? 0), 0);
   const potentialPrevious = previousLeads.reduce((sum, lead) => sum + Number(lead.potential_value ?? 0), 0);
-  const closedCurrent = currentLeads.reduce((sum, lead) => sum + Number(lead.closed_value ?? 0), 0);
-  const closedPrevious = previousLeads.reduce((sum, lead) => sum + Number(lead.closed_value ?? 0), 0);
 
   // ── Response time ─────────────────────────────────────────────────────────
   const { avgFirstResponse, avgResponseTime } =
@@ -617,7 +595,6 @@ export default async function DashboardPage({
   const noFollowupCount = (await getNoFollowup48hStatus(admin, organizationId)).leadIds.size;
 
   // ── Alert banners ─────────────────────────────────────────────────────────
-  const leadsWithoutResponse = openConvs.filter((c) => c.unread_count > 0).length;
   const leadsWithoutFollowup = (tasksResult.data ?? []).filter((task) => {
     if (task.completed_at || !task.due_at) return false;
     return new Date(task.due_at).getTime() < today.getTime();
@@ -627,7 +604,7 @@ export default async function DashboardPage({
   const dailyData = buildDailyData(currentLeads, currentStart, currentEnd, hasBeenScheduledIds);
   const sourceData = buildSourceData(currentLeads);
   const locationData = buildServiceRegionData(currentLeads, serviceArea);
-  const funnelData = buildFunnelData(currentLeads, stages);
+  const scheduledBySourceData = buildScheduledBySourceData(currentLeads, hasBeenScheduledIds);
   const serviceAreaCounts = currentLeads.reduce<Record<LeadsByLocation["serviceAreaStatus"], number>>(
     (acc, lead) => {
       const status = lead.service_area_status ?? "unknown";
@@ -658,24 +635,40 @@ export default async function DashboardPage({
           <h1 className="mt-1 text-2xl font-black text-text-primary">Dashboard</h1>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {services.length > 0 && (
-            <form action="/dashboard" className="flex items-center gap-2">
+          {(services.length > 0 || sources.length > 0) && (
+            <form action="/dashboard" className="flex flex-wrap items-center gap-2">
               <input type="hidden" name="period" value={range.period} />
               {range.period === "custom" && params?.start && <input type="hidden" name="start" value={params.start} />}
               {range.period === "custom" && params?.end && <input type="hidden" name="end" value={params.end} />}
               <input type="hidden" name="responseMode" value={responseMode} />
-              <select
-                name="service"
-                defaultValue={selectedService}
-                className="h-8 rounded-lg border border-border bg-white px-3 text-xs font-semibold text-text-secondary shadow-card outline-none transition focus:border-brand-green"
-              >
-                <option value="all">Todos os servicos</option>
-                {services.map((service) => (
-                  <option key={service.id} value={service.id}>
-                    {service.name}
-                  </option>
-                ))}
-              </select>
+              {sources.length > 0 && (
+                <select
+                  name="source"
+                  defaultValue={selectedSource}
+                  className="h-8 rounded-lg border border-border bg-white px-3 text-xs font-semibold text-text-secondary shadow-card outline-none transition focus:border-brand-green"
+                >
+                  <option value="all">Todas as origens</option>
+                  {sources.map((source) => (
+                    <option key={source.id} value={source.id}>
+                      {source.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {services.length > 0 && (
+                <select
+                  name="service"
+                  defaultValue={selectedService}
+                  className="h-8 rounded-lg border border-border bg-white px-3 text-xs font-semibold text-text-secondary shadow-card outline-none transition focus:border-brand-green"
+                >
+                  <option value="all">Todos os servicos</option>
+                  {services.map((service) => (
+                    <option key={service.id} value={service.id}>
+                      {service.name}
+                    </option>
+                  ))}
+                </select>
+              )}
               <button
                 type="submit"
                 className="h-8 rounded-lg bg-brand-green px-3 text-xs font-bold text-white transition hover:bg-brand-green-dark"
@@ -726,24 +719,14 @@ export default async function DashboardPage({
       )}
 
       {/* Alert banners */}
-      {(leadsWithoutResponse > 0 || leadsWithoutFollowup > 0) && (
+      {leadsWithoutFollowup > 0 && (
         <div className="flex flex-wrap gap-3">
-          {leadsWithoutResponse > 0 && (
-            <div className="flex items-center gap-2 rounded-lg border border-danger-red/20 bg-danger-soft px-3 py-2 text-xs text-danger-red">
-              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-              <span>
-                <strong>{leadsWithoutResponse}</strong> conversas com mensagens nao lidas
-              </span>
-            </div>
-          )}
-          {leadsWithoutFollowup > 0 && (
-            <div className="flex items-center gap-2 rounded-lg border border-warning-amber/30 bg-amber-50 px-3 py-2 text-xs text-amber-700">
-              <Bell className="h-3.5 w-3.5 shrink-0" />
-              <span>
-                <strong>{leadsWithoutFollowup}</strong> tarefas atrasadas
-              </span>
-            </div>
-          )}
+          <div className="flex items-center gap-2 rounded-lg border border-warning-amber/30 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            <Bell className="h-3.5 w-3.5 shrink-0" />
+            <span>
+              <strong>{leadsWithoutFollowup}</strong> tarefas atrasadas
+            </span>
+          </div>
         </div>
       )}
 
@@ -783,12 +766,6 @@ export default async function DashboardPage({
           label="Valor Potencial"
           value={formatCurrency(potentialCurrent)}
           variation={variation(potentialCurrent, potentialPrevious)}
-          icon={DollarSign}
-        />
-        <MetricCard
-          label="Valor Fechado"
-          value={formatCurrency(closedCurrent)}
-          variation={variation(closedCurrent, closedPrevious)}
           icon={DollarSign}
         />
         <MetricCard
@@ -922,14 +899,12 @@ export default async function DashboardPage({
       <Card>
         <CardHeader className="pb-2">
           <div className="flex items-center justify-between">
-            <CardTitle className="text-sm">Funil de Conversao</CardTitle>
-            <Badge variant="secondary" className="text-[10px]">
-              {range.label}
-            </Badge>
+            <CardTitle className="text-sm">Agendamentos por Origem</CardTitle>
+            <span className="text-[10px] text-text-muted">% de agendamento por origem</span>
           </div>
         </CardHeader>
         <CardContent>
-          <ConversionFunnelChart data={funnelData} />
+          <ScheduledBySourceChart data={scheduledBySourceData} />
         </CardContent>
       </Card>
     </div>
