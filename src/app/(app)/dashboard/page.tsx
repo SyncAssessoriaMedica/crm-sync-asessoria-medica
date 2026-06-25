@@ -10,6 +10,7 @@ import {
   Users,
 } from "lucide-react";
 import { DailyLeadsChart, LeadsByLocationChart, LeadsBySourceChart, ScheduledBySourceChart } from "@/components/dashboard/charts";
+import { DashboardFilters } from "@/components/dashboard/filters";
 import { MetricCard } from "@/components/dashboard/metric-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { businessHoursMs, parseOrgBusinessHours, type OrgBusinessHours } from "@/lib/business-hours";
@@ -64,6 +65,7 @@ type DashboardLeadRow = Omit<DashboardLead, "source" | "service" | "stage"> & {
 // For previous period we only need the fields used in variation calculations
 type PreviousLead = {
   id: string;
+  source_id: string | null;
   service_id: string | null;
   stage_id: string | null;
   status: LeadStatus;
@@ -415,7 +417,10 @@ export default async function DashboardPage({
   const range = getDateRangeFromParams(params);
   const responseMode = getResponseMode(params?.responseMode);
   const selectedService = params?.service ?? "all";
-  const selectedSource = params?.source ?? "all";
+  const selectedSources = (params?.source ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 
   const context = await getOrganizationContext();
   const { admin, organizationId, organization } = context;
@@ -423,20 +428,6 @@ export default async function DashboardPage({
   const currentStart = range.start;
   const currentEnd = range.end;
   const previousStart = range.previousStart;
-  const toggleParams = new URLSearchParams();
-  toggleParams.set("period", range.period);
-  if (range.period === "custom") {
-    if (params?.start) toggleParams.set("start", params.start);
-    if (params?.end) toggleParams.set("end", params.end);
-  }
-  if (selectedService !== "all") toggleParams.set("service", selectedService);
-  if (selectedSource !== "all") toggleParams.set("source", selectedSource);
-  const businessHoursParams = new URLSearchParams(toggleParams);
-  businessHoursParams.set("responseMode", "business_hours");
-  const realTimeParams = new URLSearchParams(toggleParams);
-  realTimeParams.set("responseMode", "real_time");
-  const businessHoursUrl = `?${businessHoursParams.toString()}`;
-  const realTimeUrl = `?${realTimeParams.toString()}`;
 
   // ── Batch 1: all independent queries in parallel ───────────────────────────
   const leadsSelect = `id, source_id, service_id, stage_id, status, potential_value, closed_value,
@@ -445,7 +436,7 @@ export default async function DashboardPage({
     service:clinic_services(id, name, active),
     stage:pipeline_stages(id, name, order)`;
 
-  const previousLeadsSelect = `id, service_id, stage_id, status, potential_value, closed_value, created_at`;
+  const previousLeadsSelect = `id, source_id, service_id, stage_id, status, potential_value, closed_value, created_at`;
 
   const buildCurrentLeadsQuery = () => {
     let query = admin
@@ -457,7 +448,7 @@ export default async function DashboardPage({
       .order("created_at", { ascending: false });
 
     if (selectedService !== "all") query = query.eq("service_id", selectedService);
-    if (selectedSource !== "all") query = query.eq("source_id", selectedSource);
+    if (selectedSources.length > 0) query = query.in("source_id", selectedSources);
     return query;
   };
 
@@ -471,7 +462,7 @@ export default async function DashboardPage({
       .order("created_at", { ascending: false });
 
     if (selectedService !== "all") query = query.eq("service_id", selectedService);
-    if (selectedSource !== "all") query = query.eq("source_id", selectedSource);
+    if (selectedSources.length > 0) query = query.in("source_id", selectedSources);
     return query;
   };
 
@@ -627,85 +618,24 @@ export default async function DashboardPage({
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="label-eyebrow text-text-muted">
             {organization?.name ?? "Sync Marketing"} · {monthLabel} · {range.label}
           </p>
           <h1 className="mt-1 text-2xl font-black text-text-primary">Dashboard</h1>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {(services.length > 0 || sources.length > 0) && (
-            <form action="/dashboard" className="flex flex-wrap items-center gap-2">
-              <input type="hidden" name="period" value={range.period} />
-              {range.period === "custom" && params?.start && <input type="hidden" name="start" value={params.start} />}
-              {range.period === "custom" && params?.end && <input type="hidden" name="end" value={params.end} />}
-              <input type="hidden" name="responseMode" value={responseMode} />
-              {sources.length > 0 && (
-                <select
-                  name="source"
-                  defaultValue={selectedSource}
-                  className="h-8 rounded-lg border border-border bg-white px-3 text-xs font-semibold text-text-secondary shadow-card outline-none transition focus:border-brand-green"
-                >
-                  <option value="all">Todas as origens</option>
-                  {sources.map((source) => (
-                    <option key={source.id} value={source.id}>
-                      {source.name}
-                    </option>
-                  ))}
-                </select>
-              )}
-              {services.length > 0 && (
-                <select
-                  name="service"
-                  defaultValue={selectedService}
-                  className="h-8 rounded-lg border border-border bg-white px-3 text-xs font-semibold text-text-secondary shadow-card outline-none transition focus:border-brand-green"
-                >
-                  <option value="all">Todos os servicos</option>
-                  {services.map((service) => (
-                    <option key={service.id} value={service.id}>
-                      {service.name}
-                    </option>
-                  ))}
-                </select>
-              )}
-              <button
-                type="submit"
-                className="h-8 rounded-lg bg-brand-green px-3 text-xs font-bold text-white transition hover:bg-brand-green-dark"
-              >
-                Filtrar
-              </button>
-            </form>
-          )}
-          <div className="flex items-center gap-0.5 rounded-lg border border-border bg-white p-0.5 text-[11px] font-semibold shadow-card">
-            <Link
-              href={businessHoursUrl}
-              className={cn(
-                "rounded-md px-2.5 py-1 transition-colors",
-                responseMode === "business_hours"
-                  ? "bg-brand-green text-white"
-                  : "text-text-muted hover:text-text-secondary"
-              )}
-            >
-              Horario util
-            </Link>
-            <Link
-              href={realTimeUrl}
-              className={cn(
-                "rounded-md px-2.5 py-1 transition-colors",
-                responseMode === "real_time"
-                  ? "bg-brand-green text-white"
-                  : "text-text-muted hover:text-text-secondary"
-              )}
-            >
-              Tempo real
-            </Link>
-          </div>
-          <div className="flex items-center gap-1.5 rounded-lg border border-brand-green/30 bg-brand-green-soft px-3 py-1.5">
-            <div className="h-1.5 w-1.5 rounded-full bg-brand-green" />
-            <span className="text-xs font-semibold text-brand-green-deep">{subscriptionLabel}</span>
-          </div>
-        </div>
+        <DashboardFilters
+          sources={sources}
+          services={services}
+          selectedSources={selectedSources}
+          selectedService={selectedService}
+          responseMode={responseMode}
+          period={range.period}
+          start={params?.start}
+          end={params?.end}
+          subscriptionLabel={subscriptionLabel}
+        />
       </div>
 
       {responseMode === "business_hours" && !configuredBusinessHours && (
